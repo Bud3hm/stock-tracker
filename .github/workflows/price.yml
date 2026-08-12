@@ -21,6 +21,7 @@ jobs:
 
       - name: Run price data
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: python price_data.py
+                  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+                  SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python -c "import price_data; price_data.analyze_market_snapshot()"
+       
