@@ -6,7 +6,6 @@ from flask import Flask
 import pandas as pd
 import yahooquery as yq
 
-# خادم ويب بسيط لتشغيل الخطة المجانية على Render
 app = Flask(__name__)
 
 
@@ -33,7 +32,7 @@ def analyze_market_snapshot(check_label):
     current_price = price_data.get("regularMarketPrice", None)
 
     if not current_price:
-        print(f"[{now}] تعذر جلب السعر اللحظي.")
+        print(f"[{now}] تعذر جلب السعر اللحظي (قد يكون السوق مغلقاً).")
         return
 
     benchmarks = get_fundamental_benchmarks()
@@ -59,32 +58,19 @@ def analyze_market_snapshot(check_label):
 
 def run_scheduler():
     scheduler = BlockingScheduler(timezone="Asia/Riyadh")
-    # التوقيت: 11:00 صباحاً | 12:30 ظهراً | 02:00 ظهراً
+
+    # جدولة الرصد الدوري كل 15 دقيقة من الساعة 10:00 صباحاً حتى 02:45 ظهراً
     scheduler.add_job(
         analyze_market_snapshot,
         "cron",
         day_of_week="sun,mon,tue,wed,thu",
-        hour=11,
-        minute=0,
-        args=["بعد بداية الجلسة بساعة"],
+        hour="10-14",
+        minute="0,15,30,45",
+        args=["رصد دوري كل 15 دقيقة"],
     )
-    scheduler.add_job(
-        analyze_market_snapshot,
-        "cron",
-        day_of_week="sun,mon,tue,wed,thu",
-        hour=12,
-        minute=30,
-        args=["منتصف الجلسة"],
-    )
-    scheduler.add_job(
-        analyze_market_snapshot,
-        "cron",
-        day_of_week="sun,mon,tue,wed,thu",
-        hour=14,
-        minute=0,
-        args=["قبل نهاية الجلسة بساعة"],
-    )
-    analyze_market_snapshot("تشغيل تجريبي أول عند الإطلاق")
+
+    # تشغيل تجريبي فوري عند الإطلاق للتحقق من سلامة الكود
+    analyze_market_snapshot("تشغيل تجريبي للتحقق من المواعيد")
     scheduler.start()
 
 
