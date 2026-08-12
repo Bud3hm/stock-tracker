@@ -1,25 +1,42 @@
 import os
 import requests
+
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from threading import Thread
+
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 
+
 app = Flask(__name__)
 
+# ============================================================
+# إعدادات السهم
+# ============================================================
+
 TICKER_SYMBOL = "2283.SR"
+
+# تثبيت التوقيت على توقيت الرياض
 RIYADH_TZ = ZoneInfo("Asia/Riyadh")
 
+# Yahoo Chart API
 YAHOO_URL = (
     f"https://query1.finance.yahoo.com/v8/finance/chart/"
     f"{TICKER_SYMBOL}"
 )
 
 
+# ============================================================
+# جلب البيانات من Yahoo
+# ============================================================
+
 def get_stock_data():
 
-    print("🔵 الاتصال بـ Yahoo Chart API...", flush=True)
+    print(
+        "🔵 بدء جلب البيانات من Yahoo...",
+        flush=True
+    )
 
     params = {
         "range": "1d",
@@ -51,26 +68,38 @@ def get_stock_data():
 
     response.raise_for_status()
 
-    data = response.json()
+    return response.json()
 
-    return data
 
+# ============================================================
+# تحليل وعرض بيانات الرصد
+# ============================================================
 
 def analyze_market_snapshot():
 
-    now = datetime.now(
+    # الوقت الحالي بتوقيت الرياض
+    now_ksa = datetime.now(
         RIYADH_TZ
-    ).strftime("%Y-%m-%d %H:%M:%S")
+    )
 
-    print("\n" + "=" * 70, flush=True)
+    now_text = now_ksa.strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    print("\n" + "=" * 75, flush=True)
 
     print(
-        "📊 اختبار المطاحن الأولى - 2283",
+        "📊 رصد سهم المطاحن الأولى - 2283",
         flush=True
     )
 
     print(
-        f"🕐 توقيت الرياض: {now}",
+        f"🕐 وقت الرصد - الرياض: {now_text}",
+        flush=True
+    )
+
+    print(
+        "⏱️ الرصد المجدول: كل 15 دقيقة",
         flush=True
     )
 
@@ -79,25 +108,25 @@ def analyze_market_snapshot():
         flush=True
     )
 
-    print("=" * 70, flush=True)
+    print("=" * 75, flush=True)
 
     try:
 
         data = get_stock_data()
 
-        print(
-            "🟢 تم استلام البيانات من Yahoo",
-            flush=True
+        chart = data.get(
+            "chart",
+            {}
         )
 
-        chart = data.get("chart", {})
-
-        result = chart.get("result")
+        result = chart.get(
+            "result"
+        )
 
         if not result:
 
             print(
-                "🔴 Yahoo لم يرجع نتيجة للسهم",
+                "🔴 Yahoo لم يرجع بيانات للسهم",
                 flush=True
             )
 
@@ -110,13 +139,18 @@ def analyze_market_snapshot():
 
         result = result[0]
 
-        meta = result.get("meta", {})
+        meta = result.get(
+            "meta",
+            {}
+        )
 
-        # ---------------------------------------------
-        # البيانات الأساسية للسعر
-        # ---------------------------------------------
+        # ====================================================
+        # البيانات الحالية
+        # ====================================================
 
-        symbol = meta.get("symbol")
+        symbol = meta.get(
+            "symbol"
+        )
 
         current_price = meta.get(
             "regularMarketPrice"
@@ -146,12 +180,7 @@ def analyze_market_snapshot():
             "instrumentType"
         )
 
-        print("\n" + "-" * 60, flush=True)
-
-        print(
-            "📌 بيانات السهم",
-            flush=True
-        )
+        print("\n📌 البيانات اللحظية", flush=True)
 
         print("-" * 60, flush=True)
 
@@ -161,17 +190,18 @@ def analyze_market_snapshot():
         )
 
         print(
-            f"💰 السعر الحالي: {current_price}",
+            f"💰 السعر الحالي: {current_price} ريال",
             flush=True
         )
 
         print(
-            f"📊 الإغلاق السابق: {previous_close}",
+            f"📊 الإغلاق السابق: {previous_close} ريال",
             flush=True
         )
 
         print(
-            f"📊 إغلاق الرسم السابق: {chart_previous_close}",
+            f"📊 إغلاق الرسم السابق: "
+            f"{chart_previous_close} ريال",
             flush=True
         )
 
@@ -195,9 +225,9 @@ def analyze_market_snapshot():
             flush=True
         )
 
-        # ---------------------------------------------
+        # ====================================================
         # حساب التغير
-        # ---------------------------------------------
+        # ====================================================
 
         if (
             isinstance(current_price, (int, float))
@@ -215,22 +245,24 @@ def analyze_market_snapshot():
                 previous_close
             ) * 100
 
-            print("\n" + "-" * 60)
+            print("\n📈 التغير", flush=True)
+
+            print("-" * 60, flush=True)
 
             print(
-                f"📈 التغير: {change:.2f} ريال",
+                f"💵 التغير: {change:+.2f} ريال",
                 flush=True
             )
 
             print(
-                f"📈 نسبة التغير: "
-                f"{change_percent:.2f}%",
+                f"📊 نسبة التغير: "
+                f"{change_percent:+.2f}%",
                 flush=True
             )
 
-        # ---------------------------------------------
-        # آخر شمعة
-        # ---------------------------------------------
+        # ====================================================
+        # آخر بيانات دقيقة
+        # ====================================================
 
         timestamps = result.get(
             "timestamp",
@@ -251,11 +283,6 @@ def analyze_market_snapshot():
 
             quote = quotes[0]
 
-            closes = quote.get(
-                "close",
-                []
-            )
-
             opens = quote.get(
                 "open",
                 []
@@ -271,12 +298,16 @@ def analyze_market_snapshot():
                 []
             )
 
+            closes = quote.get(
+                "close",
+                []
+            )
+
             volumes = quote.get(
                 "volume",
                 []
             )
 
-            # آخر قيمة غير فارغة
             def last_valid(values):
 
                 for value in reversed(values):
@@ -286,16 +317,19 @@ def analyze_market_snapshot():
 
                 return None
 
-            last_close = last_valid(closes)
             last_open = last_valid(opens)
             last_high = last_valid(highs)
             last_low = last_valid(lows)
+            last_close = last_valid(closes)
             last_volume = last_valid(volumes)
 
-            print("\n" + "-" * 60)
+            print(
+                "\n🕯️ آخر بيانات دقيقة متاحة من Yahoo",
+                flush=True
+            )
 
             print(
-                "🕯️ آخر بيانات دقيقة",
+                "-" * 60,
                 flush=True
             )
 
@@ -324,21 +358,28 @@ def analyze_market_snapshot():
                 flush=True
             )
 
-        print("\n" + "=" * 70)
+        print("\n" + "=" * 75, flush=True)
 
         print(
-            "🟢🟢🟢 نجح اختبار جلب البيانات 🟢🟢🟢",
+            "🟢 تم جلب البيانات بنجاح",
             flush=True
         )
 
-        print("=" * 70)
+        print(
+            f"🕐 انتهاء الرصد: "
+            f"{datetime.now(RIYADH_TZ).strftime('%H:%M:%S')} "
+            f"بتوقيت الرياض",
+            flush=True
+        )
+
+        print("=" * 75, flush=True)
 
     except Exception as e:
 
-        print("\n" + "=" * 70)
+        print("\n" + "=" * 75, flush=True)
 
         print(
-            "🔴 حدث خطأ",
+            "🔴 حدث خطأ أثناء جلب البيانات",
             flush=True
         )
 
@@ -352,17 +393,25 @@ def analyze_market_snapshot():
             flush=True
         )
 
-        print("=" * 70)
+        print("=" * 75, flush=True)
 
+
+# ============================================================
+# الصفحة الرئيسية
+# ============================================================
 
 @app.route("/")
 def home():
 
     return (
-        "Saudi Stock Monitor is running - "
-        "2283.SR"
+        "Saudi Stock Monitor is running. "
+        "Stock: 2283.SR"
     )
 
+
+# ============================================================
+# جدولة الرصد
+# ============================================================
 
 def start_scheduler():
 
@@ -370,29 +419,84 @@ def start_scheduler():
         timezone=RIYADH_TZ
     )
 
+    # --------------------------------------------------------
+    # من 10:00 إلى 14:45
+    # كل 15 دقيقة
+    #
+    # الأحد إلى الخميس
+    # --------------------------------------------------------
+
     scheduler.add_job(
         analyze_market_snapshot,
-        "interval",
-        minutes=1,
+        "cron",
+        day_of_week="sun,mon,tue,wed,thu",
+        hour="10-14",
+        minute="0,15,30,45",
+        second=0,
+        max_instances=1,
+        coalesce=True
+    )
+
+    # --------------------------------------------------------
+    # الرصد الأخير عند 15:00
+    # --------------------------------------------------------
+
+    scheduler.add_job(
+        analyze_market_snapshot,
+        "cron",
+        day_of_week="sun,mon,tue,wed,thu",
+        hour=15,
+        minute=0,
+        second=0,
         max_instances=1,
         coalesce=True
     )
 
     scheduler.start()
 
+    print("\n" + "=" * 75, flush=True)
+
     print(
-        "🟢 تم تشغيل المجدول",
+        "🟢 تم تشغيل نظام مراقبة السهم",
         flush=True
     )
 
     print(
-        "⏱️ سيتم فحص السهم كل دقيقة",
+        "📌 السهم: المطاحن الأولى - 2283",
         flush=True
     )
 
-    # اختبار مباشر عند التشغيل
-    analyze_market_snapshot()
+    print(
+        "📅 أيام الرصد: الأحد إلى الخميس",
+        flush=True
+    )
 
+    print(
+        "🕙 البداية: 10:00 صباحًا",
+        flush=True
+    )
+
+    print(
+        "🕒 النهاية: 15:00 مساءً",
+        flush=True
+    )
+
+    print(
+        "⏱️ الفاصل: كل 15 دقيقة",
+        flush=True
+    )
+
+    print(
+        "🇸🇦 جميع المواعيد محسوبة بتوقيت Asia/Riyadh",
+        flush=True
+    )
+
+    print("=" * 75 + "\n", flush=True)
+
+
+# ============================================================
+# تشغيل البرنامج
+# ============================================================
 
 if __name__ == "__main__":
 
