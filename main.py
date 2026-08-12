@@ -8,84 +8,173 @@ import yahooquery as yq
 
 app = Flask(__name__)
 
-TICKER = "2283.SR"
+TICKER_SYMBOL = "2283.SR"
 RIYADH_TZ = ZoneInfo("Asia/Riyadh")
 
-def analyze_market_snapshot(check_label="رصد موعد"):
+
+def analyze_market_snapshot(check_label="اختبار"):
+
     now_ksa = datetime.now(RIYADH_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+    print("\n" + "=" * 70)
+    print(f"📊 المطاحن الأولى - 2283")
+    print(f"🕐 الوقت: {now_ksa}")
+    print(f"🔎 الرمز: {TICKER_SYMBOL}")
+    print(f"📌 نوع الفحص: {check_label}")
+    print("=" * 70)
+
+    # إنشاء الاتصال
+    try:
+        ticker = yq.Ticker(TICKER_SYMBOL)
+        print("✅ تم الاتصال بـ YahooQuery")
+    except Exception as e:
+        print(f"❌ فشل الاتصال: {type(e).__name__}: {e}")
+        return
+
+    # --------------------------------------------------
+    # السعر
+    # --------------------------------------------------
+
     current_price = None
 
     try:
-        ticker = yq.Ticker(TICKER)
+        print("\n💰 جلب السعر...")
+
         price_data = ticker.price
-        if isinstance(price_data, dict) and TICKER in price_data:
-            data = price_data.get(TICKER, {})
+
+        print("📥 بيانات السعر:")
+        print(price_data)
+
+        if isinstance(price_data, dict):
+
+            data = price_data.get(TICKER_SYMBOL, {})
+
             if isinstance(data, dict):
-                current_price = data.get("regularMarketPrice", None)
+
+                current_price = data.get("regularMarketPrice")
+
+                if current_price is not None:
+                    print(f"✅ السعر الحالي: {current_price} ريال")
+                else:
+                    print("⚠️ لم يتم العثور على regularMarketPrice")
+
+            else:
+                print("❌ بيانات السهم ليست بالشكل المتوقع")
+
+        else:
+            print("❌ Yahoo لم يرجع بيانات صحيحة")
+
     except Exception as e:
-        print(f"[{now_ksa}] خطأ أثناء جلب السعر: {e}")
+        print(f"❌ خطأ السعر: {type(e).__name__}: {e}")
 
-    if not current_price or not isinstance(current_price, (int, float)):
-        print(f"[{now_ksa}] ⚠️ تعذر جلب السعر اللحظي حالياً.")
-        return
+    # --------------------------------------------------
+    # Key Stats
+    # --------------------------------------------------
 
-    # جلب المؤشرات الأساسية
+    eps = None
+    book_value = None
+
     try:
-        stats = ticker.key_stats.get(TICKER, {})
-        eps = stats.get("trailingEps", None)
-        book_value = stats.get("bookValue", None)
-    except Exception:
-        eps, book_value = None, None
+        print("\n📊 جلب المؤشرات الأساسية...")
 
-    print("\n" + "="*50)
-    print(f"📌 [المطاحن الأولى - 2283] - [{check_label}]")
-    print(f"توقيت الرياض: {now_ksa}")
-    print(f"السعر الحالي: {current_price} ريال")
+        stats_data = ticker.key_stats
 
-    if book_value and isinstance(book_value, (int, float)):
-        price_to_book = current_price / book_value
-        print(f"القيمة الدفترية للسهم: {book_value:.2f} ريال")
-        print(f"مضاعف القيمة الدفترية اللحظي (P/B): {price_to_book:.2f}x")
+        print("📥 Key Stats:")
+        print(stats_data)
 
-    if eps and isinstance(eps, (int, float)) and eps > 0:
-        pe_ratio = current_price / eps
-        print(f"ربحية السهم (EPS): {eps:.2f} ريال")
-        print(f"مكرر الربحية اللحظي (P/E): {pe_ratio:.2f}x")
+        if isinstance(stats_data, dict):
 
-    print("="*50 + "\n")
+            stats = stats_data.get(TICKER_SYMBOL, {})
 
-@app.route('/')
+            if isinstance(stats, dict):
+
+                eps = stats.get("trailingEps")
+                book_value = stats.get("bookValue")
+
+                print(f"📌 EPS: {eps}")
+                print(f"📌 Book Value: {book_value}")
+
+    except Exception as e:
+        print(f"❌ خطأ Key Stats: {type(e).__name__}: {e}")
+
+    # --------------------------------------------------
+    # الحسابات
+    # --------------------------------------------------
+
+    print("\n🧮 الحسابات:")
+
+    if (
+        isinstance(current_price, (int, float))
+        and isinstance(eps, (int, float))
+        and eps > 0
+    ):
+        pe = current_price / eps
+        print(f"📈 P/E: {pe:.2f}x")
+    else:
+        print("⚠️ لا يمكن حساب P/E")
+
+    if (
+        isinstance(current_price, (int, float))
+        and isinstance(book_value, (int, float))
+        and book_value > 0
+    ):
+        pb = current_price / book_value
+        print(f"📚 P/B: {pb:.2f}x")
+    else:
+        print("⚠️ لا يمكن حساب P/B")
+
+    print("\n" + "=" * 70)
+    print("✅ انتهى الفحص - الانتظار للفحص القادم بعد دقيقة")
+    print("=" * 70 + "\n")
+
+
+@app.route("/")
 def home():
-    analyze_market_snapshot("رصد مباشر عبر فتح الصفحة")
-    return "Saudi Stock Monitor is Active and Running!"
+
+    analyze_market_snapshot("فتح الصفحة")
+
+    return "Saudi Stock Monitor is running."
+
 
 def run_scheduler():
-    scheduler = BlockingScheduler(timezone=RIYADH_TZ)
 
-    # جدولة صريحة بتوقيت الرياض المباشر (Asia/Riyadh)
-    scheduler.add_job(
-        analyze_market_snapshot, 
-        'cron', 
-        day_of_week='sun,mon,tue,wed,thu', 
-        hour='10-14', 
-        minute='0,15,30,45',
-        args=["رصد دوري 15 دقيقة"]
-    )
-    scheduler.add_job(
-        analyze_market_snapshot, 
-        'cron', 
-        day_of_week='sun,mon,tue,wed,thu', 
-        hour='15', 
-        minute='0',
-        args=["رصد إغلاق السوق 3:00 عصراً"]
+    scheduler = BlockingScheduler(
+        timezone=RIYADH_TZ
     )
 
-    # رصد أولي فور إطلاق السيرفر
-    analyze_market_snapshot("رصد البدء المباشر")
+    # ================================================
+    # فحص كل دقيقة
+    # ================================================
+
+    scheduler.add_job(
+        analyze_market_snapshot,
+        "interval",
+        minutes=1,
+        args=["فحص كل دقيقة"],
+        max_instances=1,
+        coalesce=True
+    )
+
+    # فحص فوري عند تشغيل السيرفر
+    analyze_market_snapshot("تشغيل السيرفر")
+
     scheduler.start()
 
+
 if __name__ == "__main__":
-    t = Thread(target=run_scheduler)
+
+    t = Thread(
+        target=run_scheduler,
+        daemon=True
+    )
+
     t.start()
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+
+    port = int(
+        os.environ.get("PORT", 10000)
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
