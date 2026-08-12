@@ -2,3 +2,5 @@ flask
 APScheduler
 requests
 supabase
+pandas
+lxml
