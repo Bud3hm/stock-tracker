@@ -1,19 +1,18 @@
-import datetime
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from threading import Thread
-from apscheduler.schedulers.blocking import BlockingScheduler
 from flask import Flask
+from apscheduler.schedulers.blocking import BlockingScheduler
 import yahooquery as yq
 
 app = Flask(__name__)
 
 TICKER = "2283.SR"
-
+RIYADH_TZ = ZoneInfo("Asia/Riyadh")
 
 def analyze_market_snapshot(check_label="رصد موعد"):
-    now_ksa = (
-        datetime.datetime.utcnow() + datetime.timedelta(hours=3)
-    ).strftime("%Y-%m-%d %H:%M:%S")
+    now_ksa = datetime.now(RIYADH_TZ).strftime("%Y-%m-%d %H:%M:%S")
     current_price = None
 
     try:
@@ -38,7 +37,7 @@ def analyze_market_snapshot(check_label="رصد موعد"):
     except Exception:
         eps, book_value = None, None
 
-    print("\n" + "=" * 50)
+    print("\n" + "="*50)
     print(f"📌 [المطاحن الأولى - 2283] - [{check_label}]")
     print(f"توقيت الرياض: {now_ksa}")
     print(f"السعر الحالي: {current_price} ريال")
@@ -53,41 +52,37 @@ def analyze_market_snapshot(check_label="رصد موعد"):
         print(f"ربحية السهم (EPS): {eps:.2f} ريال")
         print(f"مكرر الربحية اللحظي (P/E): {pe_ratio:.2f}x")
 
-    print("=" * 50 + "\n")
+    print("="*50 + "\n")
 
-
-@app.route("/")
+@app.route('/')
 def home():
-    # عند فتح رابط الموقع أو زيارته، ينفذ رصد فوري فوراً
     analyze_market_snapshot("رصد مباشر عبر فتح الصفحة")
     return "Saudi Stock Monitor is Active and Running!"
 
-
 def run_scheduler():
-    scheduler = BlockingScheduler()
+    scheduler = BlockingScheduler(timezone=RIYADH_TZ)
 
-    # الساعات بتوقيت UTC (من 07:00 إلى 12:00 UTC تعادل 10:00 صباحاً إلى 3:00 عصراً بتوقيت الرياض)
+    # جدولة صريحة بتوقيت الرياض المباشر (Asia/Riyadh)
     scheduler.add_job(
-        analyze_market_snapshot,
-        "cron",
-        day_of_week="sun,mon,tue,wed,thu",
-        hour="7-11",
-        minute="0,15,30,45",
-        args=["رصد دوري 15 دقيقة"],
+        analyze_market_snapshot, 
+        'cron', 
+        day_of_week='sun,mon,tue,wed,thu', 
+        hour='10-14', 
+        minute='0,15,30,45',
+        args=["رصد دوري 15 دقيقة"]
     )
     scheduler.add_job(
-        analyze_market_snapshot,
-        "cron",
-        day_of_week="sun,mon,tue,wed,thu",
-        hour="12",
-        minute="0",
-        args=["رصد إغلاق السوق 3:00 عصراً"],
+        analyze_market_snapshot, 
+        'cron', 
+        day_of_week='sun,mon,tue,wed,thu', 
+        hour='15', 
+        minute='0',
+        args=["رصد إغلاق السوق 3:00 عصراً"]
     )
 
-    # تشغيل قراءة فورية أول ما يشتغل السكربت
-    analyze_market_snapshot("رصد التشغيل الأولي")
+    # رصد أولي فور إطلاق السيرفر
+    analyze_market_snapshot("رصد البدء المباشر")
     scheduler.start()
-
 
 if __name__ == "__main__":
     t = Thread(target=run_scheduler)
