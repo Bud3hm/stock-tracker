@@ -1,6 +1,8 @@
+import os
 import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from supabase import create_client
 
 
 # ============================================================
@@ -9,9 +11,10 @@ from zoneinfo import ZoneInfo
 
 TICKER_SYMBOL = "2283.SR"
 RIYADH_TZ = ZoneInfo("Asia/Riyadh")
-
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY")
 BASE_URL = "https://query1.finance.yahoo.com"
-
+supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 "
@@ -192,7 +195,14 @@ def print_timeseries_result(result):
                 value = extract_reported_value(
                     record
                 )
-
+                save_financial_record(
+                symbol=symbol,
+                metric=key,
+                period_end=date,
+                period_type=period_type,
+                value=value,
+               currency=currency
+                )
                 print(
                     f"{date} | "
                     f"{period_type} | "
@@ -200,6 +210,84 @@ def print_timeseries_result(result):
                     f"{currency}",
                     flush=True
                 )
+
+def get_stock_id(symbol):
+
+    try:
+        response = (
+            supabase
+            .table("stocks")
+            .select("id")
+            .eq("symbol", symbol)
+            .limit(1)
+            .execute()
+        )
+
+        if response.data:
+            return response.data[0]["id"]
+
+    except Exception as e:
+        print(
+            f"🔴 خطأ جلب stock_id من Supabase: {e}",
+            flush=True
+        )
+
+    return None
+
+
+def save_financial_record(
+    symbol,
+    metric,
+    period_end,
+    period_type,
+    value,
+    currency
+):
+
+    if value is None:
+        return
+
+    try:
+
+        stock_id = get_stock_id(symbol)
+
+        if stock_id is None:
+            print(
+                f"⚠️ السهم {symbol} غير موجود في Supabase",
+                flush=True
+            )
+            return
+
+        row = {
+            "stock_id": stock_id,
+            "metric": metric,
+            "period_end": period_end,
+            "period_type": period_type,
+            "value": value,
+            "currency": currency or "SAR",
+            "source": "yahoo"
+        }
+
+        (
+            supabase
+            .table("financial_statements")
+            .upsert(
+                row,
+                on_conflict="stock_id,metric,period_end,period_type"
+            )
+            .execute()
+        )
+
+        print(
+            f"💾 تم حفظ {metric} | {period_end}",
+            flush=True
+        )
+
+    except Exception as e:
+        print(
+            f"🔴 خطأ حفظ البيانات في Supabase: {e}",
+            flush=True
+        )
 
 
 # ============================================================
