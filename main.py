@@ -2,9 +2,12 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from threading import Thread
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
 from flask import Flask
-from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 import yahooquery as yq
+
 
 app = Flask(__name__)
 
@@ -12,166 +15,232 @@ TICKER_SYMBOL = "2283.SR"
 RIYADH_TZ = ZoneInfo("Asia/Riyadh")
 
 
-def analyze_market_snapshot(check_label="اختبار"):
+def get_yahoo_data():
 
-    now_ksa = datetime.now(RIYADH_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    print("🔵 بدأ الاتصال بـ YahooQuery...", flush=True)
 
-    print("\n" + "=" * 70)
-    print(f"📊 المطاحن الأولى - 2283")
-    print(f"🕐 الوقت: {now_ksa}")
-    print(f"🔎 الرمز: {TICKER_SYMBOL}")
-    print(f"📌 نوع الفحص: {check_label}")
-    print("=" * 70)
+    ticker = yq.Ticker(TICKER_SYMBOL)
 
-    # إنشاء الاتصال
-    try:
-        ticker = yq.Ticker(TICKER_SYMBOL)
-        print("✅ تم الاتصال بـ YahooQuery")
-    except Exception as e:
-        print(f"❌ فشل الاتصال: {type(e).__name__}: {e}")
-        return
+    print("🟢 تم إنشاء Ticker بنجاح", flush=True)
 
-    # --------------------------------------------------
-    # السعر
-    # --------------------------------------------------
+    print("🔵 الآن نحاول جلب السعر...", flush=True)
 
-    current_price = None
+    price_data = ticker.price
 
-    try:
-        print("\n💰 جلب السعر...")
+    print("🟢 تم استلام بيانات السعر", flush=True)
 
-        price_data = ticker.price
+    return price_data
 
-        print("📥 بيانات السعر:")
-        print(price_data)
 
-        if isinstance(price_data, dict):
+def analyze_market_snapshot():
 
-            data = price_data.get(TICKER_SYMBOL, {})
+    now = datetime.now(RIYADH_TZ).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
-            if isinstance(data, dict):
-
-                current_price = data.get("regularMarketPrice")
-
-                if current_price is not None:
-                    print(f"✅ السعر الحالي: {current_price} ريال")
-                else:
-                    print("⚠️ لم يتم العثور على regularMarketPrice")
-
-            else:
-                print("❌ بيانات السهم ليست بالشكل المتوقع")
-
-        else:
-            print("❌ Yahoo لم يرجع بيانات صحيحة")
-
-    except Exception as e:
-        print(f"❌ خطأ السعر: {type(e).__name__}: {e}")
+    print("\n" + "=" * 70, flush=True)
+    print("📊 اختبار المطاحن الأولى - 2283", flush=True)
+    print(f"🕐 توقيت الرياض: {now}", flush=True)
+    print(f"🔎 الرمز: {TICKER_SYMBOL}", flush=True)
+    print("=" * 70, flush=True)
 
     # --------------------------------------------------
-    # Key Stats
+    # محاولة Yahoo بمهلة 10 ثوانٍ
     # --------------------------------------------------
-
-    eps = None
-    book_value = None
 
     try:
-        print("\n📊 جلب المؤشرات الأساسية...")
 
-        stats_data = ticker.key_stats
+        with ThreadPoolExecutor(max_workers=1) as executor:
 
-        print("📥 Key Stats:")
-        print(stats_data)
+            future = executor.submit(get_yahoo_data)
 
-        if isinstance(stats_data, dict):
+            try:
 
-            stats = stats_data.get(TICKER_SYMBOL, {})
+                price_data = future.result(timeout=10)
 
-            if isinstance(stats, dict):
+            except TimeoutError:
 
-                eps = stats.get("trailingEps")
-                book_value = stats.get("bookValue")
+                print(
+                    "🔴 YahooQuery لم يستجب خلال 10 ثوانٍ",
+                    flush=True
+                )
 
-                print(f"📌 EPS: {eps}")
-                print(f"📌 Book Value: {book_value}")
+                return
+
+        # --------------------------------------------------
+        # عرض البيانات الخام
+        # --------------------------------------------------
+
+        print("\n📥 البيانات التي وصلت من Yahoo:", flush=True)
+        print(price_data, flush=True)
+
+        if not isinstance(price_data, dict):
+
+            print(
+                "🔴 Yahoo لم يرجع Dictionary",
+                flush=True
+            )
+
+            return
+
+        data = price_data.get(TICKER_SYMBOL)
+
+        if not data:
+
+            print(
+                f"🔴 لم نجد {TICKER_SYMBOL} داخل البيانات",
+                flush=True
+            )
+
+            print(
+                f"المفاتيح الموجودة: {list(price_data.keys())}",
+                flush=True
+            )
+
+            return
+
+        # --------------------------------------------------
+        # السعر
+        # --------------------------------------------------
+
+        current_price = data.get(
+            "regularMarketPrice"
+        )
+
+        previous_close = data.get(
+            "regularMarketPreviousClose"
+        )
+
+        market_state = data.get(
+            "marketState"
+        )
+
+        currency = data.get(
+            "currency"
+        )
+
+        print("\n" + "-" * 50, flush=True)
+        print("📌 بيانات السهم", flush=True)
+        print("-" * 50, flush=True)
+
+        print(
+            f"💰 السعر الحالي: {current_price}",
+            flush=True
+        )
+
+        print(
+            f"📊 إغلاق سابق: {previous_close}",
+            flush=True
+        )
+
+        print(
+            f"🏦 حالة السوق: {market_state}",
+            flush=True
+        )
+
+        print(
+            f"💵 العملة: {currency}",
+            flush=True
+        )
+
+        print("-" * 50, flush=True)
+
+        if (
+            isinstance(current_price, (int, float))
+            and isinstance(previous_close, (int, float))
+            and previous_close != 0
+        ):
+
+            change = current_price - previous_close
+
+            change_percent = (
+                change / previous_close
+            ) * 100
+
+            print(
+                f"📈 التغير: {change:.2f} ريال",
+                flush=True
+            )
+
+            print(
+                f"📈 نسبة التغير: {change_percent:.2f}%",
+                flush=True
+            )
+
+        print(
+            "\n🟢 انتهى الفحص بنجاح",
+            flush=True
+        )
 
     except Exception as e:
-        print(f"❌ خطأ Key Stats: {type(e).__name__}: {e}")
 
-    # --------------------------------------------------
-    # الحسابات
-    # --------------------------------------------------
+        print(
+            "\n🔴 حدث خطأ:",
+            flush=True
+        )
 
-    print("\n🧮 الحسابات:")
+        print(
+            f"نوع الخطأ: {type(e).__name__}",
+            flush=True
+        )
 
-    if (
-        isinstance(current_price, (int, float))
-        and isinstance(eps, (int, float))
-        and eps > 0
-    ):
-        pe = current_price / eps
-        print(f"📈 P/E: {pe:.2f}x")
-    else:
-        print("⚠️ لا يمكن حساب P/E")
-
-    if (
-        isinstance(current_price, (int, float))
-        and isinstance(book_value, (int, float))
-        and book_value > 0
-    ):
-        pb = current_price / book_value
-        print(f"📚 P/B: {pb:.2f}x")
-    else:
-        print("⚠️ لا يمكن حساب P/B")
-
-    print("\n" + "=" * 70)
-    print("✅ انتهى الفحص - الانتظار للفحص القادم بعد دقيقة")
-    print("=" * 70 + "\n")
+        print(
+            f"تفاصيل الخطأ: {e}",
+            flush=True
+        )
 
 
 @app.route("/")
 def home():
 
-    analyze_market_snapshot("فتح الصفحة")
+    return """
+    Saudi Stock Monitor is running.
+    Stock: 2283.SR
+    """
 
-    return "Saudi Stock Monitor is running."
 
+def start_scheduler():
 
-def run_scheduler():
-
-    scheduler = BlockingScheduler(
+    scheduler = BackgroundScheduler(
         timezone=RIYADH_TZ
     )
-
-    # ================================================
-    # فحص كل دقيقة
-    # ================================================
 
     scheduler.add_job(
         analyze_market_snapshot,
         "interval",
         minutes=1,
-        args=["فحص كل دقيقة"],
         max_instances=1,
         coalesce=True
     )
 
-    # فحص فوري عند تشغيل السيرفر
-    analyze_market_snapshot("تشغيل السيرفر")
-
     scheduler.start()
+
+    print(
+        "🟢 تم تشغيل المجدول - فحص كل دقيقة",
+        flush=True
+    )
+
+    # أول فحص مباشرة
+    analyze_market_snapshot()
 
 
 if __name__ == "__main__":
 
-    t = Thread(
-        target=run_scheduler,
+    # تشغيل المجدول في Thread منفصل
+    scheduler_thread = Thread(
+        target=start_scheduler,
         daemon=True
     )
 
-    t.start()
+    scheduler_thread.start()
 
     port = int(
         os.environ.get("PORT", 10000)
+    )
+
+    print(
+        f"🟢 تشغيل Flask على المنفذ {port}",
+        flush=True
     )
 
     app.run(
