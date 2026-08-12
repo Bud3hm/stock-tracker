@@ -3,37 +3,17 @@ import os
 from threading import Thread
 from apscheduler.schedulers.blocking import BlockingScheduler
 from flask import Flask
-import pandas as pd
 import yahooquery as yq
 
 app = Flask(__name__)
 
-
-@app.route("/")
-def home():
-    return "Saudi Stock Monitor is Running Successfully!"
-
-
 TICKER = "2283.SR"
 
 
-def get_fundamental_benchmarks():
-    try:
-        ticker = yq.Ticker(TICKER)
-        key_stats = ticker.key_stats
-        if isinstance(key_stats, dict) and TICKER in key_stats:
-            stats = key_stats.get(TICKER, {})
-            if isinstance(stats, dict):
-                eps = stats.get("trailingEps", None)
-                book_value = stats.get("bookValue", None)
-                return {"eps": eps, "book_value": book_value}
-    except Exception as e:
-        print(f"خطأ في جلب المؤشرات المالية الأساسية: {e}")
-    return {"eps": None, "book_value": None}
-
-
-def analyze_market_snapshot(check_label):
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def analyze_market_snapshot(check_label="رصد موعد"):
+    now_ksa = (
+        datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+    ).strftime("%Y-%m-%d %H:%M:%S")
     current_price = None
 
     try:
@@ -44,20 +24,23 @@ def analyze_market_snapshot(check_label):
             if isinstance(data, dict):
                 current_price = data.get("regularMarketPrice", None)
     except Exception as e:
-        print(f"[{now}] خطأ أثناء جلب السعر: {e}")
+        print(f"[{now_ksa}] خطأ أثناء جلب السعر: {e}")
 
     if not current_price or not isinstance(current_price, (int, float)):
-        print(
-            f"[{now}] ⚠️ تعذر جلب السعر اللحظي حالياً (قد يكون سيرفر ياهو مشغولاً)."
-        )
+        print(f"[{now_ksa}] ⚠️ تعذر جلب السعر اللحظي حالياً.")
         return
 
-    benchmarks = get_fundamental_benchmarks()
-    book_value = benchmarks.get("book_value")
-    eps = benchmarks.get("eps")
+    # جلب المؤشرات الأساسية
+    try:
+        stats = ticker.key_stats.get(TICKER, {})
+        eps = stats.get("trailingEps", None)
+        book_value = stats.get("bookValue", None)
+    except Exception:
+        eps, book_value = None, None
 
     print("\n" + "=" * 50)
-    print(f"📌 رصد الجلسة - [{check_label}] - الوقت: {now}")
+    print(f"📌 [المطاحن الأولى - 2283] - [{check_label}]")
+    print(f"توقيت الرياض: {now_ksa}")
     print(f"السعر الحالي: {current_price} ريال")
 
     if book_value and isinstance(book_value, (int, float)):
@@ -73,29 +56,36 @@ def analyze_market_snapshot(check_label):
     print("=" * 50 + "\n")
 
 
+@app.route("/")
+def home():
+    # عند فتح رابط الموقع أو زيارته، ينفذ رصد فوري فوراً
+    analyze_market_snapshot("رصد مباشر عبر فتح الصفحة")
+    return "Saudi Stock Monitor is Active and Running!"
+
+
 def run_scheduler():
-    scheduler = BlockingScheduler(timezone="Asia/Riyadh")
+    scheduler = BlockingScheduler()
 
-    # جدولة الرصد كل 15 دقيقة من 10:00 صباحاً حتى 3:00 عصراً (من الأحد إلى الخميس)
+    # الساعات بتوقيت UTC (من 07:00 إلى 12:00 UTC تعادل 10:00 صباحاً إلى 3:00 عصراً بتوقيت الرياض)
     scheduler.add_job(
         analyze_market_snapshot,
         "cron",
         day_of_week="sun,mon,tue,wed,thu",
-        hour="10-14",
+        hour="7-11",
         minute="0,15,30,45",
-        args=["رصد دوري كل 15 دقيقة"],
+        args=["رصد دوري 15 دقيقة"],
     )
     scheduler.add_job(
         analyze_market_snapshot,
         "cron",
         day_of_week="sun,mon,tue,wed,thu",
-        hour="15",
+        hour="12",
         minute="0",
-        args=["رصد عند إغلاق السوق 3:00 عصراً"],
+        args=["رصد إغلاق السوق 3:00 عصراً"],
     )
 
-    # تشغيل قراءة فورية الآن مباشرة للتحقق
-    analyze_market_snapshot("رصد فوري متزامن مع التحديث")
+    # تشغيل قراءة فورية أول ما يشتغل السكربت
+    analyze_market_snapshot("رصد التشغيل الأولي")
     scheduler.start()
 
 
