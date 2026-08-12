@@ -1,6 +1,6 @@
 import os
 import requests
-
+from supabase import create_client
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from threading import Thread
@@ -10,7 +10,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 
 app = Flask(__name__)
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
+supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY
+)
 # ============================================================
 # إعدادات السهم
 # ============================================================
@@ -359,7 +365,47 @@ def analyze_market_snapshot():
             )
 
         print("\n" + "=" * 75, flush=True)
+        stock_id = int(os.environ.get("STOCK_ID", "1"))
 
+        safe_change = None
+        safe_change_percent = None
+
+        if (
+            isinstance(current_price, (int, float))
+            and isinstance(previous_close, (int, float))
+            and previous_close != 0
+        ):
+            safe_change = current_price - previous_close
+            safe_change_percent = (
+                safe_change / previous_close
+            ) * 100
+
+        price_record = {
+            "stock_id": stock_id,
+            "captured_at": now_ksa.isoformat(),
+            "price": current_price,
+            "previous_close": previous_close,
+            "change_value": safe_change,
+            "change_percent": safe_change_percent,
+            "open_price": last_open,
+            "high_price": last_high,
+            "low_price": last_low,
+            "close_price": last_close,
+            "volume": last_volume,
+            "market_state": market_state,
+            "source": "Yahoo"
+        }
+
+        supabase.table(
+            "price_history"
+        ).insert(
+            price_record
+        ).execute()
+
+        print(
+            "💾 تم حفظ الرصد في Supabase",
+            flush=True
+        )
         print(
             "🟢 تم جلب البيانات بنجاح",
             flush=True
