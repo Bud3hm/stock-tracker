@@ -1,4 +1,3 @@
-yahooquery
-pandas
-apscheduler
 flask
+APScheduler
+requested
