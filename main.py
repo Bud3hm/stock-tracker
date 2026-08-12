@@ -48,7 +48,7 @@ def analyze_market_snapshot(check_label):
 
     if not current_price or not isinstance(current_price, (int, float)):
         print(
-            f"[{now}] ⚠️ تعذر جلب السعر اللحظي حالياً (قد يكون السوق مغلقاً أو السيرفر مشغول)."
+            f"[{now}] ⚠️ تعذر جلب السعر اللحظي حالياً (قد يكون سيرفر ياهو مشغولاً)."
         )
         return
 
@@ -76,7 +76,7 @@ def analyze_market_snapshot(check_label):
 def run_scheduler():
     scheduler = BlockingScheduler(timezone="Asia/Riyadh")
 
-    # جدولة كل 15 دقيقة طوال وقت الجلسة من 10:00 صباحاً إلى 02:45 ظهراً
+    # جدولة الرصد كل 15 دقيقة من 10:00 صباحاً حتى 3:00 عصراً (من الأحد إلى الخميس)
     scheduler.add_job(
         analyze_market_snapshot,
         "cron",
@@ -85,9 +85,17 @@ def run_scheduler():
         minute="0,15,30,45",
         args=["رصد دوري كل 15 دقيقة"],
     )
+    scheduler.add_job(
+        analyze_market_snapshot,
+        "cron",
+        day_of_week="sun,mon,tue,wed,thu",
+        hour="15",
+        minute="0",
+        args=["رصد عند إغلاق السوق 3:00 عصراً"],
+    )
 
-    # قراءة تجريبية فورية للتحقق
-    analyze_market_snapshot("تشغيل تجريبي للتحقق من المواعيد")
+    # تشغيل قراءة فورية الآن مباشرة للتحقق
+    analyze_market_snapshot("رصد فوري متزامن مع التحديث")
     scheduler.start()
 
 
