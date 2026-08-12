@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 # ============================================================
 
 TICKER_SYMBOL = "2283.SR"
-
 RIYADH_TZ = ZoneInfo("Asia/Riyadh")
 
 BASE_URL = "https://query1.finance.yahoo.com"
@@ -68,6 +67,24 @@ def safe_value(value):
     return value
 
 
+def extract_reported_value(record):
+
+    if not isinstance(record, dict):
+        return None
+
+    reported = record.get("reportedValue")
+
+    if isinstance(reported, dict):
+
+        if reported.get("raw") is not None:
+            return reported.get("raw")
+
+        if reported.get("fmt") is not None:
+            return reported.get("fmt")
+
+    return None
+
+
 def format_number(value):
 
     value = safe_value(value)
@@ -76,6 +93,13 @@ def format_number(value):
         return "غير متوفر"
 
     if isinstance(value, (int, float)):
+
+        if abs(value) >= 1_000_000_000:
+            return f"{value / 1_000_000_000:,.3f} مليار"
+
+        if abs(value) >= 1_000_000:
+            return f"{value / 1_000_000:,.3f} مليون"
+
         return f"{value:,.2f}"
 
     return str(value)
@@ -83,18 +107,18 @@ def format_number(value):
 
 def print_section(title):
 
-    print("\n" + "=" * 75, flush=True)
+    print("\n" + "=" * 80, flush=True)
     print(title, flush=True)
-    print("=" * 75, flush=True)
+    print("=" * 80, flush=True)
 
 
 # ============================================================
-# طباعة Time Series بشكل آمن
+# طباعة بيانات Timeseries
 # ============================================================
 
 def print_timeseries_result(result):
 
-    if not result:
+    if not isinstance(result, list) or not result:
 
         print(
             "⚠️ لا توجد بيانات",
@@ -108,48 +132,45 @@ def print_timeseries_result(result):
         if not isinstance(item, dict):
             continue
 
-        print(
-            "\n---------------------------------------------",
-            flush=True
-        )
+        meta = item.get("meta", {})
 
-        meta = item.get(
-            "meta",
-            {}
-        )
+        symbol = TICKER_SYMBOL
 
         if isinstance(meta, dict):
 
-            symbol = meta.get(
-                "symbol",
-                TICKER_SYMBOL
-            )
+            meta_symbol = meta.get("symbol")
 
-        else:
+            if isinstance(meta_symbol, list) and meta_symbol:
+                symbol = meta_symbol[0]
 
-            symbol = TICKER_SYMBOL
-
-        print(
-            f"الرمز: {symbol}",
-            flush=True
-        )
+            elif isinstance(meta_symbol, str):
+                symbol = meta_symbol
 
         for key, values in item.items():
 
-            # Yahoo يعيد meta و timestamp
-            # ولا نريد معاملتهما كقوائم بيانات مالية
-            if key in (
-                "meta",
-                "timestamp"
-            ):
+            if key in ("meta", "timestamp"):
                 continue
 
             if not isinstance(values, list):
                 continue
 
+            print(
+                "\n----------------------------------------------",
+                flush=True
+            )
+
+            print(
+                f"📌 المؤشر: {key}",
+                flush=True
+            )
+
+            print(
+                f"🔹 الرمز: {symbol}",
+                flush=True
+            )
+
             for record in values:
 
-                # حماية من أي رقم أو نص داخل القائمة
                 if not isinstance(record, dict):
                     continue
 
@@ -158,14 +179,25 @@ def print_timeseries_result(result):
                     "غير معروف"
                 )
 
-                value = record.get(
-                    key
+                period_type = record.get(
+                    "periodType",
+                    "غير معروف"
+                )
+
+                currency = record.get(
+                    "currencyCode",
+                    ""
+                )
+
+                value = extract_reported_value(
+                    record
                 )
 
                 print(
-                    f"{key} | "
                     f"{date} | "
-                    f"{format_number(value)}",
+                    f"{period_type} | "
+                    f"{format_number(value)} "
+                    f"{currency}",
                     flush=True
                 )
 
@@ -201,12 +233,10 @@ def get_company_summary():
             quote_summary,
             dict
         ):
-
             print(
                 "⚠️ بنية quoteSummary غير متوقعة",
                 flush=True
             )
-
             return
 
         result = quote_summary.get(
@@ -216,12 +246,7 @@ def get_company_summary():
         if not result:
 
             print(
-                "⚠️ لم تصل بيانات الشركة",
-                flush=True
-            )
-
-            print(
-                data,
+                "⚠️ لم تصل بيانات الشركة الأساسية",
                 flush=True
             )
 
@@ -229,21 +254,8 @@ def get_company_summary():
 
         result = result[0]
 
-        if not isinstance(
-            result,
-            dict
-        ):
-
-            print(
-                "⚠️ بيانات الشركة ليست بالشكل المتوقع",
-                flush=True
-            )
-
+        if not isinstance(result, dict):
             return
-
-        # ----------------------------------------------------
-        # Price
-        # ----------------------------------------------------
 
         price = result.get(
             "price",
@@ -252,6 +264,30 @@ def get_company_summary():
 
         if not isinstance(price, dict):
             price = {}
+
+        summary = result.get(
+            "summaryDetail",
+            {}
+        )
+
+        if not isinstance(summary, dict):
+            summary = {}
+
+        stats = result.get(
+            "defaultKeyStatistics",
+            {}
+        )
+
+        if not isinstance(stats, dict):
+            stats = {}
+
+        financial = result.get(
+            "financialData",
+            {}
+        )
+
+        if not isinstance(financial, dict):
+            financial = {}
 
         print(
             f"الشركة: "
@@ -283,18 +319,6 @@ def get_company_summary():
             flush=True
         )
 
-        # ----------------------------------------------------
-        # Summary Detail
-        # ----------------------------------------------------
-
-        summary = result.get(
-            "summaryDetail",
-            {}
-        )
-
-        if not isinstance(summary, dict):
-            summary = {}
-
         print(
             f"أعلى 52 أسبوع: "
             f"{format_number(summary.get('fiftyTwoWeekHigh'))}",
@@ -319,18 +343,6 @@ def get_company_summary():
             flush=True
         )
 
-        # ----------------------------------------------------
-        # Key Statistics
-        # ----------------------------------------------------
-
-        stats = result.get(
-            "defaultKeyStatistics",
-            {}
-        )
-
-        if not isinstance(stats, dict):
-            stats = {}
-
         print(
             f"EPS: "
             f"{format_number(stats.get('trailingEps'))}",
@@ -349,20 +361,8 @@ def get_company_summary():
             flush=True
         )
 
-        # ----------------------------------------------------
-        # Financial Data
-        # ----------------------------------------------------
-
-        financial = result.get(
-            "financialData",
-            {}
-        )
-
-        if not isinstance(financial, dict):
-            financial = {}
-
         print(
-            f"الإيرادات: "
+            f"الإيرادات TTM: "
             f"{format_number(financial.get('totalRevenue'))}",
             flush=True
         )
@@ -400,20 +400,20 @@ def get_company_summary():
     except Exception as e:
 
         print(
-            f"🔴 خطأ في البيانات الأساسية: "
+            f"🔴 خطأ البيانات الأساسية: "
             f"{type(e).__name__}: {e}",
             flush=True
         )
 
 
 # ============================================================
-# قائمة الدخل
+# قائمة الدخل السنوية
 # ============================================================
 
 def get_income_statement():
 
     print_section(
-        "📊 قائمة الدخل"
+        "📊 قائمة الدخل السنوية"
     )
 
     try:
@@ -426,8 +426,8 @@ def get_income_statement():
             "annualPretaxIncome",
             "annualTaxProvision",
             "annualNetIncome",
-            "annualDilutedEPS",
-            "annualBasicEPS"
+            "annualBasicEPS",
+            "annualDilutedEPS"
         ]
 
         endpoint = (
@@ -439,9 +439,7 @@ def get_income_statement():
             f"&period2=1893456000"
         )
 
-        data = yahoo_request(
-            endpoint
-        )
+        data = yahoo_request(endpoint)
 
         timeseries = data.get(
             "timeseries",
@@ -454,10 +452,9 @@ def get_income_statement():
         ):
 
             print(
-                "⚠️ بنية timeseries غير متوقعة",
+                "⚠️ timeseries غير متوقعة",
                 flush=True
             )
-
             return
 
         result = timeseries.get(
@@ -479,29 +476,29 @@ def get_income_statement():
 
 
 # ============================================================
-# الميزانية العمومية
+# الميزانية السنوية
 # ============================================================
 
 def get_balance_sheet():
 
     print_section(
-        "🏦 الميزانية العمومية"
+        "🏦 الميزانية العمومية السنوية"
     )
 
     try:
 
         types = [
             "annualTotalAssets",
-            "annualTotalLiabilitiesNetMinorityInterest",
-            "annualStockholdersEquity",
-            "annualCashCashEquivalentsAndShortTermInvestments",
-            "annualInventory",
-            "annualAccountsReceivable",
             "annualCurrentAssets",
+            "annualCashCashEquivalentsAndShortTermInvestments",
+            "annualAccountsReceivable",
+            "annualInventory",
+            "annualTotalLiabilitiesNetMinorityInterest",
             "annualCurrentLiabilities",
             "annualTotalDebt",
-            "annualLongTermDebt",
             "annualShortTermDebt",
+            "annualLongTermDebt",
+            "annualStockholdersEquity",
             "annualRetainedEarnings"
         ]
 
@@ -514,9 +511,7 @@ def get_balance_sheet():
             f"&period2=1893456000"
         )
 
-        data = yahoo_request(
-            endpoint
-        )
+        data = yahoo_request(endpoint)
 
         timeseries = data.get(
             "timeseries",
@@ -527,12 +522,10 @@ def get_balance_sheet():
             timeseries,
             dict
         ):
-
             print(
-                "⚠️ بنية timeseries غير متوقعة",
+                "⚠️ timeseries غير متوقعة",
                 flush=True
             )
-
             return
 
         result = timeseries.get(
@@ -554,13 +547,13 @@ def get_balance_sheet():
 
 
 # ============================================================
-# التدفقات النقدية
+# التدفقات النقدية السنوية
 # ============================================================
 
 def get_cash_flow():
 
     print_section(
-        "💵 التدفقات النقدية"
+        "💵 التدفقات النقدية السنوية"
     )
 
     try:
@@ -582,9 +575,7 @@ def get_cash_flow():
             f"&period2=1893456000"
         )
 
-        data = yahoo_request(
-            endpoint
-        )
+        data = yahoo_request(endpoint)
 
         timeseries = data.get(
             "timeseries",
@@ -595,12 +586,10 @@ def get_cash_flow():
             timeseries,
             dict
         ):
-
             print(
-                "⚠️ بنية timeseries غير متوقعة",
+                "⚠️ timeseries غير متوقعة",
                 flush=True
             )
-
             return
 
         result = timeseries.get(
@@ -622,7 +611,7 @@ def get_cash_flow():
 
 
 # ============================================================
-# تشغيل الاختبار
+# التشغيل
 # ============================================================
 
 def run_financial_test():
@@ -634,7 +623,7 @@ def run_financial_test():
     )
 
     print(
-        "\n\n" + "#" * 75,
+        "\n\n" + "#" * 80,
         flush=True
     )
 
@@ -650,29 +639,23 @@ def run_financial_test():
     )
 
     print(
-        f"📌 السهم: {TICKER_SYMBOL}",
+        f"📌 السهم: "
+        f"{TICKER_SYMBOL}",
         flush=True
     )
 
     print(
-        "#" * 75,
+        "#" * 80,
         flush=True
     )
 
-    # 1
     get_company_summary()
-
-    # 2
     get_income_statement()
-
-    # 3
     get_balance_sheet()
-
-    # 4
     get_cash_flow()
 
     print(
-        "\n" + "#" * 75,
+        "\n" + "#" * 80,
         flush=True
     )
 
@@ -682,7 +665,7 @@ def run_financial_test():
     )
 
     print(
-        "#" * 75 + "\n",
+        "#" * 80,
         flush=True
     )
 
