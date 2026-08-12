@@ -407,7 +407,35 @@ def home():
         "Saudi Stock Monitor is running. "
         "Stock: 2283.SR"
     )
+# ============================================================
+# اختبار البيانات المالية
+# ============================================================
 
+@app.route("/financial-test")
+def financial_test():
+
+    try:
+        from financial_data import run_financial_test
+
+        run_financial_test()
+
+        return (
+            "Financial data test completed successfully. "
+            "Check Render Logs."
+        )
+
+    except Exception as e:
+
+        print(
+            f"🔴 Financial test error: "
+            f"{type(e).__name__}: {e}",
+            flush=True
+        )
+
+        return (
+            f"Financial test error: "
+            f"{type(e).__name__}: {e}"
+        ), 500
 
 # ============================================================
 # جدولة الرصد
