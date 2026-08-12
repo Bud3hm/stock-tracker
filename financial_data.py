@@ -6,15 +6,42 @@ from supabase import create_client
 
 
 # ============================================================
-# الإعدادات
+# الإعدادات العامة
 # ============================================================
 
-TICKER_SYMBOL = "2283.SR"
-RIYADH_TZ = ZoneInfo("Asia/Riyadh")
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY")
-BASE_URL = "https://query1.finance.yahoo.com"
-supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+TICKER_SYMBOL = os.environ.get(
+    "TICKER_SYMBOL",
+    "2283.SR"
+)
+
+RIYADH_TZ = ZoneInfo(
+    "Asia/Riyadh"
+)
+
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL"
+)
+
+SUPABASE_SECRET_KEY = os.environ.get(
+    "SUPABASE_SECRET_KEY"
+)
+
+BASE_URL = (
+    "https://query1.finance.yahoo.com"
+)
+
+SOURCE_NAME = "yahoo"
+
+# بداية التاريخ: 2020-01-01
+FINANCIAL_PERIOD_START = 1577836800
+
+
+supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_SECRET_KEY
+)
+
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 "
@@ -24,6 +51,87 @@ HEADERS = {
         "Chrome/131.0 Safari/537.36"
     )
 }
+
+
+# ============================================================
+# أنواع البيانات المالية المطلوبة
+# سنوي + ربعي
+# ============================================================
+
+INCOME_STATEMENT_TYPES = [
+
+    # سنوي
+    "annualTotalRevenue",
+    "annualCostOfRevenue",
+    "annualGrossProfit",
+    "annualOperatingIncome",
+    "annualPretaxIncome",
+    "annualTaxProvision",
+    "annualNetIncome",
+    "annualBasicEPS",
+    "annualDilutedEPS",
+
+    # ربعي
+    "quarterlyTotalRevenue",
+    "quarterlyCostOfRevenue",
+    "quarterlyGrossProfit",
+    "quarterlyOperatingIncome",
+    "quarterlyPretaxIncome",
+    "quarterlyTaxProvision",
+    "quarterlyNetIncome",
+    "quarterlyBasicEPS",
+    "quarterlyDilutedEPS"
+]
+
+
+BALANCE_SHEET_TYPES = [
+
+    # سنوي
+    "annualTotalAssets",
+    "annualCurrentAssets",
+    "annualCashCashEquivalentsAndShortTermInvestments",
+    "annualAccountsReceivable",
+    "annualInventory",
+    "annualTotalLiabilitiesNetMinorityInterest",
+    "annualCurrentLiabilities",
+    "annualTotalDebt",
+    "annualShortTermDebt",
+    "annualLongTermDebt",
+    "annualStockholdersEquity",
+    "annualRetainedEarnings",
+
+    # ربعي
+    "quarterlyTotalAssets",
+    "quarterlyCurrentAssets",
+    "quarterlyCashCashEquivalentsAndShortTermInvestments",
+    "quarterlyAccountsReceivable",
+    "quarterlyInventory",
+    "quarterlyTotalLiabilitiesNetMinorityInterest",
+    "quarterlyCurrentLiabilities",
+    "quarterlyTotalDebt",
+    "quarterlyShortTermDebt",
+    "quarterlyLongTermDebt",
+    "quarterlyStockholdersEquity",
+    "quarterlyRetainedEarnings"
+]
+
+
+CASH_FLOW_TYPES = [
+
+    # سنوي
+    "annualOperatingCashFlow",
+    "annualInvestingCashFlow",
+    "annualFinancingCashFlow",
+    "annualCapitalExpenditure",
+    "annualFreeCashFlow",
+
+    # ربعي
+    "quarterlyOperatingCashFlow",
+    "quarterlyInvestingCashFlow",
+    "quarterlyFinancingCashFlow",
+    "quarterlyCapitalExpenditure",
+    "quarterlyFreeCashFlow"
+]
 
 
 # ============================================================
@@ -72,36 +180,67 @@ def safe_value(value):
 
 def extract_reported_value(record):
 
-    if not isinstance(record, dict):
+    if not isinstance(
+        record,
+        dict
+    ):
         return None
 
-    reported = record.get("reportedValue")
+    reported = record.get(
+        "reportedValue"
+    )
 
-    if isinstance(reported, dict):
+    if isinstance(
+        reported,
+        dict
+    ):
 
-        if reported.get("raw") is not None:
-            return reported.get("raw")
+        if reported.get(
+            "raw"
+        ) is not None:
 
-        if reported.get("fmt") is not None:
-            return reported.get("fmt")
+            return reported.get(
+                "raw"
+            )
+
+        if reported.get(
+            "fmt"
+        ) is not None:
+
+            return reported.get(
+                "fmt"
+            )
 
     return None
 
 
 def format_number(value):
 
-    value = safe_value(value)
+    value = safe_value(
+        value
+    )
 
     if value is None:
         return "غير متوفر"
 
-    if isinstance(value, (int, float)):
+    if isinstance(
+        value,
+        (int, float)
+    ):
 
         if abs(value) >= 1_000_000_000:
-            return f"{value / 1_000_000_000:,.3f} مليار"
+
+            return (
+                f"{value / 1_000_000_000:,.3f} "
+                f"مليار"
+            )
 
         if abs(value) >= 1_000_000:
-            return f"{value / 1_000_000:,.3f} مليون"
+
+            return (
+                f"{value / 1_000_000:,.3f} "
+                f"مليون"
+            )
 
         return f"{value:,.2f}"
 
@@ -110,18 +249,164 @@ def format_number(value):
 
 def print_section(title):
 
-    print("\n" + "=" * 80, flush=True)
-    print(title, flush=True)
-    print("=" * 80, flush=True)
+    print(
+        "\n" + "=" * 80,
+        flush=True
+    )
+
+    print(
+        title,
+        flush=True
+    )
+
+    print(
+        "=" * 80,
+        flush=True
+    )
 
 
 # ============================================================
-# طباعة بيانات Timeseries
+# جلب stock_id من Supabase
 # ============================================================
 
-def print_timeseries_result(result):
+def get_stock_id(symbol):
 
-    if not isinstance(result, list) or not result:
+    try:
+
+        response = (
+            supabase
+            .table("stocks")
+            .select("id")
+            .eq("symbol", symbol)
+            .limit(1)
+            .execute()
+        )
+
+        if response.data:
+
+            return response.data[0][
+                "id"
+            ]
+
+    except Exception as e:
+
+        print(
+            f"🔴 خطأ جلب stock_id "
+            f"من Supabase: {e}",
+            flush=True
+        )
+
+    return None
+
+
+# ============================================================
+# حفظ سجل مالي في Supabase
+# ============================================================
+
+def save_financial_record(
+    symbol,
+    metric,
+    period_end,
+    period_type,
+    value,
+    currency
+):
+
+    if value is None:
+        return
+
+    if not period_end:
+        return
+
+    try:
+
+        stock_id = get_stock_id(
+            symbol
+        )
+
+        if stock_id is None:
+
+            print(
+                f"⚠️ السهم {symbol} "
+                f"غير موجود في Supabase",
+                flush=True
+            )
+
+            return
+
+        row = {
+
+            "stock_id":
+                stock_id,
+
+            "metric":
+                metric,
+
+            "period_end":
+                period_end,
+
+            "period_type":
+                period_type,
+
+            "value":
+                value,
+
+            "currency":
+                currency or "SAR",
+
+            "source":
+                SOURCE_NAME
+        }
+
+        (
+            supabase
+            .table(
+                "financial_statements"
+            )
+            .upsert(
+                row,
+                on_conflict=(
+                    "stock_id,"
+                    "metric,"
+                    "period_end,"
+                    "period_type"
+                )
+            )
+            .execute()
+        )
+
+        print(
+            f"💾 تم حفظ "
+            f"{metric} | "
+            f"{period_end} | "
+            f"{period_type}",
+            flush=True
+        )
+
+    except Exception as e:
+
+        print(
+            f"🔴 خطأ حفظ البيانات "
+            f"في Supabase: {e}",
+            flush=True
+        )
+
+
+# ============================================================
+# معالجة وطباعة Timeseries
+# ============================================================
+
+def print_timeseries_result(
+    result
+):
+
+    if (
+        not isinstance(
+            result,
+            list
+        )
+        or not result
+    ):
 
         print(
             "⚠️ لا توجد بيانات",
@@ -132,33 +417,62 @@ def print_timeseries_result(result):
 
     for item in result:
 
-        if not isinstance(item, dict):
+        if not isinstance(
+            item,
+            dict
+        ):
             continue
 
-        meta = item.get("meta", {})
+        meta = item.get(
+            "meta",
+            {}
+        )
 
         symbol = TICKER_SYMBOL
 
-        if isinstance(meta, dict):
+        if isinstance(
+            meta,
+            dict
+        ):
 
-            meta_symbol = meta.get("symbol")
+            meta_symbol = meta.get(
+                "symbol"
+            )
 
-            if isinstance(meta_symbol, list) and meta_symbol:
+            if (
+                isinstance(
+                    meta_symbol,
+                    list
+                )
+                and meta_symbol
+            ):
+
                 symbol = meta_symbol[0]
 
-            elif isinstance(meta_symbol, str):
+            elif isinstance(
+                meta_symbol,
+                str
+            ):
+
                 symbol = meta_symbol
 
         for key, values in item.items():
 
-            if key in ("meta", "timestamp"):
+            if key in (
+                "meta",
+                "timestamp"
+            ):
                 continue
 
-            if not isinstance(values, list):
+            if not isinstance(
+                values,
+                list
+            ):
                 continue
 
             print(
-                "\n----------------------------------------------",
+                "\n"
+                "----------------------------------------------",
                 flush=True
             )
 
@@ -174,7 +488,10 @@ def print_timeseries_result(result):
 
             for record in values:
 
-                if not isinstance(record, dict):
+                if not isinstance(
+                    record,
+                    dict
+                ):
                     continue
 
                 date = record.get(
@@ -182,27 +499,35 @@ def print_timeseries_result(result):
                     "غير معروف"
                 )
 
-                period_type = record.get(
-                    "periodType",
-                    "غير معروف"
+                period_type = (
+                    record.get(
+                        "periodType"
+                    )
+                    or "غير معروف"
                 )
 
-                currency = record.get(
-                    "currencyCode",
-                    ""
+                currency = (
+                    record.get(
+                        "currencyCode"
+                    )
+                    or "SAR"
                 )
 
-                value = extract_reported_value(
-                    record
+                value = (
+                    extract_reported_value(
+                        record
+                    )
                 )
+
                 save_financial_record(
-                symbol=symbol,
-                metric=key,
-                period_end=date,
-                period_type=period_type,
-                value=value,
-               currency=currency
+                    symbol=symbol,
+                    metric=key,
+                    period_end=date,
+                    period_type=period_type,
+                    value=value,
+                    currency=currency
                 )
+
                 print(
                     f"{date} | "
                     f"{period_type} | "
@@ -211,81 +536,75 @@ def print_timeseries_result(result):
                     flush=True
                 )
 
-def get_stock_id(symbol):
 
-    try:
-        response = (
-            supabase
-            .table("stocks")
-            .select("id")
-            .eq("symbol", symbol)
-            .limit(1)
-            .execute()
-        )
+# ============================================================
+# دالة عامة لجلب Timeseries
+# ============================================================
 
-        if response.data:
-            return response.data[0]["id"]
-
-    except Exception as e:
-        print(
-            f"🔴 خطأ جلب stock_id من Supabase: {e}",
-            flush=True
-        )
-
-    return None
-
-
-def save_financial_record(
-    symbol,
-    metric,
-    period_end,
-    period_type,
-    value,
-    currency
+def get_financial_timeseries(
+    title,
+    types,
+    error_name
 ):
 
-    if value is None:
-        return
+    print_section(
+        title
+    )
 
     try:
 
-        stock_id = get_stock_id(symbol)
-
-        if stock_id is None:
-            print(
-                f"⚠️ السهم {symbol} غير موجود في Supabase",
-                flush=True
-            )
-            return
-
-        row = {
-            "stock_id": stock_id,
-            "metric": metric,
-            "period_end": period_end,
-            "period_type": period_type,
-            "value": value,
-            "currency": currency or "SAR",
-            "source": "yahoo"
-        }
-
-        (
-            supabase
-            .table("financial_statements")
-            .upsert(
-                row,
-                on_conflict="stock_id,metric,period_end,period_type"
-            )
-            .execute()
+        # تاريخ النهاية دائمًا تاريخ اليوم
+        period_end = int(
+            datetime.now().timestamp()
         )
 
-        print(
-            f"💾 تم حفظ {metric} | {period_end}",
-            flush=True
+        endpoint = (
+            f"/ws/fundamentals-timeseries/"
+            f"v1/finance/timeseries/"
+            f"{TICKER_SYMBOL}"
+            f"?symbol={TICKER_SYMBOL}"
+            f"&type={','.join(types)}"
+            f"&period1={FINANCIAL_PERIOD_START}"
+            f"&period2={period_end}"
+        )
+
+        data = yahoo_request(
+            endpoint
+        )
+
+        timeseries = data.get(
+            "timeseries",
+            {}
+        )
+
+        if not isinstance(
+            timeseries,
+            dict
+        ):
+
+            print(
+                "⚠️ timeseries "
+                "غير متوقعة",
+                flush=True
+            )
+
+            return
+
+        result = timeseries.get(
+            "result",
+            []
+        )
+
+        print_timeseries_result(
+            result
         )
 
     except Exception as e:
+
         print(
-            f"🔴 خطأ حفظ البيانات في Supabase: {e}",
+            f"🔴 خطأ {error_name}: "
+            f"{type(e).__name__}: "
+            f"{e}",
             flush=True
         )
 
@@ -303,7 +622,9 @@ def get_company_summary():
     try:
 
         data = yahoo_request(
-            f"/v10/finance/quoteSummary/"
+
+            f"/v10/finance/"
+            f"quoteSummary/"
             f"{TICKER_SYMBOL}"
             f"?modules="
             f"price,"
@@ -321,10 +642,13 @@ def get_company_summary():
             quote_summary,
             dict
         ):
+
             print(
-                "⚠️ بنية quoteSummary غير متوقعة",
+                "⚠️ بنية quoteSummary "
+                "غير متوقعة",
                 flush=True
             )
+
             return
 
         result = quote_summary.get(
@@ -334,7 +658,8 @@ def get_company_summary():
         if not result:
 
             print(
-                "⚠️ لم تصل بيانات الشركة الأساسية",
+                "⚠️ لم تصل بيانات "
+                "الشركة الأساسية",
                 flush=True
             )
 
@@ -342,7 +667,10 @@ def get_company_summary():
 
         result = result[0]
 
-        if not isinstance(result, dict):
+        if not isinstance(
+            result,
+            dict
+        ):
             return
 
         price = result.get(
@@ -350,7 +678,10 @@ def get_company_summary():
             {}
         )
 
-        if not isinstance(price, dict):
+        if not isinstance(
+            price,
+            dict
+        ):
             price = {}
 
         summary = result.get(
@@ -358,7 +689,10 @@ def get_company_summary():
             {}
         )
 
-        if not isinstance(summary, dict):
+        if not isinstance(
+            summary,
+            dict
+        ):
             summary = {}
 
         stats = result.get(
@@ -366,7 +700,10 @@ def get_company_summary():
             {}
         )
 
-        if not isinstance(stats, dict):
+        if not isinstance(
+            stats,
+            dict
+        ):
             stats = {}
 
         financial = result.get(
@@ -374,7 +711,10 @@ def get_company_summary():
             {}
         )
 
-        if not isinstance(financial, dict):
+        if not isinstance(
+            financial,
+            dict
+        ):
             financial = {}
 
         print(
@@ -489,213 +829,82 @@ def get_company_summary():
 
         print(
             f"🔴 خطأ البيانات الأساسية: "
-            f"{type(e).__name__}: {e}",
+            f"{type(e).__name__}: "
+            f"{e}",
             flush=True
         )
 
 
 # ============================================================
-# قائمة الدخل السنوية
+# قائمة الدخل
+# سنوي + ربعي
 # ============================================================
 
 def get_income_statement():
 
-    print_section(
-        "📊 قائمة الدخل السنوية"
+    get_financial_timeseries(
+
+        title=(
+            "📊 قائمة الدخل "
+            "السنوية + الربعية"
+        ),
+
+        types=(
+            INCOME_STATEMENT_TYPES
+        ),
+
+        error_name=(
+            "قائمة الدخل"
+        )
     )
-
-    try:
-
-        types = [
-            "annualTotalRevenue",
-            "annualCostOfRevenue",
-            "annualGrossProfit",
-            "annualOperatingIncome",
-            "annualPretaxIncome",
-            "annualTaxProvision",
-            "annualNetIncome",
-            "annualBasicEPS",
-            "annualDilutedEPS"
-        ]
-
-        endpoint = (
-            f"/ws/fundamentals-timeseries/v1/finance/"
-            f"timeseries/{TICKER_SYMBOL}"
-            f"?symbol={TICKER_SYMBOL}"
-            f"&type={','.join(types)}"
-            f"&period1=1577836800"
-            f"&period2=1893456000"
-        )
-
-        data = yahoo_request(endpoint)
-
-        timeseries = data.get(
-            "timeseries",
-            {}
-        )
-
-        if not isinstance(
-            timeseries,
-            dict
-        ):
-
-            print(
-                "⚠️ timeseries غير متوقعة",
-                flush=True
-            )
-            return
-
-        result = timeseries.get(
-            "result",
-            []
-        )
-
-        print_timeseries_result(
-            result
-        )
-
-    except Exception as e:
-
-        print(
-            f"🔴 خطأ قائمة الدخل: "
-            f"{type(e).__name__}: {e}",
-            flush=True
-        )
 
 
 # ============================================================
-# الميزانية السنوية
+# الميزانية
+# سنوي + ربعي
 # ============================================================
 
 def get_balance_sheet():
 
-    print_section(
-        "🏦 الميزانية العمومية السنوية"
+    get_financial_timeseries(
+
+        title=(
+            "🏦 الميزانية العمومية "
+            "السنوية + الربعية"
+        ),
+
+        types=(
+            BALANCE_SHEET_TYPES
+        ),
+
+        error_name=(
+            "الميزانية"
+        )
     )
-
-    try:
-
-        types = [
-            "annualTotalAssets",
-            "annualCurrentAssets",
-            "annualCashCashEquivalentsAndShortTermInvestments",
-            "annualAccountsReceivable",
-            "annualInventory",
-            "annualTotalLiabilitiesNetMinorityInterest",
-            "annualCurrentLiabilities",
-            "annualTotalDebt",
-            "annualShortTermDebt",
-            "annualLongTermDebt",
-            "annualStockholdersEquity",
-            "annualRetainedEarnings"
-        ]
-
-        endpoint = (
-            f"/ws/fundamentals-timeseries/v1/finance/"
-            f"timeseries/{TICKER_SYMBOL}"
-            f"?symbol={TICKER_SYMBOL}"
-            f"&type={','.join(types)}"
-            f"&period1=1577836800"
-            f"&period2=1893456000"
-        )
-
-        data = yahoo_request(endpoint)
-
-        timeseries = data.get(
-            "timeseries",
-            {}
-        )
-
-        if not isinstance(
-            timeseries,
-            dict
-        ):
-            print(
-                "⚠️ timeseries غير متوقعة",
-                flush=True
-            )
-            return
-
-        result = timeseries.get(
-            "result",
-            []
-        )
-
-        print_timeseries_result(
-            result
-        )
-
-    except Exception as e:
-
-        print(
-            f"🔴 خطأ الميزانية: "
-            f"{type(e).__name__}: {e}",
-            flush=True
-        )
 
 
 # ============================================================
-# التدفقات النقدية السنوية
+# التدفقات النقدية
+# سنوي + ربعي
 # ============================================================
 
 def get_cash_flow():
 
-    print_section(
-        "💵 التدفقات النقدية السنوية"
+    get_financial_timeseries(
+
+        title=(
+            "💵 التدفقات النقدية "
+            "السنوية + الربعية"
+        ),
+
+        types=(
+            CASH_FLOW_TYPES
+        ),
+
+        error_name=(
+            "التدفقات النقدية"
+        )
     )
-
-    try:
-
-        types = [
-            "annualOperatingCashFlow",
-            "annualInvestingCashFlow",
-            "annualFinancingCashFlow",
-            "annualCapitalExpenditure",
-            "annualFreeCashFlow"
-        ]
-
-        endpoint = (
-            f"/ws/fundamentals-timeseries/v1/finance/"
-            f"timeseries/{TICKER_SYMBOL}"
-            f"?symbol={TICKER_SYMBOL}"
-            f"&type={','.join(types)}"
-            f"&period1=1577836800"
-            f"&period2=1893456000"
-        )
-
-        data = yahoo_request(endpoint)
-
-        timeseries = data.get(
-            "timeseries",
-            {}
-        )
-
-        if not isinstance(
-            timeseries,
-            dict
-        ):
-            print(
-                "⚠️ timeseries غير متوقعة",
-                flush=True
-            )
-            return
-
-        result = timeseries.get(
-            "result",
-            []
-        )
-
-        print_timeseries_result(
-            result
-        )
-
-    except Exception as e:
-
-        print(
-            f"🔴 خطأ التدفقات النقدية: "
-            f"{type(e).__name__}: {e}",
-            flush=True
-        )
 
 
 # ============================================================
@@ -716,13 +925,15 @@ def run_financial_test():
     )
 
     print(
-        "🧪 اختبار حزمة البيانات المالية",
+        "🧪 اختبار حزمة "
+        "البيانات المالية",
         flush=True
     )
 
     print(
         f"🕐 وقت الاختبار: "
-        f"{now} بتوقيت الرياض",
+        f"{now} "
+        f"بتوقيت الرياض",
         flush=True
     )
 
@@ -733,13 +944,22 @@ def run_financial_test():
     )
 
     print(
+        "📊 الوضع: "
+        "سنوي + ربعي",
+        flush=True
+    )
+
+    print(
         "#" * 80,
         flush=True
     )
 
     get_company_summary()
+
     get_income_statement()
+
     get_balance_sheet()
+
     get_cash_flow()
 
     print(
@@ -748,7 +968,8 @@ def run_financial_test():
     )
 
     print(
-        "🟢 انتهى اختبار حزمة البيانات المالية",
+        "🟢 انتهى اختبار "
+        "حزمة البيانات المالية",
         flush=True
     )
 
