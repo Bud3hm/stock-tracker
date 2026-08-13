@@ -31,13 +31,13 @@ SUPABASE_URL = os.environ.get(
     "SUPABASE_URL"
 )
 
-SUPABASE_SECRET_KEY = os.environ.get(
-    "SUPABASE_SECRET_KEY"
+SUPABASE_KEY = os.environ.get(
+    "SUPABASE_KEY"
 )
 
 supabase = create_client(
     SUPABASE_URL,
-    SUPABASE_SECRET_KEY
+    SUPABASE_KEY
 )
 
 
@@ -72,7 +72,6 @@ def get_stock_id(symbol):
         )
 
         if response.data:
-
             return response.data[0]["id"]
 
     except Exception as e:
@@ -524,7 +523,7 @@ def analyze_market_snapshot():
         }
 
         # ====================================================
-        # الحفظ
+        # الحفظ في Supabase
         # ====================================================
 
         (
@@ -601,7 +600,7 @@ def home():
 
 # ============================================================
 # تشغيل Flask فقط
-# الجدولة أصبحت مسؤولية GitHub Actions
+# الجدولة مسؤولية GitHub Actions
 # ============================================================
 
 if __name__ == "__main__":
