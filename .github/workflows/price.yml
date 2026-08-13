@@ -1,10 +1,15 @@
-name: Test Price Data
+name: Price Data Pipeline
 
 on:
   workflow_dispatch:
 
+  schedule:
+    # كل 15 دقيقة تقريبًا أثناء ساعات السوق السعودي
+    # 07:00-12:00 UTC = 10:00-15:00 بتوقيت الرياض
+    - cron: "*/15 7-12 * * 0-4"
+
 jobs:
-  test-price:
+  price-pipeline:
     runs-on: ubuntu-latest
 
     steps:
@@ -14,14 +19,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Run price data
         env:
-                  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-                  SUPABASE_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python -c "import price_data; price_data.analyze_market_snapshot()"
-       
