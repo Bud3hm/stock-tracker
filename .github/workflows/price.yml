@@ -4,9 +4,11 @@ on:
   workflow_dispatch:
 
   schedule:
-    # كل 15 دقيقة تقريبًا أثناء ساعات السوق السعودي
-    # 07:00-12:00 UTC = 10:00-15:00 بتوقيت الرياض
-    - cron: "*/15 7-12 * * 0-4"
+    # 10:00 إلى 14:45 بتوقيت الرياض
+    - cron: "*/15 7-11 * * 0-4"
+
+    # رصد أخير الساعة 15:00 بتوقيت الرياض
+    - cron: "0 12 * * 0-4"
 
 jobs:
   price-pipeline:
@@ -28,4 +30,5 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          TICKER_SYMBOL: "2283.SR"
         run: python -c "import price_data; price_data.analyze_market_snapshot()"
