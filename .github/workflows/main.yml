@@ -1,10 +1,15 @@
-name: Test Financial Data
+name: Financial Data Pipeline
 
 on:
   workflow_dispatch:
 
+  schedule:
+    # يوميًا الساعة 9:30 صباحًا بتوقيت الرياض
+    # GitHub يستخدم UTC، لذلك 06:30 UTC = 09:30 الرياض
+    - cron: "30 6 * * *"
+
 jobs:
-  test-financial:
+  financial-pipeline:
     runs-on: ubuntu-latest
 
     steps:
@@ -14,13 +19,20 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install requirements
         run: pip install -r requirements.txt
 
-      - name: Run financial data
+      - name: Fetch financial data
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python financial_data.py
+
+      - name: Calculate financial metrics
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          STOCK_ID: "1"
+        run: python financial_metrics.py
