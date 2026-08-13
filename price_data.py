@@ -1,40 +1,92 @@
 import os
 import requests
-from supabase import create_client
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from threading import Thread
 
 from flask import Flask
-from apscheduler.schedulers.background import BackgroundScheduler
+from supabase import create_client
 
+
+# ============================================================
+# إعداد التطبيق
+# ============================================================
 
 app = Flask(__name__)
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+
+# ============================================================
+# الإعدادات العامة
+# ============================================================
+
+TICKER_SYMBOL = os.environ.get(
+    "TICKER_SYMBOL",
+    "2283.SR"
+)
+
+RIYADH_TZ = ZoneInfo(
+    "Asia/Riyadh"
+)
+
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL"
+)
+
+SUPABASE_SECRET_KEY = os.environ.get(
+    "SUPABASE_SECRET_KEY"
+)
 
 supabase = create_client(
     SUPABASE_URL,
-    SUPABASE_KEY
-)
-# ============================================================
-# إعدادات السهم
-# ============================================================
-
-TICKER_SYMBOL = "2283.SR"
-
-# تثبيت التوقيت على توقيت الرياض
-RIYADH_TZ = ZoneInfo("Asia/Riyadh")
-
-# Yahoo Chart API
-YAHOO_URL = (
-    f"https://query1.finance.yahoo.com/v8/finance/chart/"
-    f"{TICKER_SYMBOL}"
+    SUPABASE_SECRET_KEY
 )
 
 
 # ============================================================
-# جلب البيانات من Yahoo
+# رابط Yahoo
+# ============================================================
+
+def get_yahoo_url():
+
+    return (
+        "https://query1.finance.yahoo.com/"
+        "v8/finance/chart/"
+        f"{TICKER_SYMBOL}"
+    )
+
+
+# ============================================================
+# جلب stock_id من Supabase
+# ============================================================
+
+def get_stock_id(symbol):
+
+    try:
+
+        response = (
+            supabase
+            .table("stocks")
+            .select("id")
+            .eq("symbol", symbol)
+            .limit(1)
+            .execute()
+        )
+
+        if response.data:
+
+            return response.data[0]["id"]
+
+    except Exception as e:
+
+        print(
+            f"🔴 خطأ جلب stock_id: {e}",
+            flush=True
+        )
+
+    return None
+
+
+# ============================================================
+# جلب بيانات السعر من Yahoo
 # ============================================================
 
 def get_stock_data():
@@ -61,14 +113,15 @@ def get_stock_data():
     }
 
     response = requests.get(
-        YAHOO_URL,
+        get_yahoo_url(),
         params=params,
         headers=headers,
         timeout=10
     )
 
     print(
-        f"🟢 Yahoo HTTP Status: {response.status_code}",
+        f"🟢 Yahoo HTTP Status: "
+        f"{response.status_code}",
         flush=True
     )
 
@@ -78,12 +131,28 @@ def get_stock_data():
 
 
 # ============================================================
-# تحليل وعرض بيانات الرصد
+# آخر قيمة صحيحة
+# ============================================================
+
+def last_valid(values):
+
+    if not values:
+        return None
+
+    for value in reversed(values):
+
+        if value is not None:
+            return value
+
+    return None
+
+
+# ============================================================
+# تحليل وحفظ رصد واحد
 # ============================================================
 
 def analyze_market_snapshot():
 
-    # الوقت الحالي بتوقيت الرياض
     now_ksa = datetime.now(
         RIYADH_TZ
     )
@@ -92,29 +161,26 @@ def analyze_market_snapshot():
         "%Y-%m-%d %H:%M:%S"
     )
 
-    print("\n" + "=" * 75, flush=True)
-
     print(
-        "📊 رصد سهم المطاحن الأولى - 2283",
+        "\n" + "=" * 75,
         flush=True
     )
 
     print(
-        f"🕐 وقت الرصد - الرياض: {now_text}",
+        f"📊 رصد السهم - {TICKER_SYMBOL}",
         flush=True
     )
 
     print(
-        "⏱️ الرصد المجدول: كل 15 دقيقة",
+        f"🕐 وقت الرصد - الرياض: "
+        f"{now_text}",
         flush=True
     )
 
     print(
-        f"🔎 الرمز: {TICKER_SYMBOL}",
+        "=" * 75,
         flush=True
     )
-
-    print("=" * 75, flush=True)
 
     try:
 
@@ -136,11 +202,6 @@ def analyze_market_snapshot():
                 flush=True
             )
 
-            print(
-                data,
-                flush=True
-            )
-
             return
 
         result = result[0]
@@ -150,12 +211,9 @@ def analyze_market_snapshot():
             {}
         )
 
-        # ====================================================
-        # البيانات الحالية
-        # ====================================================
-
-        symbol = meta.get(
-            "symbol"
+        symbol = (
+            meta.get("symbol")
+            or TICKER_SYMBOL
         )
 
         current_price = meta.get(
@@ -186,9 +244,15 @@ def analyze_market_snapshot():
             "instrumentType"
         )
 
-        print("\n📌 البيانات اللحظية", flush=True)
+        print(
+            "\n📌 البيانات اللحظية",
+            flush=True
+        )
 
-        print("-" * 60, flush=True)
+        print(
+            "-" * 60,
+            flush=True
+        )
 
         print(
             f"🔹 الرمز: {symbol}",
@@ -196,18 +260,20 @@ def analyze_market_snapshot():
         )
 
         print(
-            f"💰 السعر الحالي: {current_price} ريال",
+            f"💰 السعر الحالي: "
+            f"{current_price}",
             flush=True
         )
 
         print(
-            f"📊 الإغلاق السابق: {previous_close} ريال",
+            f"📊 الإغلاق السابق: "
+            f"{previous_close}",
             flush=True
         )
 
         print(
             f"📊 إغلاق الرسم السابق: "
-            f"{chart_previous_close} ريال",
+            f"{chart_previous_close}",
             flush=True
         )
 
@@ -222,12 +288,14 @@ def analyze_market_snapshot():
         )
 
         print(
-            f"📡 حالة السوق: {market_state}",
+            f"📡 حالة السوق: "
+            f"{market_state}",
             flush=True
         )
 
         print(
-            f"📋 نوع الأداة: {instrument_type}",
+            f"📋 نوع الأداة: "
+            f"{instrument_type}",
             flush=True
         )
 
@@ -235,28 +303,44 @@ def analyze_market_snapshot():
         # حساب التغير
         # ====================================================
 
+        change_value = None
+        change_percent = None
+
         if (
-            isinstance(current_price, (int, float))
-            and isinstance(previous_close, (int, float))
+            isinstance(
+                current_price,
+                (int, float)
+            )
+            and isinstance(
+                previous_close,
+                (int, float)
+            )
             and previous_close != 0
         ):
 
-            change = (
-                current_price -
-                previous_close
+            change_value = (
+                current_price
+                - previous_close
             )
 
             change_percent = (
-                change /
-                previous_close
+                change_value
+                / previous_close
             ) * 100
 
-            print("\n📈 التغير", flush=True)
-
-            print("-" * 60, flush=True)
+            print(
+                "\n📈 التغير",
+                flush=True
+            )
 
             print(
-                f"💵 التغير: {change:+.2f} ريال",
+                "-" * 60,
+                flush=True
+            )
+
+            print(
+                f"💵 التغير: "
+                f"{change_value:+.2f}",
                 flush=True
             )
 
@@ -267,8 +351,14 @@ def analyze_market_snapshot():
             )
 
         # ====================================================
-        # آخر بيانات دقيقة
+        # بيانات آخر دقيقة
         # ====================================================
+
+        last_open = None
+        last_high = None
+        last_low = None
+        last_close = None
+        last_volume = None
 
         timestamps = result.get(
             "timestamp",
@@ -289,48 +379,43 @@ def analyze_market_snapshot():
 
             quote = quotes[0]
 
-            opens = quote.get(
-                "open",
-                []
+            last_open = last_valid(
+                quote.get(
+                    "open",
+                    []
+                )
             )
 
-            highs = quote.get(
-                "high",
-                []
+            last_high = last_valid(
+                quote.get(
+                    "high",
+                    []
+                )
             )
 
-            lows = quote.get(
-                "low",
-                []
+            last_low = last_valid(
+                quote.get(
+                    "low",
+                    []
+                )
             )
 
-            closes = quote.get(
-                "close",
-                []
+            last_close = last_valid(
+                quote.get(
+                    "close",
+                    []
+                )
             )
 
-            volumes = quote.get(
-                "volume",
-                []
+            last_volume = last_valid(
+                quote.get(
+                    "volume",
+                    []
+                )
             )
-
-            def last_valid(values):
-
-                for value in reversed(values):
-
-                    if value is not None:
-                        return value
-
-                return None
-
-            last_open = last_valid(opens)
-            last_high = last_valid(highs)
-            last_low = last_valid(lows)
-            last_close = last_valid(closes)
-            last_volume = last_valid(volumes)
 
             print(
-                "\n🕯️ آخر بيانات دقيقة متاحة من Yahoo",
+                "\n🕯️ آخر بيانات دقيقة متاحة",
                 flush=True
             )
 
@@ -360,77 +445,131 @@ def analyze_market_snapshot():
             )
 
             print(
-                f"حجم التداول: {last_volume}",
+                f"حجم التداول: "
+                f"{last_volume}",
                 flush=True
             )
 
-        print("\n" + "=" * 75, flush=True)
-        stock_id = int(os.environ.get("STOCK_ID", "1"))
+        # ====================================================
+        # التأكد من وجود السهم
+        # ====================================================
 
-        safe_change = None
-        safe_change_percent = None
+        stock_id = get_stock_id(
+            symbol
+        )
 
-        if (
-            isinstance(current_price, (int, float))
-            and isinstance(previous_close, (int, float))
-            and previous_close != 0
-        ):
-            safe_change = current_price - previous_close
-            safe_change_percent = (
-                safe_change / previous_close
-            ) * 100
+        if stock_id is None:
+
+            print(
+                f"🔴 السهم {symbol} "
+                f"غير موجود في جدول stocks",
+                flush=True
+            )
+
+            return
+
+        if current_price is None:
+
+            print(
+                "🔴 لا يوجد سعر صالح للحفظ",
+                flush=True
+            )
+
+            return
+
+        # ====================================================
+        # تجهيز السجل
+        # ====================================================
 
         price_record = {
-            "stock_id": stock_id,
-            "captured_at": now_ksa.isoformat(),
-            "price": current_price,
-            "previous_close": previous_close,
-            "change_value": safe_change,
-            "change_percent": safe_change_percent,
-            "open_price": last_open,
-            "high_price": last_high,
-            "low_price": last_low,
-            "close_price": last_close,
-            "volume": last_volume,
-            "market_state": market_state,
-            "source": "Yahoo"
+
+            "stock_id":
+                stock_id,
+
+            "captured_at":
+                now_ksa.isoformat(),
+
+            "price":
+                current_price,
+
+            "previous_close":
+                previous_close,
+
+            "change_value":
+                change_value,
+
+            "change_percent":
+                change_percent,
+
+            "open_price":
+                last_open,
+
+            "high_price":
+                last_high,
+
+            "low_price":
+                last_low,
+
+            "close_price":
+                last_close,
+
+            "volume":
+                last_volume,
+
+            "market_state":
+                market_state,
+
+            "source":
+                "yahoo"
         }
 
-        supabase.table(
-            "price_history"
-        ).insert(
-            price_record
-        ).execute()
+        # ====================================================
+        # الحفظ
+        # ====================================================
+
+        (
+            supabase
+            .table("price_history")
+            .insert(price_record)
+            .execute()
+        )
 
         print(
             "💾 تم حفظ الرصد في Supabase",
             flush=True
         )
+
         print(
-            "🟢 تم جلب البيانات بنجاح",
+            "🟢 انتهى الرصد بنجاح",
             flush=True
         )
 
         print(
-            f"🕐 انتهاء الرصد: "
-            f"{datetime.now(RIYADH_TZ).strftime('%H:%M:%S')} "
-            f"بتوقيت الرياض",
+            f"🕐 وقت الانتهاء: "
+            f"{datetime.now(RIYADH_TZ).strftime('%H:%M:%S')}",
             flush=True
         )
 
-        print("=" * 75, flush=True)
+        print(
+            "=" * 75,
+            flush=True
+        )
 
     except Exception as e:
 
-        print("\n" + "=" * 75, flush=True)
-
         print(
-            "🔴 حدث خطأ أثناء جلب البيانات",
+            "\n" + "=" * 75,
             flush=True
         )
 
         print(
-            f"نوع الخطأ: {type(e).__name__}",
+            "🔴 حدث خطأ أثناء الرصد",
+            flush=True
+        )
+
+        print(
+            f"نوع الخطأ: "
+            f"{type(e).__name__}",
             flush=True
         )
 
@@ -439,11 +578,16 @@ def analyze_market_snapshot():
             flush=True
         )
 
-        print("=" * 75, flush=True)
+        print(
+            "=" * 75,
+            flush=True
+        )
+
+        raise
 
 
 # ============================================================
-# الصفحة الرئيسية
+# صفحة Render الرئيسية
 # ============================================================
 
 @app.route("/")
@@ -451,135 +595,16 @@ def home():
 
     return (
         "Saudi Stock Monitor is running. "
-        "Stock: 2283.SR"
+        f"Stock: {TICKER_SYMBOL}"
     )
-# ============================================================
-# اختبار البيانات المالية
-# ============================================================
-
-@app.route("/financial-test")
-def financial_test():
-
-    try:
-        from financial_data import run_financial_test
-
-        run_financial_test()
-
-        return (
-            "Financial data test completed successfully. "
-            "Check Render Logs."
-        )
-
-    except Exception as e:
-
-        print(
-            f"🔴 Financial test error: "
-            f"{type(e).__name__}: {e}",
-            flush=True
-        )
-
-        return (
-            f"Financial test error: "
-            f"{type(e).__name__}: {e}"
-        ), 500
-
-# ============================================================
-# جدولة الرصد
-# ============================================================
-
-def start_scheduler():
-
-    scheduler = BackgroundScheduler(
-        timezone=RIYADH_TZ
-    )
-
-    # --------------------------------------------------------
-    # من 10:00 إلى 14:45
-    # كل 15 دقيقة
-    #
-    # الأحد إلى الخميس
-    # --------------------------------------------------------
-
-    scheduler.add_job(
-        analyze_market_snapshot,
-        "cron",
-        day_of_week="sun,mon,tue,wed,thu",
-        hour="10-14",
-        minute="0,15,30,45",
-        second=0,
-        max_instances=1,
-        coalesce=True
-    )
-
-    # --------------------------------------------------------
-    # الرصد الأخير عند 15:00
-    # --------------------------------------------------------
-
-    scheduler.add_job(
-        analyze_market_snapshot,
-        "cron",
-        day_of_week="sun,mon,tue,wed,thu",
-        hour=15,
-        minute=0,
-        second=0,
-        max_instances=1,
-        coalesce=True
-    )
-
-    scheduler.start()
-
-    print("\n" + "=" * 75, flush=True)
-
-    print(
-        "🟢 تم تشغيل نظام مراقبة السهم",
-        flush=True
-    )
-
-    print(
-        "📌 السهم: المطاحن الأولى - 2283",
-        flush=True
-    )
-
-    print(
-        "📅 أيام الرصد: الأحد إلى الخميس",
-        flush=True
-    )
-
-    print(
-        "🕙 البداية: 10:00 صباحًا",
-        flush=True
-    )
-
-    print(
-        "🕒 النهاية: 15:00 مساءً",
-        flush=True
-    )
-
-    print(
-        "⏱️ الفاصل: كل 15 دقيقة",
-        flush=True
-    )
-
-    print(
-        "🇸🇦 جميع المواعيد محسوبة بتوقيت Asia/Riyadh",
-        flush=True
-    )
-
-    print("=" * 75 + "\n", flush=True)
 
 
 # ============================================================
-# تشغيل البرنامج
+# تشغيل Flask فقط
+# الجدولة أصبحت مسؤولية GitHub Actions
 # ============================================================
 
 if __name__ == "__main__":
-
-    scheduler_thread = Thread(
-        target=start_scheduler,
-        daemon=True
-    )
-
-    scheduler_thread.start()
 
     port = int(
         os.environ.get(
@@ -589,7 +614,8 @@ if __name__ == "__main__":
     )
 
     print(
-        f"🟢 تشغيل Flask على المنفذ {port}",
+        f"🟢 تشغيل Flask على المنفذ "
+        f"{port}",
         flush=True
     )
 
