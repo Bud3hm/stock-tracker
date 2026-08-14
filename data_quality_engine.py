@@ -1,16 +1,18 @@
 import os
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 from supabase import create_client
 
 
 # ============================================================
-# DATA QUALITY ENGINE v1
+# DATA QUALITY ENGINE v2
 #
 # الهدف:
 # 1) قياس حداثة البيانات
-# 2) قياس اكتمال المؤشرات
-# 3) قياس جودة التاريخ المتاح
-# 4) إخراج Data Quality Score موحد 0-100
+# 2) قياس التأخر عن أحدث فترة مالية متاحة في السوق
+# 3) قياس اكتمال المؤشرات
+# 4) قياس جودة التاريخ المتاح
+# 5) قياس استمرارية الأرباع
+# 6) إخراج Data Quality Score موحد 0-100
 # ============================================================
 
 
@@ -30,7 +32,10 @@ supabase = create_client(
 FRESHNESS_METRIC = "data_freshness_score"
 COVERAGE_METRIC = "data_coverage_score"
 HISTORY_METRIC = "data_history_score"
+CONTINUITY_METRIC = "data_continuity_score"
 QUALITY_METRIC = "data_quality_score"
+MARKET_LAG_METRIC = "data_market_lag_days"
+
 
 MODEL_PREFIX = {
     "standard": "q_",
@@ -282,9 +287,12 @@ def get_valid_periods(
         ]
 
         if any(
-            metric_name.startswith(prefix)
+            metric_name.startswith(
+                prefix
+            )
             for metric_name in metrics
         ):
+
             valid.append(
                 period_end
             )
@@ -293,11 +301,113 @@ def get_valid_periods(
 
 
 # ============================================================
+# تجهيز بيانات الشركات مرة واحدة
+# ============================================================
+
+def prepare_stock_data(stocks):
+
+    prepared = {}
+
+    for stock in stocks:
+
+        stock_id = stock[
+            "id"
+        ]
+
+        analysis_model = (
+            stock.get(
+                "analysis_model"
+            )
+            or "standard"
+        )
+
+        rows = get_metrics(
+            stock_id
+        )
+
+        periods = organize_metrics(
+            rows
+        )
+
+        valid_periods = get_valid_periods(
+            periods,
+            analysis_model
+        )
+
+        prepared[
+            stock_id
+        ] = {
+            "periods":
+                periods,
+
+            "valid_periods":
+                valid_periods
+        }
+
+    return prepared
+
+
+# ============================================================
+# أحدث فترة مالية بين الشركات
+# ============================================================
+
+def get_market_latest_period(
+    stocks,
+    prepared_data
+):
+
+    latest_period = None
+    latest_date = None
+
+    for stock in stocks:
+
+        stock_data = prepared_data.get(
+            stock["id"],
+            {}
+        )
+
+        valid_periods = stock_data.get(
+            "valid_periods",
+            []
+        )
+
+        if not valid_periods:
+            continue
+
+        candidate_period = (
+            valid_periods[-1]
+        )
+
+        try:
+
+            candidate_date = (
+                datetime.strptime(
+                    candidate_period,
+                    "%Y-%m-%d"
+                ).date()
+            )
+
+        except Exception:
+            continue
+
+        if (
+            latest_date is None
+            or candidate_date > latest_date
+        ):
+
+            latest_date = candidate_date
+            latest_period = candidate_period
+
+    return latest_period
+
+
+# ============================================================
 # Freshness
 # ============================================================
 
 def calculate_freshness_score(
-    latest_period
+    latest_period,
+    market_latest_period=None
 ):
 
     try:
@@ -308,41 +418,106 @@ def calculate_freshness_score(
         ).date()
 
     except Exception:
-        return 0.0, None
 
-    today = date.today()
+        return (
+            0.0,
+            None,
+            None
+        )
+
+    today = datetime.now(
+        timezone.utc
+    ).date()
 
     age_days = (
         today - latest_date
     ).days
 
-    # نحمي من الفترات المستقبلية
+    # حماية من تاريخ مستقبلي
     if age_days < 0:
         age_days = 0
 
-    # ربع حديث جدًا
-    if age_days <= 120:
-        score = 100
+    # --------------------------------------------------------
+    # Freshness الأساسي
+    # صار أكثر صرامة من v1
+    # --------------------------------------------------------
 
-    elif age_days <= 150:
-        score = 90
+    if age_days <= 75:
 
-    elif age_days <= 180:
-        score = 75
+        score = 100.0
 
-    elif age_days <= 210:
-        score = 60
+    elif age_days <= 105:
 
-    elif age_days <= 270:
-        score = 40
+        score = 92.0
 
-    elif age_days <= 365:
-        score = 20
+    elif age_days <= 135:
+
+        score = 80.0
+
+    elif age_days <= 165:
+
+        score = 65.0
+
+    elif age_days <= 195:
+
+        score = 50.0
+
+    elif age_days <= 240:
+
+        score = 35.0
+
+    elif age_days <= 300:
+
+        score = 20.0
 
     else:
-        score = 5
 
-    return float(score), age_days
+        score = 5.0
+
+    # --------------------------------------------------------
+    # التأخر عن أحدث فترة مالية بالسوق
+    # --------------------------------------------------------
+
+    market_lag_days = None
+
+    if market_latest_period:
+
+        try:
+
+            market_latest_date = (
+                datetime.strptime(
+                    market_latest_period,
+                    "%Y-%m-%d"
+                ).date()
+            )
+
+            market_lag_days = (
+                market_latest_date
+                - latest_date
+            ).days
+
+            if market_lag_days < 0:
+                market_lag_days = 0
+
+            # متأخر تقريبًا ربع كامل
+            if market_lag_days >= 75:
+
+                score -= 20.0
+
+            # متأخر تقريبًا ربعين أو أكثر
+            if market_lag_days >= 165:
+
+                score -= 20.0
+
+        except Exception:
+
+            market_lag_days = None
+
+    return (
+        clamp(score),
+        age_days,
+        market_lag_days
+    )
 
 
 # ============================================================
@@ -360,7 +535,13 @@ def calculate_coverage_score(
     )
 
     if not required:
-        return 0.0, 0, 0, []
+
+        return (
+            0.0,
+            0,
+            0,
+            []
+        )
 
     available = 0
     missing = []
@@ -383,7 +564,9 @@ def calculate_coverage_score(
                 metric_name
             )
 
-    total = len(required)
+    total = len(
+        required
+    )
 
     score = (
         available
@@ -411,27 +594,36 @@ def calculate_history_score(
     )
 
     if count >= 8:
+
         score = 100
 
     elif count >= 6:
+
         score = 90
 
     elif count >= 4:
+
         score = 80
 
     elif count >= 3:
+
         score = 65
 
     elif count >= 2:
+
         score = 45
 
     elif count == 1:
+
         score = 20
 
     else:
+
         score = 0
 
-    return float(score)
+    return float(
+        score
+    )
 
 
 # ============================================================
@@ -442,7 +634,10 @@ def calculate_period_continuity_score(
     valid_periods
 ):
 
-    if len(valid_periods) < 2:
+    if len(
+        valid_periods
+    ) < 2:
+
         return 50.0
 
     dates = []
@@ -459,9 +654,13 @@ def calculate_period_continuity_score(
             )
 
         except Exception:
+
             continue
 
-    if len(dates) < 2:
+    if len(
+        dates
+    ) < 2:
+
         return 50.0
 
     good_gaps = 0
@@ -479,11 +678,13 @@ def calculate_period_continuity_score(
 
         total_gaps += 1
 
-        # الربع عادةً بين 80 و100 يوم تقريبًا
+        # الربع المالي الطبيعي تقريبًا
         if 75 <= gap <= 105:
+
             good_gaps += 1
 
     if total_gaps == 0:
+
         return 50.0
 
     return (
@@ -503,11 +704,24 @@ def calculate_quality_score(
     continuity
 ):
 
+    # الحداثة والاكتمال أهم عنصرين
     values = [
-        (freshness, 35),
-        (coverage, 35),
-        (history, 20),
-        (continuity, 10)
+        (
+            freshness,
+            35
+        ),
+        (
+            coverage,
+            35
+        ),
+        (
+            history,
+            20
+        ),
+        (
+            continuity,
+            10
+        )
     ]
 
     total = 0.0
@@ -530,6 +744,7 @@ def calculate_quality_score(
         weight_sum += weight
 
     if weight_sum == 0:
+
         return 0.0
 
     return clamp(
@@ -543,29 +758,66 @@ def calculate_quality_score(
 # ============================================================
 
 def classify_quality(
-    quality_score
+    quality_score,
+    freshness_score,
+    coverage_score
 ):
 
     quality_score = safe_number(
         quality_score
     )
 
+    freshness_score = safe_number(
+        freshness_score
+    )
+
+    coverage_score = safe_number(
+        coverage_score
+    )
+
     if quality_score is None:
+
         return "UNKNOWN"
 
+    # لا نسمح بتصنيف ممتاز إذا الحداثة أو التغطية ضعيفة
+    if (
+        freshness_score is not None
+        and freshness_score < 50
+    ):
+
+        if quality_score < 40:
+            return "POOR"
+
+        return "WEAK"
+
+    if (
+        coverage_score is not None
+        and coverage_score < 50
+    ):
+
+        if quality_score < 40:
+            return "POOR"
+
+        return "WEAK"
+
     if quality_score >= 90:
+
         return "EXCELLENT"
 
     if quality_score >= 80:
+
         return "VERY_GOOD"
 
     if quality_score >= 70:
+
         return "GOOD"
 
     if quality_score >= 55:
+
         return "ACCEPTABLE"
 
     if quality_score >= 40:
+
         return "WEAK"
 
     return "POOR"
@@ -581,7 +833,9 @@ def save_quality_metrics(
     freshness,
     coverage,
     history,
-    quality
+    continuity,
+    quality,
+    market_lag_days
 ):
 
     calculated_at = datetime.now(
@@ -591,6 +845,7 @@ def save_quality_metrics(
     records = []
 
     values = {
+
         FRESHNESS_METRIC:
             freshness,
 
@@ -600,8 +855,14 @@ def save_quality_metrics(
         HISTORY_METRIC:
             history,
 
+        CONTINUITY_METRIC:
+            continuity,
+
         QUALITY_METRIC:
-            quality
+            quality,
+
+        MARKET_LAG_METRIC:
+            market_lag_days
     }
 
     for metric_name, metric_value in (
@@ -615,24 +876,27 @@ def save_quality_metrics(
         if metric_value is None:
             continue
 
-        records.append({
-            "stock_id":
-                stock_id,
+        records.append(
+            {
+                "stock_id":
+                    stock_id,
 
-            "calculated_at":
-                calculated_at,
+                "calculated_at":
+                    calculated_at,
 
-            "metric_name":
-                metric_name,
+                "metric_name":
+                    metric_name,
 
-            "metric_value":
-                metric_value,
+                "metric_value":
+                    metric_value,
 
-            "period_end":
-                period_end
-        })
+                "period_end":
+                    period_end
+            }
+        )
 
     if not records:
+
         return 0
 
     (
@@ -651,14 +915,20 @@ def save_quality_metrics(
         .execute()
     )
 
-    return len(records)
+    return len(
+        records
+    )
 
 
 # ============================================================
 # تحليل شركة
 # ============================================================
 
-def analyze_stock(stock):
+def analyze_stock(
+    stock,
+    prepared_data,
+    market_latest_period
+):
 
     stock_id = stock[
         "id"
@@ -682,17 +952,19 @@ def analyze_stock(stock):
         or "standard"
     )
 
-    rows = get_metrics(
-        stock_id
+    stock_data = prepared_data.get(
+        stock_id,
+        {}
     )
 
-    periods = organize_metrics(
-        rows
+    periods = stock_data.get(
+        "periods",
+        {}
     )
 
-    valid_periods = get_valid_periods(
-        periods,
-        analysis_model
+    valid_periods = stock_data.get(
+        "valid_periods",
+        []
     )
 
     if not valid_periods:
@@ -719,10 +991,13 @@ def analyze_stock(stock):
         latest_period
     ]
 
-    freshness_score, age_days = (
-        calculate_freshness_score(
-            latest_period
-        )
+    (
+        freshness_score,
+        age_days,
+        market_lag_days
+    ) = calculate_freshness_score(
+        latest_period,
+        market_latest_period
     )
 
     (
@@ -758,7 +1033,9 @@ def analyze_stock(stock):
 
     quality_state = (
         classify_quality(
-            quality_score
+            quality_score,
+            freshness_score,
+            coverage_score
         )
     )
 
@@ -768,7 +1045,9 @@ def analyze_stock(stock):
         freshness_score,
         coverage_score,
         history_score,
-        quality_score
+        continuity_score,
+        quality_score,
+        market_lag_days
     )
 
     return {
@@ -787,8 +1066,14 @@ def analyze_stock(stock):
         "latest_period":
             latest_period,
 
+        "market_latest_period":
+            market_latest_period,
+
         "age_days":
             age_days,
+
+        "market_lag_days":
+            market_lag_days,
 
         "freshness":
             freshness_score,
@@ -853,8 +1138,20 @@ def print_result(result):
     )
 
     print(
+        f"🌍 Market Latest Period: "
+        f"{result['market_latest_period']}",
+        flush=True
+    )
+
+    print(
         f"🕒 Age Days: "
         f"{result['age_days']}",
+        flush=True
+    )
+
+    print(
+        f"⏳ Market Lag Days: "
+        f"{result['market_lag_days']}",
         flush=True
     )
 
@@ -969,8 +1266,12 @@ def print_summary(results):
             f"{fmt(result['coverage'])} | "
             f"History="
             f"{fmt(result['history'])} | "
+            f"Continuity="
+            f"{fmt(result['continuity'])} | "
             f"AgeDays="
             f"{result['age_days']} | "
+            f"MarketLag="
+            f"{result['market_lag_days']} | "
             f"{result['quality_state']}",
             flush=True
         )
@@ -996,6 +1297,23 @@ def print_summary(results):
         flush=True
     )
 
+    if failed:
+
+        print(
+            "\n⚠️ FAILED / SKIPPED",
+            flush=True
+        )
+
+        for result in failed:
+
+            print(
+                f"{result.get('symbol')} | "
+                f"{result.get('analysis_model')} | "
+                f"{result.get('status')} | "
+                f"{result.get('error', '')}",
+                flush=True
+            )
+
     print(
         "=" * 80,
         flush=True
@@ -1011,12 +1329,38 @@ def run_data_quality_engine():
     stocks = get_active_stocks()
 
     print_header(
-        "🧪 DATA QUALITY ENGINE v1"
+        "🧪 DATA QUALITY ENGINE v2"
     )
 
     print(
         f"🏢 Total Stocks: "
         f"{len(stocks)}",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # نسحب بيانات الشركات مرة واحدة فقط
+    # --------------------------------------------------------
+
+    print(
+        "📥 Preparing financial metrics...",
+        flush=True
+    )
+
+    prepared_data = prepare_stock_data(
+        stocks
+    )
+
+    market_latest_period = (
+        get_market_latest_period(
+            stocks,
+            prepared_data
+        )
+    )
+
+    print(
+        f"🌍 Market Latest Period: "
+        f"{market_latest_period}",
         flush=True
     )
 
@@ -1038,7 +1382,9 @@ def run_data_quality_engine():
         try:
 
             result = analyze_stock(
-                stock
+                stock,
+                prepared_data,
+                market_latest_period
             )
 
         except Exception as error:
