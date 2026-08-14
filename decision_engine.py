@@ -4,7 +4,7 @@ from supabase import create_client
 
 
 # ============================================================
-# FINAL DECISION ENGINE v1
+# FINAL DECISION ENGINE v2
 # ============================================================
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -17,11 +17,14 @@ supabase = create_client(
 
 
 # ============================================================
-# إعدادات
+# أسماء المؤشرات المحفوظة
 # ============================================================
 
 DECISION_SCORE_METRIC = "decision_score"
 DECISION_CONFIDENCE_METRIC = "decision_confidence"
+DECISION_MOMENTUM_METRIC = "decision_momentum_score"
+DECISION_RELIABILITY_METRIC = "decision_reliability_score"
+
 
 MODEL_PREFIX = {
     "standard": "q_",
@@ -47,7 +50,11 @@ def safe_number(value):
         return None
 
 
-def clamp(value, minimum=0.0, maximum=100.0):
+def clamp(
+    value,
+    minimum=0.0,
+    maximum=100.0
+):
 
     value = safe_number(value)
 
@@ -66,7 +73,7 @@ def clamp(value, minimum=0.0, maximum=100.0):
 def weighted_average(items):
 
     total = 0.0
-    weights = 0.0
+    weight_sum = 0.0
 
     for value, weight in items:
 
@@ -80,13 +87,20 @@ def weighted_average(items):
         ):
             continue
 
-        total += value * weight
-        weights += weight
+        total += (
+            value
+            * weight
+        )
 
-    if weights == 0:
+        weight_sum += weight
+
+    if weight_sum == 0:
         return None
 
-    return total / weights
+    return (
+        total
+        / weight_sum
+    )
 
 
 def fmt(value):
@@ -153,9 +167,17 @@ def get_active_stocks():
             "priority,"
             "data_status"
         )
-        .eq("is_active", True)
-        .order("priority", desc=True)
-        .order("id")
+        .eq(
+            "is_active",
+            True
+        )
+        .order(
+            "priority",
+            desc=True
+        )
+        .order(
+            "id"
+        )
         .execute()
     )
 
@@ -172,7 +194,10 @@ def get_metrics(stock_id):
             "metric_name,"
             "metric_value"
         )
-        .eq("stock_id", stock_id)
+        .eq(
+            "stock_id",
+            stock_id
+        )
         .execute()
     )
 
@@ -251,9 +276,12 @@ def get_valid_periods(
         ]
 
         if any(
-            metric_name.startswith(prefix)
+            metric_name.startswith(
+                prefix
+            )
             for metric_name in metrics
         ):
+
             valid.append(
                 period_end
             )
@@ -262,12 +290,13 @@ def get_valid_periods(
 
 
 # ============================================================
-# استخراج score block
+# استخراج المؤشرات الموحدة
 # ============================================================
 
 def score_block(metrics):
 
     return {
+
         "growth":
             safe_number(
                 metrics.get(
@@ -329,6 +358,52 @@ def score_block(metrics):
                 metrics.get(
                     "turning_engine_score"
                 )
+            ),
+
+        # ====================================================
+        # Data Quality Engine
+        # ====================================================
+
+        "data_quality":
+            safe_number(
+                metrics.get(
+                    "data_quality_score"
+                )
+            ),
+
+        "freshness":
+            safe_number(
+                metrics.get(
+                    "data_freshness_score"
+                )
+            ),
+
+        "coverage":
+            safe_number(
+                metrics.get(
+                    "data_coverage_score"
+                )
+            ),
+
+        "history_quality":
+            safe_number(
+                metrics.get(
+                    "data_history_score"
+                )
+            ),
+
+        "continuity":
+            safe_number(
+                metrics.get(
+                    "data_continuity_score"
+                )
+            ),
+
+        "market_lag_days":
+            safe_number(
+                metrics.get(
+                    "data_market_lag_days"
+                )
             )
     }
 
@@ -351,7 +426,10 @@ def calculate_delta(
     ):
         return None
 
-    return current - previous
+    return (
+        current
+        - previous
+    )
 
 
 def get_momentum(
@@ -360,6 +438,7 @@ def get_momentum(
 ):
 
     return {
+
         "opportunity_delta":
             calculate_delta(
                 current_scores.get(
@@ -413,13 +492,18 @@ def get_momentum(
 
 
 # ============================================================
-# Momentum Score
+# Momentum Score v2
+# أكثر تحفظًا من النسخة الأولى
 # ============================================================
 
 def calculate_momentum_score(momentum):
 
     score = 50.0
+
     used = 0
+
+    positive_confirmations = 0
+    negative_confirmations = 0
 
     opportunity_delta = safe_number(
         momentum.get(
@@ -431,17 +515,34 @@ def calculate_momentum_score(momentum):
 
         used += 1
 
-        if opportunity_delta >= 15:
-            score += 15
+        if opportunity_delta >= 20:
 
-        elif opportunity_delta >= 5:
-            score += 8
+            score += 10
+            positive_confirmations += 1
 
-        elif opportunity_delta <= -15:
-            score -= 15
+        elif opportunity_delta >= 8:
 
-        elif opportunity_delta <= -5:
-            score -= 8
+            score += 6
+            positive_confirmations += 1
+
+        elif opportunity_delta >= 3:
+
+            score += 3
+
+        elif opportunity_delta <= -20:
+
+            score -= 10
+            negative_confirmations += 1
+
+        elif opportunity_delta <= -8:
+
+            score -= 6
+            negative_confirmations += 1
+
+        elif opportunity_delta <= -3:
+
+            score -= 3
+
 
     risk_delta = safe_number(
         momentum.get(
@@ -453,17 +554,34 @@ def calculate_momentum_score(momentum):
 
         used += 1
 
-        if risk_delta <= -15:
-            score += 15
+        if risk_delta <= -20:
 
-        elif risk_delta <= -5:
-            score += 8
+            score += 10
+            positive_confirmations += 1
 
-        elif risk_delta >= 15:
-            score -= 15
+        elif risk_delta <= -8:
 
-        elif risk_delta >= 5:
-            score -= 8
+            score += 6
+            positive_confirmations += 1
+
+        elif risk_delta <= -3:
+
+            score += 3
+
+        elif risk_delta >= 20:
+
+            score -= 10
+            negative_confirmations += 1
+
+        elif risk_delta >= 8:
+
+            score -= 6
+            negative_confirmations += 1
+
+        elif risk_delta >= 3:
+
+            score -= 3
+
 
     turning_delta = safe_number(
         momentum.get(
@@ -475,17 +593,34 @@ def calculate_momentum_score(momentum):
 
         used += 1
 
-        if turning_delta >= 15:
-            score += 15
+        if turning_delta >= 20:
 
-        elif turning_delta >= 5:
-            score += 8
+            score += 10
+            positive_confirmations += 1
 
-        elif turning_delta <= -15:
-            score -= 15
+        elif turning_delta >= 8:
 
-        elif turning_delta <= -5:
-            score -= 8
+            score += 6
+            positive_confirmations += 1
+
+        elif turning_delta >= 3:
+
+            score += 3
+
+        elif turning_delta <= -20:
+
+            score -= 10
+            negative_confirmations += 1
+
+        elif turning_delta <= -8:
+
+            score -= 6
+            negative_confirmations += 1
+
+        elif turning_delta <= -3:
+
+            score -= 3
+
 
     quality_delta = safe_number(
         momentum.get(
@@ -497,20 +632,106 @@ def calculate_momentum_score(momentum):
 
         used += 1
 
-        if quality_delta >= 10:
-            score += 10
+        if quality_delta >= 20:
 
-        elif quality_delta <= -10:
-            score -= 10
+            score += 8
+            positive_confirmations += 1
+
+        elif quality_delta >= 8:
+
+            score += 4
+
+        elif quality_delta <= -20:
+
+            score -= 8
+            negative_confirmations += 1
+
+        elif quality_delta <= -8:
+
+            score -= 4
+
+
+    growth_delta = safe_number(
+        momentum.get(
+            "growth_delta"
+        )
+    )
+
+    if growth_delta is not None:
+
+        used += 1
+
+        if growth_delta >= 20:
+
+            score += 7
+            positive_confirmations += 1
+
+        elif growth_delta >= 8:
+
+            score += 4
+
+        elif growth_delta <= -20:
+
+            score -= 7
+            negative_confirmations += 1
+
+        elif growth_delta <= -8:
+
+            score -= 4
+
 
     if used == 0:
+
         return 50.0
 
-    return clamp(score)
+
+    # ========================================================
+    # تأكيد متعدد
+    # ========================================================
+
+    if positive_confirmations >= 3:
+
+        score += 5
+
+    if negative_confirmations >= 2:
+
+        score -= 5
+
+
+    # ========================================================
+    # كشف التناقض
+    # ========================================================
+
+    if (
+        opportunity_delta is not None
+        and opportunity_delta > 5
+        and risk_delta is not None
+        and risk_delta > 5
+    ):
+
+        score -= 7
+
+
+    if (
+        turning_delta is not None
+        and turning_delta > 5
+        and quality_delta is not None
+        and quality_delta < -10
+    ):
+
+        score -= 7
+
+
+    # سقف مقصود حتى لا يصبح 100 بسهولة
+    return clamp(
+        score,
+        10.0,
+        92.0
+    )
 
 
 # ============================================================
-# Consistency Score
+# Consistency
 # ============================================================
 
 def calculate_consistency_score(
@@ -544,6 +765,19 @@ def calculate_consistency_score(
         )
     )
 
+    current_quality = safe_number(
+        latest.get(
+            "quality"
+        )
+    )
+
+    previous_quality = safe_number(
+        previous.get(
+            "quality"
+        )
+    )
+
+
     if (
         current_opportunity is not None
         and previous_opportunity is not None
@@ -553,13 +787,16 @@ def calculate_consistency_score(
             current_opportunity >= 60
             and previous_opportunity >= 60
         ):
-            score += 20
+
+            score += 18
 
         elif (
             current_opportunity < 45
             and previous_opportunity < 45
         ):
+
             score -= 15
+
 
     if (
         current_risk is not None
@@ -570,29 +807,145 @@ def calculate_consistency_score(
             current_risk <= 40
             and previous_risk <= 40
         ):
-            score += 15
+
+            score += 14
 
         elif (
             current_risk >= 60
             and previous_risk >= 60
         ):
+
             score -= 15
 
-    return clamp(score)
+
+    if (
+        current_quality is not None
+        and previous_quality is not None
+    ):
+
+        if (
+            current_quality >= 60
+            and previous_quality >= 60
+        ):
+
+            score += 8
+
+        elif (
+            current_quality < 40
+            and previous_quality < 40
+        ):
+
+            score -= 8
+
+
+    return clamp(
+        score
+    )
 
 
 # ============================================================
-# Penalty / Bonus
+# Reliability Score
+# ============================================================
+
+def calculate_reliability_score(scores):
+
+    confidence = safe_number(
+        scores.get(
+            "confidence"
+        )
+    )
+
+    data_quality = safe_number(
+        scores.get(
+            "data_quality"
+        )
+    )
+
+    freshness = safe_number(
+        scores.get(
+            "freshness"
+        )
+    )
+
+    coverage = safe_number(
+        scores.get(
+            "coverage"
+        )
+    )
+
+    history_quality = safe_number(
+        scores.get(
+            "history_quality"
+        )
+    )
+
+    continuity = safe_number(
+        scores.get(
+            "continuity"
+        )
+    )
+
+
+    reliability = weighted_average([
+
+        (
+            data_quality,
+            40
+        ),
+
+        (
+            confidence,
+            25
+        ),
+
+        (
+            freshness,
+            15
+        ),
+
+        (
+            coverage,
+            10
+        ),
+
+        (
+            history_quality,
+            5
+        ),
+
+        (
+            continuity,
+            5
+        )
+    ])
+
+
+    if reliability is None:
+
+        return 0.0
+
+
+    return clamp(
+        reliability
+    )
+
+
+# ============================================================
+# Bonus / Penalty
 # ============================================================
 
 def calculate_penalty_bonus(
     scores,
-    momentum_score
+    momentum_score,
+    consistency_score,
+    reliability_score
 ):
 
     bonus = 0.0
     penalty = 0.0
+
     reasons = []
+
 
     opportunity = safe_number(
         scores.get(
@@ -612,7 +965,7 @@ def calculate_penalty_bonus(
         )
     )
 
-    quality = safe_number(
+    financial_quality = safe_number(
         scores.get(
             "quality"
         )
@@ -624,68 +977,129 @@ def calculate_penalty_bonus(
         )
     )
 
-    confidence = safe_number(
+    data_quality = safe_number(
         scores.get(
-            "confidence"
+            "data_quality"
         )
     )
 
+    freshness = safe_number(
+        scores.get(
+            "freshness"
+        )
+    )
+
+    coverage = safe_number(
+        scores.get(
+            "coverage"
+        )
+    )
+
+    market_lag_days = safe_number(
+        scores.get(
+            "market_lag_days"
+        )
+    )
+
+
+    # ========================================================
+    # Bonuses
+    # ========================================================
+
     if (
         turning_engine is not None
-        and turning_engine >= 75
+        and turning_engine >= 80
     ):
 
-        bonus += 8
+        bonus += 5
 
         reasons.append(
-            "Turning Point قوي"
+            "Turning Point قوي جدًا"
         )
+
 
     if (
         opportunity is not None
-        and opportunity >= 75
+        and opportunity >= 80
         and risk is not None
-        and risk <= 30
+        and risk <= 25
     ):
 
-        bonus += 8
+        bonus += 5
 
         reasons.append(
-            "Opportunity مرتفع مع Risk منخفض"
+            "Opportunity مرتفع جدًا مع Risk منخفض"
         )
+
 
     if (
         momentum_score is not None
-        and momentum_score >= 70
-    ):
-
-        bonus += 6
-
-        reasons.append(
-            "الزخم المالي يتحسن"
-        )
-
-    if (
-        quality is not None
-        and quality >= 75
+        and momentum_score >= 78
+        and consistency_score is not None
+        and consistency_score >= 65
     ):
 
         bonus += 4
 
         reasons.append(
+            "زخم قوي ومدعوم بالاستمرارية"
+        )
+
+
+    if (
+        financial_quality is not None
+        and financial_quality >= 80
+    ):
+
+        bonus += 3
+
+        reasons.append(
             "جودة مالية مرتفعة"
         )
+
+
+    if (
+        data_quality is not None
+        and data_quality >= 90
+        and freshness is not None
+        and freshness >= 90
+        and coverage is not None
+        and coverage >= 85
+    ):
+
+        bonus += 2
+
+        reasons.append(
+            "جودة البيانات ممتازة وحديثة"
+        )
+
+
+    # ========================================================
+    # Financial penalties
+    # ========================================================
 
     if (
         risk is not None
         and risk >= 65
     ):
 
-        penalty += 12
+        penalty += 14
 
         reasons.append(
             "Risk مرتفع"
         )
+
+    elif (
+        risk is not None
+        and risk >= 55
+    ):
+
+        penalty += 7
+
+        reasons.append(
+            "Risk أعلى من المفضل"
+        )
+
 
     if (
         turning_engine is not None
@@ -698,51 +1112,172 @@ def calculate_penalty_bonus(
             "Turning Point ضعيف"
         )
 
+
     if (
-        quality is not None
-        and quality <= 30
+        financial_quality is not None
+        and financial_quality <= 30
     ):
 
-        penalty += 8
+        penalty += 9
 
         reasons.append(
             "جودة مالية ضعيفة"
         )
+
 
     if (
         balance is not None
         and balance <= 30
     ):
 
-        penalty += 6
+        penalty += 7
 
         reasons.append(
             "الميزانية ضعيفة"
         )
+
 
     if (
         momentum_score is not None
         and momentum_score <= 30
     ):
 
-        penalty += 8
+        penalty += 9
 
         reasons.append(
             "الزخم يتدهور"
         )
 
-    if (
-        confidence is not None
-        and confidence < 60
-    ):
 
-        penalty += 8
+    # ========================================================
+    # Data Quality penalties
+    # ========================================================
+
+    if data_quality is None:
+
+        penalty += 15
 
         reasons.append(
-            "ثقة البيانات منخفضة"
+            "Data Quality غير متوفر"
         )
 
-    return bonus, penalty, reasons
+    elif data_quality < 40:
+
+        penalty += 22
+
+        reasons.append(
+            "جودة البيانات ضعيفة جدًا"
+        )
+
+    elif data_quality < 55:
+
+        penalty += 14
+
+        reasons.append(
+            "جودة البيانات ضعيفة"
+        )
+
+    elif data_quality < 70:
+
+        penalty += 7
+
+        reasons.append(
+            "جودة البيانات أقل من المستوى المطلوب"
+        )
+
+
+    if freshness is None:
+
+        penalty += 10
+
+        reasons.append(
+            "Freshness غير متوفر"
+        )
+
+    elif freshness < 30:
+
+        penalty += 18
+
+        reasons.append(
+            "البيانات قديمة جدًا"
+        )
+
+    elif freshness < 50:
+
+        penalty += 10
+
+        reasons.append(
+            "البيانات متأخرة"
+        )
+
+    elif freshness < 70:
+
+        penalty += 5
+
+        reasons.append(
+            "حداثة البيانات متوسطة"
+        )
+
+
+    if (
+        coverage is not None
+        and coverage < 50
+    ):
+
+        penalty += 15
+
+        reasons.append(
+            "Coverage ضعيف"
+        )
+
+    elif (
+        coverage is not None
+        and coverage < 70
+    ):
+
+        penalty += 7
+
+        reasons.append(
+            "Coverage غير مكتمل"
+        )
+
+
+    if market_lag_days is not None:
+
+        if market_lag_days >= 165:
+
+            penalty += 18
+
+            reasons.append(
+                "متأخر قرابة ربعين عن أحدث بيانات السوق"
+            )
+
+        elif market_lag_days >= 75:
+
+            penalty += 10
+
+            reasons.append(
+                "متأخر ربعًا عن أحدث بيانات السوق"
+            )
+
+
+    if (
+        reliability_score is not None
+        and reliability_score < 50
+    ):
+
+        penalty += 10
+
+        reasons.append(
+            "موثوقية القرار منخفضة"
+        )
+
+
+    return (
+        bonus,
+        penalty,
+        reasons
+    )
 
 
 # ============================================================
@@ -755,38 +1290,55 @@ def calculate_decision_score(
     consistency_score
 ):
 
-    opportunity = scores.get(
-        "opportunity"
-    )
-
-    turning_engine = scores.get(
-        "turning_engine"
-    )
-
-    turning_base = scores.get(
-        "turning_base"
-    )
-
-    quality = scores.get(
-        "quality"
-    )
-
-    balance = scores.get(
-        "balance"
-    )
-
-    risk = scores.get(
-        "risk"
-    )
-
-    confidence = (
-        safe_number(
-            scores.get(
-                "confidence"
-            )
+    opportunity = safe_number(
+        scores.get(
+            "opportunity"
         )
-        or 0.0
     )
+
+    turning_engine = safe_number(
+        scores.get(
+            "turning_engine"
+        )
+    )
+
+    turning_base = safe_number(
+        scores.get(
+            "turning_base"
+        )
+    )
+
+    financial_quality = safe_number(
+        scores.get(
+            "quality"
+        )
+    )
+
+    balance = safe_number(
+        scores.get(
+            "balance"
+        )
+    )
+
+    risk = safe_number(
+        scores.get(
+            "risk"
+        )
+    )
+
+    data_quality = safe_number(
+        scores.get(
+            "data_quality"
+        )
+    )
+
+
+    reliability_score = (
+        calculate_reliability_score(
+            scores
+        )
+    )
+
 
     turning_score = (
         turning_engine
@@ -794,52 +1346,84 @@ def calculate_decision_score(
         else turning_base
     )
 
+
     risk_quality = (
         100 - risk
         if risk is not None
         else None
     )
 
+
+    # ========================================================
+    # الأوزان الجديدة
+    # Data Quality أصبح جزءًا مباشرًا من القرار
+    # Momentum أصبح أقل تأثيرًا
+    # ========================================================
+
     raw_score = weighted_average([
+
         (
             opportunity,
-            27
+            24
         ),
+
         (
             turning_score,
-            25
+            22
         ),
+
         (
-            quality,
-            15
+            financial_quality,
+            14
         ),
+
         (
             risk_quality,
             13
         ),
+
         (
-            momentum_score,
+            data_quality,
             12
         ),
+
+        (
+            momentum_score,
+            7
+        ),
+
         (
             balance,
             5
         ),
+
         (
             consistency_score,
             3
         )
     ])
 
-    if raw_score is None:
-        return None, 0.0, []
 
-    bonus, penalty, reasons = (
-        calculate_penalty_bonus(
-            scores,
-            momentum_score
+    if raw_score is None:
+
+        return (
+            None,
+            reliability_score,
+            []
         )
+
+
+    (
+        bonus,
+        penalty,
+        reasons
+    ) = calculate_penalty_bonus(
+        scores,
+        momentum_score,
+        consistency_score,
+        reliability_score
     )
+
 
     adjusted = (
         raw_score
@@ -847,40 +1431,165 @@ def calculate_decision_score(
         - penalty
     )
 
+
     adjusted = clamp(
         adjusted
     )
 
-    confidence_factor = (
-        0.60
+
+    # ========================================================
+    # Reliability factor
+    # ========================================================
+
+    reliability_factor = (
+        0.55
         + (
-            clamp(
-                confidence
-            )
-            / 250.0
+            reliability_score
+            / 222.22
         )
     )
 
-    final_score = (
-        adjusted
-        * confidence_factor
+
+    reliability_factor = min(
+        reliability_factor,
+        1.0
     )
 
+
+    final_score = (
+        adjusted
+        * reliability_factor
+    )
+
+
+    # ========================================================
+    # Hard Caps
+    # ========================================================
+
+    freshness = safe_number(
+        scores.get(
+            "freshness"
+        )
+    )
+
+    coverage = safe_number(
+        scores.get(
+            "coverage"
+        )
+    )
+
+    market_lag_days = safe_number(
+        scores.get(
+            "market_lag_days"
+        )
+    )
+
+
+    if data_quality is None:
+
+        final_score = min(
+            final_score,
+            45.0
+        )
+
+
+    elif data_quality < 40:
+
+        final_score = min(
+            final_score,
+            40.0
+        )
+
+
+    elif data_quality < 55:
+
+        final_score = min(
+            final_score,
+            52.0
+        )
+
+
+    elif data_quality < 70:
+
+        final_score = min(
+            final_score,
+            65.0
+        )
+
+
+    if (
+        freshness is not None
+        and freshness < 30
+    ):
+
+        final_score = min(
+            final_score,
+            38.0
+        )
+
+
+    elif (
+        freshness is not None
+        and freshness < 50
+    ):
+
+        final_score = min(
+            final_score,
+            58.0
+        )
+
+
+    if (
+        coverage is not None
+        and coverage < 50
+    ):
+
+        final_score = min(
+            final_score,
+            45.0
+        )
+
+
+    if (
+        market_lag_days is not None
+        and market_lag_days >= 165
+    ):
+
+        final_score = min(
+            final_score,
+            42.0
+        )
+
+
+    elif (
+        market_lag_days is not None
+        and market_lag_days >= 75
+    ):
+
+        final_score = min(
+            final_score,
+            62.0
+        )
+
+
     return (
-        clamp(final_score),
-        clamp(confidence),
+        clamp(
+            final_score
+        ),
+        reliability_score,
         reasons
     )
 
 
 # ============================================================
-# القرار النهائي
+# تصنيف القرار النهائي
 # ============================================================
 
 def classify_decision(
     decision_score,
     scores,
-    momentum_score
+    momentum_score,
+    reliability_score
 ):
 
     decision_score = safe_number(
@@ -899,49 +1608,131 @@ def classify_decision(
         )
     )
 
-    confidence = safe_number(
+    data_quality = safe_number(
         scores.get(
-            "confidence"
+            "data_quality"
         )
     )
 
+    freshness = safe_number(
+        scores.get(
+            "freshness"
+        )
+    )
+
+    coverage = safe_number(
+        scores.get(
+            "coverage"
+        )
+    )
+
+    market_lag_days = safe_number(
+        scores.get(
+            "market_lag_days"
+        )
+    )
+
+
+    # ========================================================
+    # بوابات جودة البيانات
+    # ========================================================
+
     if (
-        confidence is None
-        or confidence < 55
+        reliability_score is None
+        or reliability_score < 50
     ):
 
         return (
             "LOW_CONFIDENCE",
-            "البيانات غير كافية لقرار قوي"
+            "موثوقية البيانات غير كافية لقرار قوي"
         )
+
+
+    if (
+        data_quality is None
+        or data_quality < 40
+        or freshness is None
+        or freshness < 30
+    ):
+
+        return (
+            "DATA_WARNING",
+            "جودة أو حداثة البيانات لا تسمح بقرار قوي"
+        )
+
+
+    if (
+        coverage is not None
+        and coverage < 50
+    ):
+
+        return (
+            "DATA_WARNING",
+            "تغطية البيانات غير كافية"
+        )
+
+
+    # ========================================================
+    # TOP CANDIDATE
+    # ========================================================
 
     if (
         decision_score is not None
         and decision_score >= 82
+
         and (
             risk is None
             or risk <= 35
         )
+
         and (
             turning is None
             or turning >= 65
         )
+
+        and data_quality >= 80
+        and freshness >= 80
+
+        and (
+            coverage is None
+            or coverage >= 75
+        )
+
+        and (
+            market_lag_days is None
+            or market_lag_days < 75
+        )
+
+        and reliability_score >= 78
     ):
 
         return (
             "TOP_CANDIDATE",
-            "مرشح قوي جدًا للمتابعة"
+            "مرشح قوي جدًا ومدعوم ببيانات حديثة وموثوقة"
         )
+
+
+    # ========================================================
+    # STRONG WATCH
+    # ========================================================
 
     if (
         decision_score is not None
         and decision_score >= 70
+        and data_quality >= 70
+        and freshness >= 65
+        and reliability_score >= 68
     ):
 
         return (
             "STRONG_WATCH",
             "مرشح قوي للمراقبة"
         )
+
+
+    # ========================================================
+    # WATCH
+    # ========================================================
 
     if (
         decision_score is not None
@@ -950,8 +1741,9 @@ def classify_decision(
 
         return (
             "WATCH",
-            "يستحق المتابعة"
+            "يستحق المتابعة مع مراعاة جودة البيانات"
         )
+
 
     if (
         decision_score is not None
@@ -963,6 +1755,7 @@ def classify_decision(
             "الصورة مختلطة"
         )
 
+
     if (
         risk is not None
         and risk >= 65
@@ -973,15 +1766,17 @@ def classify_decision(
             "إشارات الخطر مرتفعة"
         )
 
+
     if (
         momentum_score is not None
-        and momentum_score <= 25
+        and momentum_score <= 30
     ):
 
         return (
             "DETERIORATING",
             "الزخم المالي يتدهور"
         )
+
 
     return (
         "WEAK",
@@ -997,18 +1792,47 @@ def save_decision(
     stock_id,
     period_end,
     decision_score,
-    confidence
+    reliability_score,
+    momentum_score
 ):
 
     calculated_at = datetime.now(
         timezone.utc
     ).isoformat()
 
+
+    values = {
+
+        DECISION_SCORE_METRIC:
+            decision_score,
+
+        DECISION_CONFIDENCE_METRIC:
+            reliability_score,
+
+        DECISION_RELIABILITY_METRIC:
+            reliability_score,
+
+        DECISION_MOMENTUM_METRIC:
+            momentum_score
+    }
+
+
     records = []
 
-    if decision_score is not None:
+
+    for metric_name, metric_value in (
+        values.items()
+    ):
+
+        metric_value = safe_number(
+            metric_value
+        )
+
+        if metric_value is None:
+            continue
 
         records.append({
+
             "stock_id":
                 stock_id,
 
@@ -1016,40 +1840,26 @@ def save_decision(
                 calculated_at,
 
             "metric_name":
-                DECISION_SCORE_METRIC,
+                metric_name,
 
             "metric_value":
-                decision_score,
+                metric_value,
 
             "period_end":
                 period_end
         })
 
-    if confidence is not None:
-
-        records.append({
-            "stock_id":
-                stock_id,
-
-            "calculated_at":
-                calculated_at,
-
-            "metric_name":
-                DECISION_CONFIDENCE_METRIC,
-
-            "metric_value":
-                confidence,
-
-            "period_end":
-                period_end
-        })
 
     if not records:
+
         return 0
+
 
     (
         supabase
-        .table("financial_metrics")
+        .table(
+            "financial_metrics"
+        )
         .upsert(
             records,
             on_conflict=(
@@ -1061,11 +1871,14 @@ def save_decision(
         .execute()
     )
 
-    return len(records)
+
+    return len(
+        records
+    )
 
 
 # ============================================================
-# تحليل شركة
+# تحليل شركة واحدة
 # ============================================================
 
 def analyze_stock(stock):
@@ -1092,22 +1905,27 @@ def analyze_stock(stock):
         or "standard"
     )
 
+
     rows = get_metrics(
         stock_id
     )
 
+
     periods = organize_metrics(
         rows
     )
+
 
     valid_periods = get_valid_periods(
         periods,
         analysis_model
     )
 
+
     if not valid_periods:
 
         return {
+
             "status":
                 "no_period",
 
@@ -1121,9 +1939,11 @@ def analyze_stock(stock):
                 analysis_model
         }
 
+
     latest_period = (
         valid_periods[-1]
     )
+
 
     previous_period = (
         valid_periods[-2]
@@ -1131,9 +1951,11 @@ def analyze_stock(stock):
         else None
     )
 
+
     latest_metrics = periods[
         latest_period
     ]
+
 
     previous_metrics = (
         periods.get(
@@ -1142,24 +1964,29 @@ def analyze_stock(stock):
         )
     )
 
+
     latest_scores = score_block(
         latest_metrics
     )
 
+
     previous_scores = score_block(
         previous_metrics
     )
+
 
     momentum = get_momentum(
         latest_scores,
         previous_scores
     )
 
+
     momentum_score = (
         calculate_momentum_score(
             momentum
         )
     )
+
 
     consistency_score = (
         calculate_consistency_score(
@@ -1168,30 +1995,39 @@ def analyze_stock(stock):
         )
     )
 
-    decision_score, confidence, reasons = (
-        calculate_decision_score(
-            latest_scores,
-            momentum_score,
-            consistency_score
-        )
+
+    (
+        decision_score,
+        reliability_score,
+        reasons
+    ) = calculate_decision_score(
+        latest_scores,
+        momentum_score,
+        consistency_score
     )
+
 
     state, description = (
         classify_decision(
             decision_score,
             latest_scores,
-            momentum_score
+            momentum_score,
+            reliability_score
         )
     )
+
 
     saved = save_decision(
         stock_id,
         latest_period,
         decision_score,
-        confidence
+        reliability_score,
+        momentum_score
     )
 
+
     return {
+
         "status":
             "success",
 
@@ -1210,8 +2046,8 @@ def analyze_stock(stock):
         "decision_score":
             decision_score,
 
-        "confidence":
-            confidence,
+        "reliability_score":
+            reliability_score,
 
         "state":
             state,
@@ -1234,7 +2070,7 @@ def analyze_stock(stock):
                 "turning_engine"
             ),
 
-        "quality":
+        "financial_quality":
             latest_scores.get(
                 "quality"
             ),
@@ -1242,6 +2078,36 @@ def analyze_stock(stock):
         "balance":
             latest_scores.get(
                 "balance"
+            ),
+
+        "data_quality":
+            latest_scores.get(
+                "data_quality"
+            ),
+
+        "freshness":
+            latest_scores.get(
+                "freshness"
+            ),
+
+        "coverage":
+            latest_scores.get(
+                "coverage"
+            ),
+
+        "history_quality":
+            latest_scores.get(
+                "history_quality"
+            ),
+
+        "continuity":
+            latest_scores.get(
+                "continuity"
+            ),
+
+        "market_lag_days":
+            latest_scores.get(
+                "market_lag_days"
             ),
 
         "momentum_score":
@@ -1265,6 +2131,16 @@ def analyze_stock(stock):
                 "turning_delta"
             ),
 
+        "growth_delta":
+            momentum.get(
+                "growth_delta"
+            ),
+
+        "quality_delta":
+            momentum.get(
+                "quality_delta"
+            ),
+
         "reasons":
             reasons,
 
@@ -1285,6 +2161,7 @@ def print_result(result):
         f"{result.get('analysis_model')}"
     )
 
+
     if result.get(
         "status"
     ) != "success":
@@ -1297,11 +2174,13 @@ def print_result(result):
 
         return
 
+
     print(
         f"📅 Period: "
         f"{result['latest_period']}",
         flush=True
     )
+
 
     print(
         f"🎯 Decision Score: "
@@ -1309,11 +2188,13 @@ def print_result(result):
         flush=True
     )
 
+
     print(
-        f"🧪 Confidence: "
-        f"{fmt(result['confidence'])}",
+        f"🧪 Decision Reliability: "
+        f"{fmt(result['reliability_score'])}",
         flush=True
     )
+
 
     print(
         f"🧭 Decision: "
@@ -1322,7 +2203,9 @@ def print_result(result):
         flush=True
     )
 
+
     print_separator()
+
 
     print(
         f"Opportunity: "
@@ -1330,11 +2213,13 @@ def print_result(result):
         flush=True
     )
 
+
     print(
         f"Risk: "
         f"{fmt(result['risk'])}",
         flush=True
     )
+
 
     print(
         f"Turning: "
@@ -1342,11 +2227,13 @@ def print_result(result):
         flush=True
     )
 
+
     print(
-        f"Quality: "
-        f"{fmt(result['quality'])}",
+        f"Financial Quality: "
+        f"{fmt(result['financial_quality'])}",
         flush=True
     )
+
 
     print(
         f"Balance: "
@@ -1354,11 +2241,13 @@ def print_result(result):
         flush=True
     )
 
+
     print(
         f"Momentum Score: "
         f"{fmt(result['momentum_score'])}",
         flush=True
     )
+
 
     print(
         f"Consistency: "
@@ -1366,12 +2255,66 @@ def print_result(result):
         flush=True
     )
 
+
     print_separator()
 
+
     print(
-        "🚀 Momentum",
+        "🧪 DATA QUALITY",
         flush=True
     )
+
+
+    print(
+        f"Data Quality: "
+        f"{fmt(result['data_quality'])}",
+        flush=True
+    )
+
+
+    print(
+        f"Freshness: "
+        f"{fmt(result['freshness'])}",
+        flush=True
+    )
+
+
+    print(
+        f"Coverage: "
+        f"{fmt(result['coverage'])}",
+        flush=True
+    )
+
+
+    print(
+        f"History Quality: "
+        f"{fmt(result['history_quality'])}",
+        flush=True
+    )
+
+
+    print(
+        f"Continuity: "
+        f"{fmt(result['continuity'])}",
+        flush=True
+    )
+
+
+    print(
+        f"Market Lag Days: "
+        f"{fmt(result['market_lag_days'])}",
+        flush=True
+    )
+
+
+    print_separator()
+
+
+    print(
+        "🚀 MOMENTUM",
+        flush=True
+    )
+
 
     print(
         f"Opportunity Δ: "
@@ -1379,11 +2322,13 @@ def print_result(result):
         flush=True
     )
 
+
     print(
         f"Risk Δ: "
         f"{signed_fmt(result['risk_delta'])}",
         flush=True
     )
+
 
     print(
         f"Turning Δ: "
@@ -1391,12 +2336,29 @@ def print_result(result):
         flush=True
     )
 
-    if result["reasons"]:
+
+    print(
+        f"Growth Δ: "
+        f"{signed_fmt(result['growth_delta'])}",
+        flush=True
+    )
+
+
+    print(
+        f"Quality Δ: "
+        f"{signed_fmt(result['quality_delta'])}",
+        flush=True
+    )
+
+
+    if result[
+        "reasons"
+    ]:
 
         print_separator()
 
         print(
-            "📌 Decision Factors",
+            "📌 DECISION FACTORS",
             flush=True
         )
 
@@ -1417,29 +2379,40 @@ def print_result(result):
 def print_summary(results):
 
     successful = [
+
         result
+
         for result in results
+
         if result.get(
             "status"
         ) == "success"
     ]
 
+
     successful.sort(
+
         key=lambda result: (
+
             result.get(
                 "decision_score"
             )
+
             if result.get(
                 "decision_score"
             ) is not None
+
             else -1
         ),
+
         reverse=True
     )
 
+
     print_header(
-        "🏆 FINAL DECISION RANKING"
+        "🏆 FINAL DECISION RANKING v2"
     )
+
 
     for index, result in enumerate(
         successful,
@@ -1447,31 +2420,53 @@ def print_summary(results):
     ):
 
         print(
+
             f"{index:02d}. "
             f"{result['symbol']} | "
             f"{result['company_name']} | "
             f"{result['analysis_model']} | "
+
             f"Decision="
             f"{fmt(result['decision_score'])} | "
+
             f"Opportunity="
             f"{fmt(result['opportunity'])} | "
+
             f"Risk="
             f"{fmt(result['risk'])} | "
+
             f"Turning="
             f"{fmt(result['turning'])} | "
+
             f"Momentum="
             f"{fmt(result['momentum_score'])} | "
+
+            f"DataQuality="
+            f"{fmt(result['data_quality'])} | "
+
+            f"Freshness="
+            f"{fmt(result['freshness'])} | "
+
+            f"Reliability="
+            f"{fmt(result['reliability_score'])} | "
+
             f"{result['state']}",
+
             flush=True
         )
 
+
     failed = [
+
         result
+
         for result in results
+
         if result.get(
             "status"
         ) != "success"
     ]
+
 
     print(
         "\n"
@@ -1480,11 +2475,13 @@ def print_summary(results):
         flush=True
     )
 
+
     print(
         f"⚠️ Skipped/Failed: "
         f"{len(failed)}",
         flush=True
     )
+
 
     if failed:
 
@@ -1493,13 +2490,19 @@ def print_summary(results):
             flush=True
         )
 
+
         for result in failed:
 
             print(
+
                 f"{result.get('symbol')} | "
-                f"{result.get('status')}",
+                f"{result.get('analysis_model')} | "
+                f"{result.get('status')} | "
+                f"{result.get('error', '')}",
+
                 flush=True
             )
+
 
     print(
         "=" * 80,
@@ -1515,9 +2518,11 @@ def run_decision_engine():
 
     stocks = get_active_stocks()
 
+
     print_header(
-        "🧠 FINAL DECISION ENGINE v1"
+        "🧠 FINAL DECISION ENGINE v2"
     )
+
 
     print(
         f"🏢 Total Stocks: "
@@ -1525,7 +2530,9 @@ def run_decision_engine():
         flush=True
     )
 
+
     results = []
+
 
     for index, stock in enumerate(
         stocks,
@@ -1533,12 +2540,15 @@ def run_decision_engine():
     ):
 
         print(
+
             "\n"
             f"🚦 Decision "
             f"{index}/{len(stocks)} | "
             f"{stock['symbol']}",
+
             flush=True
         )
+
 
         try:
 
@@ -1546,9 +2556,11 @@ def run_decision_engine():
                 stock
             )
 
+
         except Exception as error:
 
             result = {
+
                 "status":
                     "error",
 
@@ -1571,21 +2583,27 @@ def run_decision_engine():
                     str(error)
             }
 
+
             print(
+
                 f"🔴 "
                 f"{stock.get('symbol')} | "
                 f"{type(error).__name__}: "
                 f"{error}",
+
                 flush=True
             )
+
 
         results.append(
             result
         )
 
+
         print_result(
             result
         )
+
 
     print_summary(
         results
