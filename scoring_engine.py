@@ -27,11 +27,7 @@ def safe_number(value):
         return None
 
 
-def clamp(
-    value,
-    minimum=0.0,
-    maximum=100.0
-):
+def clamp(value, minimum=0.0, maximum=100.0):
 
     value = safe_number(value)
 
@@ -54,13 +50,8 @@ def weighted_average(items):
 
     for item_value, weight in items:
 
-        item_value = safe_number(
-            item_value
-        )
-
-        weight = safe_number(
-            weight
-        )
+        item_value = safe_number(item_value)
+        weight = safe_number(weight)
 
         if (
             item_value is None
@@ -69,24 +60,37 @@ def weighted_average(items):
         ):
             continue
 
-        total += (
-            item_value
-            * weight
-        )
-
+        total += item_value * weight
         weight_sum += weight
 
     if weight_sum == 0:
         return None
 
-    return (
-        total
-        / weight_sum
-    )
+    return total / weight_sum
+
+
+def fmt(value):
+
+    value = safe_number(value)
+
+    if value is None:
+        return "N/A"
+
+    return f"{value:.2f}"
+
+
+def signed_fmt(value):
+
+    value = safe_number(value)
+
+    if value is None:
+        return "N/A"
+
+    return f"{value:+.2f}"
 
 
 # ============================================================
-# دوال تحويل المؤشرات إلى Score
+# تحويل المؤشرات إلى Scores
 # ============================================================
 
 def score_growth(value):
@@ -210,9 +214,7 @@ def inverse_growth_score(value):
     if value is None:
         return None
 
-    return score_growth(
-        -value
-    )
+    return score_growth(-value)
 
 
 # ============================================================
@@ -233,14 +235,8 @@ def get_active_stocks():
             "priority,"
             "data_status"
         )
-        .eq(
-            "is_active",
-            True
-        )
-        .order(
-            "priority",
-            desc=True
-        )
+        .eq("is_active", True)
+        .order("priority", desc=True)
         .order("id")
         .execute()
     )
@@ -252,18 +248,13 @@ def get_stock_metrics(stock_id):
 
     response = (
         supabase
-        .table(
-            "financial_metrics"
-        )
+        .table("financial_metrics")
         .select(
             "period_end,"
             "metric_name,"
             "metric_value"
         )
-        .eq(
-            "stock_id",
-            stock_id
-        )
+        .eq("stock_id", stock_id)
         .execute()
     )
 
@@ -271,7 +262,7 @@ def get_stock_metrics(stock_id):
 
 
 # ============================================================
-# تنظيم البيانات
+# تنظيم المؤشرات
 # ============================================================
 
 def organize_metrics(rows):
@@ -280,18 +271,10 @@ def organize_metrics(rows):
 
     for row in rows:
 
-        period_end = row.get(
-            "period_end"
-        )
-
-        metric_name = row.get(
-            "metric_name"
-        )
-
+        period_end = row.get("period_end")
+        metric_name = row.get("metric_name")
         metric_value = safe_number(
-            row.get(
-                "metric_value"
-            )
+            row.get("metric_value")
         )
 
         if (
@@ -301,15 +284,12 @@ def organize_metrics(rows):
         ):
             continue
 
-        period_end = str(
-            period_end
+        period_end = str(period_end)
+
+        periods.setdefault(
+            period_end,
+            {}
         )
-
-        if period_end not in periods:
-
-            periods[
-                period_end
-            ] = {}
 
         periods[
             period_end
@@ -320,36 +300,30 @@ def organize_metrics(rows):
     return periods
 
 
-def find_latest_period(
+MODEL_PREFIX = {
+    "standard": "q_",
+    "bank": "bank_q_",
+    "insurance": "insurance_q_",
+    "reit": "reit_q_"
+}
+
+
+def get_valid_periods(
     periods,
     analysis_model
 ):
 
-    prefixes = {
-
-        "standard":
-            "q_",
-
-        "bank":
-            "bank_q_",
-
-        "insurance":
-            "insurance_q_",
-
-        "reit":
-            "reit_q_"
-    }
-
-    prefix = prefixes.get(
+    prefix = MODEL_PREFIX.get(
         analysis_model
     )
 
     if prefix is None:
-        return None
+        return []
+
+    valid = []
 
     for period_end in sorted(
-        periods.keys(),
-        reverse=True
+        periods.keys()
     ):
 
         metrics = periods[
@@ -357,22 +331,23 @@ def find_latest_period(
         ]
 
         if any(
-            name.startswith(prefix)
-            for name in metrics
+            metric_name.startswith(prefix)
+            for metric_name in metrics
         ):
-            return period_end
+            valid.append(
+                period_end
+            )
 
-    return None
+    return valid
 
 
 # ============================================================
-# Standard
+# Standard Scoring
 # ============================================================
 
 def score_standard(metrics):
 
     growth = weighted_average([
-
         (
             score_growth(
                 metrics.get(
@@ -381,7 +356,6 @@ def score_standard(metrics):
             ),
             30
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -390,7 +364,6 @@ def score_standard(metrics):
             ),
             35
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -399,7 +372,6 @@ def score_standard(metrics):
             ),
             15
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -411,7 +383,6 @@ def score_standard(metrics):
     ])
 
     quality = weighted_average([
-
         (
             score_margin_change(
                 metrics.get(
@@ -420,7 +391,6 @@ def score_standard(metrics):
             ),
             20
         ),
-
         (
             score_margin_change(
                 metrics.get(
@@ -429,7 +399,6 @@ def score_standard(metrics):
             ),
             25
         ),
-
         (
             score_margin_change(
                 metrics.get(
@@ -438,7 +407,6 @@ def score_standard(metrics):
             ),
             25
         ),
-
         (
             score_cash_conversion(
                 metrics.get(
@@ -450,7 +418,6 @@ def score_standard(metrics):
     ])
 
     cash = weighted_average([
-
         (
             score_cash_conversion(
                 metrics.get(
@@ -459,7 +426,6 @@ def score_standard(metrics):
             ),
             40
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -468,7 +434,6 @@ def score_standard(metrics):
             ),
             30
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -480,7 +445,6 @@ def score_standard(metrics):
     ])
 
     balance = weighted_average([
-
         (
             score_low_good(
                 metrics.get(
@@ -492,7 +456,6 @@ def score_standard(metrics):
             ),
             35
         ),
-
         (
             score_high_good(
                 metrics.get(
@@ -504,7 +467,6 @@ def score_standard(metrics):
             ),
             25
         ),
-
         (
             inverse_growth_score(
                 metrics.get(
@@ -513,7 +475,6 @@ def score_standard(metrics):
             ),
             20
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -534,32 +495,21 @@ def score_standard(metrics):
     )
 
     return {
-
-        "growth_score":
-            growth,
-
-        "quality_score":
-            quality,
-
-        "cash_score":
-            cash,
-
-        "balance_score":
-            balance,
-
-        "confidence_score":
-            confidence
+        "growth_score": growth,
+        "quality_score": quality,
+        "cash_score": cash,
+        "balance_score": balance,
+        "confidence_score": confidence
     }
 
 
 # ============================================================
-# Bank
+# Bank Scoring
 # ============================================================
 
 def score_bank(metrics):
 
     growth = weighted_average([
-
         (
             score_growth(
                 metrics.get(
@@ -568,7 +518,6 @@ def score_bank(metrics):
             ),
             30
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -577,7 +526,6 @@ def score_bank(metrics):
             ),
             35
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -586,7 +534,6 @@ def score_bank(metrics):
             ),
             20
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -598,7 +545,6 @@ def score_bank(metrics):
     ])
 
     quality = weighted_average([
-
         (
             score_high_good(
                 metrics.get(
@@ -610,7 +556,6 @@ def score_bank(metrics):
             ),
             45
         ),
-
         (
             score_high_good(
                 metrics.get(
@@ -622,7 +567,6 @@ def score_bank(metrics):
             ),
             30
         ),
-
         (
             score_margin_change(
                 metrics.get(
@@ -634,7 +578,6 @@ def score_bank(metrics):
     ])
 
     balance = weighted_average([
-
         (
             score_high_good(
                 metrics.get(
@@ -646,7 +589,6 @@ def score_bank(metrics):
             ),
             60
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -667,32 +609,21 @@ def score_bank(metrics):
     )
 
     return {
-
-        "growth_score":
-            growth,
-
-        "quality_score":
-            quality,
-
-        "cash_score":
-            None,
-
-        "balance_score":
-            balance,
-
-        "confidence_score":
-            confidence
+        "growth_score": growth,
+        "quality_score": quality,
+        "cash_score": None,
+        "balance_score": balance,
+        "confidence_score": confidence
     }
 
 
 # ============================================================
-# Insurance
+# Insurance Scoring
 # ============================================================
 
 def score_insurance(metrics):
 
     growth = weighted_average([
-
         (
             score_growth(
                 metrics.get(
@@ -701,7 +632,6 @@ def score_insurance(metrics):
             ),
             30
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -710,7 +640,6 @@ def score_insurance(metrics):
             ),
             35
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -719,7 +648,6 @@ def score_insurance(metrics):
             ),
             20
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -731,7 +659,6 @@ def score_insurance(metrics):
     ])
 
     quality = weighted_average([
-
         (
             score_high_good(
                 metrics.get(
@@ -743,7 +670,6 @@ def score_insurance(metrics):
             ),
             40
         ),
-
         (
             score_high_good(
                 metrics.get(
@@ -755,7 +681,6 @@ def score_insurance(metrics):
             ),
             25
         ),
-
         (
             score_margin_change(
                 metrics.get(
@@ -764,7 +689,6 @@ def score_insurance(metrics):
             ),
             20
         ),
-
         (
             score_cash_conversion(
                 metrics.get(
@@ -776,7 +700,6 @@ def score_insurance(metrics):
     ])
 
     cash = weighted_average([
-
         (
             score_cash_conversion(
                 metrics.get(
@@ -785,7 +708,6 @@ def score_insurance(metrics):
             ),
             60
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -797,7 +719,6 @@ def score_insurance(metrics):
     ])
 
     balance = weighted_average([
-
         (
             score_high_good(
                 metrics.get(
@@ -809,7 +730,6 @@ def score_insurance(metrics):
             ),
             70
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -830,32 +750,21 @@ def score_insurance(metrics):
     )
 
     return {
-
-        "growth_score":
-            growth,
-
-        "quality_score":
-            quality,
-
-        "cash_score":
-            cash,
-
-        "balance_score":
-            balance,
-
-        "confidence_score":
-            confidence
+        "growth_score": growth,
+        "quality_score": quality,
+        "cash_score": cash,
+        "balance_score": balance,
+        "confidence_score": confidence
     }
 
 
 # ============================================================
-# REIT
+# REIT Scoring
 # ============================================================
 
 def score_reit(metrics):
 
     growth = weighted_average([
-
         (
             score_growth(
                 metrics.get(
@@ -864,7 +773,6 @@ def score_reit(metrics):
             ),
             30
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -873,7 +781,6 @@ def score_reit(metrics):
             ),
             30
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -882,7 +789,6 @@ def score_reit(metrics):
             ),
             25
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -894,7 +800,6 @@ def score_reit(metrics):
     ])
 
     quality = weighted_average([
-
         (
             score_margin_change(
                 metrics.get(
@@ -903,7 +808,6 @@ def score_reit(metrics):
             ),
             35
         ),
-
         (
             score_margin_change(
                 metrics.get(
@@ -912,7 +816,6 @@ def score_reit(metrics):
             ),
             25
         ),
-
         (
             score_cash_conversion(
                 metrics.get(
@@ -924,7 +827,6 @@ def score_reit(metrics):
     ])
 
     cash = weighted_average([
-
         (
             score_cash_conversion(
                 metrics.get(
@@ -933,7 +835,6 @@ def score_reit(metrics):
             ),
             60
         ),
-
         (
             score_growth(
                 metrics.get(
@@ -945,7 +846,6 @@ def score_reit(metrics):
     ])
 
     balance = weighted_average([
-
         (
             score_low_good(
                 metrics.get(
@@ -957,7 +857,6 @@ def score_reit(metrics):
             ),
             60
         ),
-
         (
             inverse_growth_score(
                 metrics.get(
@@ -978,22 +877,36 @@ def score_reit(metrics):
     )
 
     return {
-
-        "growth_score":
-            growth,
-
-        "quality_score":
-            quality,
-
-        "cash_score":
-            cash,
-
-        "balance_score":
-            balance,
-
-        "confidence_score":
-            confidence
+        "growth_score": growth,
+        "quality_score": quality,
+        "cash_score": cash,
+        "balance_score": balance,
+        "confidence_score": confidence
     }
+
+
+# ============================================================
+# Router
+# ============================================================
+
+def calculate_component_scores(
+    analysis_model,
+    metrics
+):
+
+    if analysis_model == "standard":
+        return score_standard(metrics)
+
+    if analysis_model == "bank":
+        return score_bank(metrics)
+
+    if analysis_model == "insurance":
+        return score_insurance(metrics)
+
+    if analysis_model == "reit":
+        return score_reit(metrics)
+
+    return None
 
 
 # ============================================================
@@ -1030,76 +943,40 @@ def calculate_final_scores(
     )
 
     opportunity_raw = weighted_average([
-
-        (
-            growth,
-            35
-        ),
-
-        (
-            quality,
-            30
-        ),
-
-        (
-            cash,
-            20
-        ),
-
-        (
-            balance,
-            15
-        )
+        (growth, 35),
+        (quality, 30),
+        (cash, 20),
+        (balance, 15)
     ])
 
     risk_raw = weighted_average([
-
         (
-            (
-                100 - quality
-                if quality is not None
-                else None
-            ),
+            100 - quality
+            if quality is not None
+            else None,
             40
         ),
-
         (
-            (
-                100 - cash
-                if cash is not None
-                else None
-            ),
+            100 - cash
+            if cash is not None
+            else None,
             30
         ),
-
         (
-            (
-                100 - balance
-                if balance is not None
-                else None
-            ),
+            100 - balance
+            if balance is not None
+            else None,
             30
         )
     ])
 
     turning_raw = weighted_average([
-
+        (growth, 45),
+        (quality, 35),
         (
-            growth,
-            45
-        ),
-
-        (
-            quality,
-            35
-        ),
-
-        (
-            (
-                cash
-                if cash is not None
-                else 50.0
-            ),
+            cash
+            if cash is not None
+            else 50.0,
             20
         )
     ])
@@ -1107,9 +984,7 @@ def calculate_final_scores(
     confidence_factor = (
         0.50
         + (
-            clamp(
-                confidence
-            )
+            clamp(confidence)
             / 200.0
         )
     )
@@ -1129,26 +1004,19 @@ def calculate_final_scores(
     )
 
     return {
-
         "opportunity_score":
-            clamp(
-                opportunity
-            ),
+            clamp(opportunity),
 
         "risk_score":
-            clamp(
-                risk_raw
-            ),
+            clamp(risk_raw),
 
         "turning_point_score":
-            clamp(
-                turning_point
-            )
+            clamp(turning_point)
     }
 
 
 # ============================================================
-# حفظ Scoring
+# حفظ درجات كل ربع
 # ============================================================
 
 def save_scoring_metrics(
@@ -1175,7 +1043,6 @@ def save_scoring_metrics(
             continue
 
         records.append({
-
             "stock_id":
                 stock_id,
 
@@ -1197,9 +1064,7 @@ def save_scoring_metrics(
 
     (
         supabase
-        .table(
-            "financial_metrics"
-        )
+        .table("financial_metrics")
         .upsert(
             records,
             on_conflict=(
@@ -1215,30 +1080,21 @@ def save_scoring_metrics(
 
 
 # ============================================================
-# شركة واحدة
+# حساب التاريخ الكامل لشركة
 # ============================================================
 
-def score_stock(stock):
+def score_stock_history(stock):
 
-    stock_id = stock[
-        "id"
-    ]
-
-    symbol = stock[
-        "symbol"
-    ]
+    stock_id = stock["id"]
+    symbol = stock["symbol"]
 
     company_name = (
-        stock.get(
-            "company_name"
-        )
+        stock.get("company_name")
         or symbol
     )
 
     analysis_model = (
-        stock.get(
-            "analysis_model"
-        )
+        stock.get("analysis_model")
         or "standard"
     )
 
@@ -1250,95 +1106,118 @@ def score_stock(stock):
         rows
     )
 
-    latest_period = find_latest_period(
+    valid_periods = get_valid_periods(
         periods,
         analysis_model
     )
 
-    if latest_period is None:
+    if not valid_periods:
 
         return {
-
-            "symbol":
-                symbol,
-
-            "company_name":
-                company_name,
-
-            "analysis_model":
-                analysis_model,
-
-            "status":
-                "no_period"
+            "symbol": symbol,
+            "company_name": company_name,
+            "analysis_model": analysis_model,
+            "status": "no_periods",
+            "history": [],
+            "saved": 0
         }
 
-    metrics = periods[
-        latest_period
-    ]
+    history = []
+    total_saved = 0
 
-    if analysis_model == "standard":
+    for period_end in valid_periods:
 
-        components = score_standard(
+        metrics = periods[
+            period_end
+        ]
+
+        components = calculate_component_scores(
+            analysis_model,
             metrics
         )
 
-    elif analysis_model == "bank":
+        if components is None:
+            continue
 
-        components = score_bank(
-            metrics
+        final_scores = calculate_final_scores(
+            components
         )
 
-    elif analysis_model == "insurance":
+        all_scores = {}
 
-        components = score_insurance(
-            metrics
+        all_scores.update(
+            components
         )
 
-    elif analysis_model == "reit":
-
-        components = score_reit(
-            metrics
+        all_scores.update(
+            final_scores
         )
 
-    else:
+        saved = save_scoring_metrics(
+            stock_id,
+            period_end,
+            all_scores
+        )
+
+        total_saved += saved
+
+        history.append({
+            "period_end":
+                period_end,
+
+            "growth":
+                all_scores.get(
+                    "growth_score"
+                ),
+
+            "quality":
+                all_scores.get(
+                    "quality_score"
+                ),
+
+            "cash":
+                all_scores.get(
+                    "cash_score"
+                ),
+
+            "balance":
+                all_scores.get(
+                    "balance_score"
+                ),
+
+            "confidence":
+                all_scores.get(
+                    "confidence_score"
+                ),
+
+            "opportunity":
+                all_scores.get(
+                    "opportunity_score"
+                ),
+
+            "risk":
+                all_scores.get(
+                    "risk_score"
+                ),
+
+            "turning":
+                all_scores.get(
+                    "turning_point_score"
+                )
+        })
+
+    if not history:
 
         return {
-
-            "symbol":
-                symbol,
-
-            "company_name":
-                company_name,
-
-            "analysis_model":
-                analysis_model,
-
-            "status":
-                "unknown_model"
+            "symbol": symbol,
+            "company_name": company_name,
+            "analysis_model": analysis_model,
+            "status": "no_scores",
+            "history": [],
+            "saved": total_saved
         }
-
-    final_scores = calculate_final_scores(
-        components
-    )
-
-    all_scores = {}
-
-    all_scores.update(
-        components
-    )
-
-    all_scores.update(
-        final_scores
-    )
-
-    saved = save_scoring_metrics(
-        stock_id,
-        latest_period,
-        all_scores
-    )
 
     return {
-
         "symbol":
             symbol,
 
@@ -1351,68 +1230,131 @@ def score_stock(stock):
         "status":
             "success",
 
-        "period_end":
-            latest_period,
+        "history":
+            history,
 
         "saved":
-            saved,
-
-        "growth":
-            all_scores.get(
-                "growth_score"
-            ),
-
-        "quality":
-            all_scores.get(
-                "quality_score"
-            ),
-
-        "cash":
-            all_scores.get(
-                "cash_score"
-            ),
-
-        "balance":
-            all_scores.get(
-                "balance_score"
-            ),
-
-        "opportunity":
-            all_scores.get(
-                "opportunity_score"
-            ),
-
-        "risk":
-            all_scores.get(
-                "risk_score"
-            ),
-
-        "turning_point":
-            all_scores.get(
-                "turning_point_score"
-            ),
-
-        "confidence":
-            all_scores.get(
-                "confidence_score"
-            )
+            total_saved
     }
 
 
 # ============================================================
-# تنسيق النتائج
+# Momentum بين آخر ربعين
 # ============================================================
 
-def fmt(value):
+def calculate_history_momentum(
+    history
+):
 
-    value = safe_number(
-        value
-    )
+    if len(history) < 2:
 
-    if value is None:
-        return "N/A"
+        return {
+            "opportunity_delta": None,
+            "risk_delta": None,
+            "turning_delta": None,
+            "growth_delta": None,
+            "quality_delta": None
+        }
 
-    return f"{value:.2f}"
+    current = history[-1]
+    previous = history[-2]
+
+    def delta(key):
+
+        current_value = safe_number(
+            current.get(key)
+        )
+
+        previous_value = safe_number(
+            previous.get(key)
+        )
+
+        if (
+            current_value is None
+            or previous_value is None
+        ):
+            return None
+
+        return (
+            current_value
+            - previous_value
+        )
+
+    return {
+        "opportunity_delta":
+            delta("opportunity"),
+
+        "risk_delta":
+            delta("risk"),
+
+        "turning_delta":
+            delta("turning"),
+
+        "growth_delta":
+            delta("growth"),
+
+        "quality_delta":
+            delta("quality")
+    }
+
+
+# ============================================================
+# اتجاه آخر 3 أرباع
+# ============================================================
+
+def calculate_trend(history):
+
+    if len(history) < 3:
+        return "INSUFFICIENT_HISTORY"
+
+    recent = history[-3:]
+
+    opportunities = [
+        safe_number(
+            item.get("opportunity")
+        )
+        for item in recent
+    ]
+
+    risks = [
+        safe_number(
+            item.get("risk")
+        )
+        for item in recent
+    ]
+
+    if any(
+        value is None
+        for value in opportunities
+    ):
+        return "INSUFFICIENT_HISTORY"
+
+    if (
+        opportunities[0]
+        < opportunities[1]
+        < opportunities[2]
+    ):
+
+        if (
+            all(
+                value is not None
+                for value in risks
+            )
+            and risks[2] <= risks[0]
+        ):
+            return "IMPROVING_PERSISTENT"
+
+        return "IMPROVING"
+
+    if (
+        opportunities[0]
+        > opportunities[1]
+        > opportunities[2]
+    ):
+
+        return "DETERIORATING"
+
+    return "MIXED"
 
 
 # ============================================================
@@ -1430,7 +1372,7 @@ def run_scoring_engine():
     )
 
     print(
-        "🎯 SCORING ENGINE v1.1",
+        "🎯 HISTORICAL SCORING ENGINE v2",
         flush=True
     )
 
@@ -1453,7 +1395,13 @@ def run_scoring_engine():
     ):
 
         print(
-            f"\n🚦 Scoring "
+            "\n"
+            + "-" * 80,
+            flush=True
+        )
+
+        print(
+            f"🚦 Scoring "
             f"{index}/{len(stocks)} | "
             f"{stock['symbol']}",
             flush=True
@@ -1461,18 +1409,15 @@ def run_scoring_engine():
 
         try:
 
-            result = score_stock(
+            result = score_stock_history(
                 stock
             )
 
         except Exception as error:
 
             result = {
-
                 "symbol":
-                    stock[
-                        "symbol"
-                    ],
+                    stock["symbol"],
 
                 "company_name":
                     stock.get(
@@ -1487,6 +1432,12 @@ def run_scoring_engine():
                 "status":
                     "error",
 
+                "history":
+                    [],
+
+                "saved":
+                    0,
+
                 "error":
                     str(error)
             }
@@ -1499,40 +1450,124 @@ def run_scoring_engine():
                 flush=True
             )
 
+        if result.get(
+            "status"
+        ) == "success":
+
+            history = result[
+                "history"
+            ]
+
+            latest = history[-1]
+
+            momentum = (
+                calculate_history_momentum(
+                    history
+                )
+            )
+
+            trend = calculate_trend(
+                history
+            )
+
+            result[
+                "latest"
+            ] = latest
+
+            result[
+                "momentum"
+            ] = momentum
+
+            result[
+                "trend"
+            ] = trend
+
+            print(
+                f"📚 Historical Periods: "
+                f"{len(history)}",
+                flush=True
+            )
+
+            print(
+                f"📅 Latest: "
+                f"{latest['period_end']}",
+                flush=True
+            )
+
+            print(
+                f"🎯 Opportunity: "
+                f"{fmt(latest['opportunity'])}",
+                flush=True
+            )
+
+            print(
+                f"🔴 Risk: "
+                f"{fmt(latest['risk'])}",
+                flush=True
+            )
+
+            print(
+                f"🧭 Turning: "
+                f"{fmt(latest['turning'])}",
+                flush=True
+            )
+
+            print(
+                f"🚀 Opportunity Δ: "
+                f"{signed_fmt(momentum['opportunity_delta'])}",
+                flush=True
+            )
+
+            print(
+                f"⚠️ Risk Δ: "
+                f"{signed_fmt(momentum['risk_delta'])}",
+                flush=True
+            )
+
+            print(
+                f"🧭 Turning Δ: "
+                f"{signed_fmt(momentum['turning_delta'])}",
+                flush=True
+            )
+
+            print(
+                f"🧬 Trend: "
+                f"{trend}",
+                flush=True
+            )
+
         results.append(
             result
         )
 
     successful = [
-
         result
-
         for result in results
-
         if result.get(
             "status"
         ) == "success"
     ]
 
     successful.sort(
-
         key=lambda result: (
-
             safe_number(
                 result.get(
+                    "latest",
+                    {}
+                ).get(
                     "opportunity"
                 )
             )
-
             if safe_number(
                 result.get(
+                    "latest",
+                    {}
+                ).get(
                     "opportunity"
                 )
             ) is not None
-
             else -1
         ),
-
         reverse=True
     )
 
@@ -1543,7 +1578,7 @@ def run_scoring_engine():
     )
 
     print(
-        "🏆 OPPORTUNITY RANKING",
+        "🏆 LATEST OPPORTUNITY RANKING",
         flush=True
     )
 
@@ -1557,34 +1592,49 @@ def run_scoring_engine():
         start=1
     ):
 
-        print(
+        latest = result[
+            "latest"
+        ]
 
+        momentum = result[
+            "momentum"
+        ]
+
+        print(
             f"{rank:02d}. "
             f"{result['symbol']} | "
             f"{result['company_name']} | "
             f"{result['analysis_model']} | "
             f"Opportunity="
-            f"{fmt(result.get('opportunity'))} | "
+            f"{fmt(latest['opportunity'])} | "
             f"Risk="
-            f"{fmt(result.get('risk'))} | "
+            f"{fmt(latest['risk'])} | "
             f"Turning="
-            f"{fmt(result.get('turning_point'))} | "
-            f"Confidence="
-            f"{fmt(result.get('confidence'))}",
-
+            f"{fmt(latest['turning'])} | "
+            f"OppΔ="
+            f"{signed_fmt(momentum['opportunity_delta'])} | "
+            f"RiskΔ="
+            f"{signed_fmt(momentum['risk_delta'])} | "
+            f"Trend="
+            f"{result['trend']}",
             flush=True
         )
 
     failures = [
-
         result
-
         for result in results
-
         if result.get(
             "status"
         ) != "success"
     ]
+
+    total_saved = sum(
+        result.get(
+            "saved",
+            0
+        )
+        for result in results
+    )
 
     print(
         "\n"
@@ -1593,7 +1643,7 @@ def run_scoring_engine():
     )
 
     print(
-        "📊 SCORING SUMMARY",
+        "📊 HISTORICAL SCORING SUMMARY",
         flush=True
     )
 
@@ -1614,6 +1664,12 @@ def run_scoring_engine():
         flush=True
     )
 
+    print(
+        f"💾 Historical Score Records Saved: "
+        f"{total_saved}",
+        flush=True
+    )
+
     if failures:
 
         print(
@@ -1624,12 +1680,10 @@ def run_scoring_engine():
         for result in failures:
 
             print(
-
                 f"{result.get('symbol')} | "
                 f"{result.get('analysis_model')} | "
                 f"{result.get('status')} | "
                 f"{result.get('error', '')}",
-
                 flush=True
             )
 
