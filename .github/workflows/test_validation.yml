@@ -1,0 +1,27 @@
+name: Validation Engine Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  validation-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install requirements
+        run: pip install -r requirements.txt
+
+      - name: Run Validation Engine
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          VALIDATION_SYMBOLS: "4030.SR,4190.SR,8010.SR,1831.SR,1111.SR,2283.SR,7203.SR,1150.SR"
+        run: python validation_engine.py
