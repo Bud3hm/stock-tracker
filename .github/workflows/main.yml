@@ -5,8 +5,7 @@ on:
 
   schedule:
     # يوميًا الساعة 9:30 صباحًا بتوقيت الرياض
-    # GitHub يستخدم UTC
-    # 06:30 UTC = 09:30 الرياض
+    # 06:30 UTC = 09:30 Riyadh
     - cron: "30 6 * * *"
 
 jobs:
@@ -14,36 +13,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      # ======================================================
-      # 1. جلب الكود
-      # ======================================================
-
       - name: Get code
         uses: actions/checkout@v4
-
-
-      # ======================================================
-      # 2. إعداد Python
-      # ======================================================
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-
-      # ======================================================
-      # 3. تثبيت المكتبات
-      # ======================================================
-
       - name: Install requirements
         run: pip install -r requirements.txt
-
-
-      # ======================================================
-      # 4. جلب البيانات المالية لجميع الشركات
-      # ======================================================
 
       - name: Fetch financial data
         env:
@@ -51,21 +30,11 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python financial_data.py
 
-
-      # ======================================================
-      # 5. حساب مؤشرات الشركات العادية
-      # ======================================================
-
       - name: Calculate financial metrics
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python financial_metrics.py
-
-
-      # ======================================================
-      # 6. حساب مؤشرات البنوك
-      # ======================================================
 
       - name: Calculate bank metrics
         env:
@@ -73,21 +42,11 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python bank_metrics.py
 
-
-      # ======================================================
-      # 7. حساب مؤشرات شركات التأمين
-      # ======================================================
-
       - name: Calculate insurance metrics
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python insurance_metrics.py
-
-
-      # ======================================================
-      # 8. حساب مؤشرات صناديق الريت
-      # ======================================================
 
       - name: Calculate REIT metrics
         env:
@@ -95,13 +54,20 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python reit_metrics.py
 
-
-      # ======================================================
-      # 9. محرك التقييم والترتيب
-      # ======================================================
-
       - name: Run Scoring Engine
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python scoring_engine.py
+
+      - name: Run Turning Point Engine
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: python turning_point_engine.py
+
+      - name: Run Decision Engine
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: python decision_engine.py
