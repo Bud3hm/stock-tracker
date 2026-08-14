@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from collections import defaultdict
 from supabase import create_client
 
 
@@ -45,16 +45,31 @@ def safe_number(value):
         return None
 
 
+def clamp(value, minimum, maximum):
+
+    return max(
+        minimum,
+        min(
+            maximum,
+            value
+        )
+    )
+
+
 def average(values):
 
     clean = []
 
     for value in values:
 
-        value = safe_number(value)
+        value = safe_number(
+            value
+        )
 
         if value is not None:
-            clean.append(value)
+            clean.append(
+                value
+            )
 
     if not clean:
         return None
@@ -64,8 +79,13 @@ def average(values):
 
 def growth_rate(current, previous):
 
-    current = safe_number(current)
-    previous = safe_number(previous)
+    current = safe_number(
+        current
+    )
+
+    previous = safe_number(
+        previous
+    )
 
     if (
         current is None
@@ -75,13 +95,62 @@ def growth_rate(current, previous):
         return None
 
     return (
-        (current - previous)
+        (
+            current - previous
+        )
         / abs(previous)
     ) * 100
 
 
 # ============================================================
-# جلب Financial Metrics
+# نمو مضبوط ضد Base Effect
+#
+# للتدفقات النقدية خصوصًا
+# ============================================================
+
+def robust_growth(
+    current,
+    previous
+):
+
+    current = safe_number(
+        current
+    )
+
+    previous = safe_number(
+        previous
+    )
+
+    if (
+        current is None
+        or previous is None
+    ):
+        return None
+
+    scale = max(
+        abs(previous),
+        abs(current),
+        1.0
+    )
+
+    normalized_change = (
+        current - previous
+    ) / scale
+
+    score_like_growth = (
+        normalized_change
+        * 100
+    )
+
+    return clamp(
+        score_like_growth,
+        -100,
+        100
+    )
+
+
+# ============================================================
+# جلب المؤشرات
 # ============================================================
 
 def get_metrics(stock_id):
@@ -103,7 +172,7 @@ def get_metrics(stock_id):
 
 
 # ============================================================
-# تنظيم البيانات حسب الربع
+# تنظيم البيانات حسب الفترة
 # ============================================================
 
 def organize_metrics(rows):
@@ -144,7 +213,7 @@ def organize_metrics(rows):
 
 
 # ============================================================
-# تحديد الفترات الربعية
+# تحديد الأرباع
 # ============================================================
 
 def get_quarter_dates(periods):
@@ -189,34 +258,28 @@ def classify_signal(
         net_score is None
         or confidence is None
     ):
-
         return "NO_SIGNAL"
 
     if confidence < 55:
-
         return "LOW_CONFIDENCE"
 
     if net_score >= 20:
-
         return "POSITIVE"
 
     if net_score <= -20:
-
         return "NEGATIVE"
 
     if net_score >= 5:
-
         return "EARLY_POSITIVE"
 
     if net_score <= -5:
-
         return "EARLY_NEGATIVE"
 
     return "NEUTRAL"
 
 
 # ============================================================
-# حساب Outcome مالي مستقبلي
+# Outcome خام
 # ============================================================
 
 def calculate_future_outcome(
@@ -306,12 +369,13 @@ def calculate_future_outcome(
             - current_margin
         )
 
-    ocf_growth = growth_rate(
+    # robust بدل growth_rate العادي
+    ocf_change = robust_growth(
         future_ocf,
         current_ocf
     )
 
-    fcf_growth = growth_rate(
+    fcf_change = robust_growth(
         future_fcf,
         current_fcf
     )
@@ -326,193 +390,233 @@ def calculate_future_outcome(
         "future_margin_change":
             margin_change,
 
-        "future_ocf_growth":
-            ocf_growth,
+        "future_ocf_change_robust":
+            ocf_change,
 
-        "future_fcf_growth":
-            fcf_growth
+        "future_fcf_change_robust":
+            fcf_change
     }
 
 
 # ============================================================
-# Outcome Score
+# Scoring Components
+# ============================================================
+
+def score_revenue(value):
+
+    value = safe_number(
+        value
+    )
+
+    if value is None:
+        return None
+
+    if value >= 20:
+        return 90
+
+    if value >= 10:
+        return 75
+
+    if value >= 5:
+        return 65
+
+    if value >= 0:
+        return 55
+
+    if value >= -5:
+        return 40
+
+    if value >= -10:
+        return 25
+
+    return 10
+
+
+def score_profit(value):
+
+    value = safe_number(
+        value
+    )
+
+    if value is None:
+        return None
+
+    if value >= 25:
+        return 95
+
+    if value >= 15:
+        return 85
+
+    if value >= 8:
+        return 75
+
+    if value >= 0:
+        return 55
+
+    if value >= -8:
+        return 40
+
+    if value >= -15:
+        return 25
+
+    return 5
+
+
+def score_margin(value):
+
+    value = safe_number(
+        value
+    )
+
+    if value is None:
+        return None
+
+    if value >= 3:
+        return 90
+
+    if value >= 1.5:
+        return 80
+
+    if value >= 0.5:
+        return 70
+
+    if value >= 0:
+        return 55
+
+    if value >= -1:
+        return 40
+
+    if value >= -2:
+        return 25
+
+    return 10
+
+
+def score_cash(value):
+
+    value = safe_number(
+        value
+    )
+
+    if value is None:
+        return None
+
+    if value >= 50:
+        return 90
+
+    if value >= 20:
+        return 80
+
+    if value >= 5:
+        return 65
+
+    if value >= 0:
+        return 55
+
+    if value >= -10:
+        return 40
+
+    if value >= -25:
+        return 25
+
+    return 10
+
+
+# ============================================================
+# Outcome Component Scores
+# ============================================================
+
+def build_outcome_components(
+    outcome
+):
+
+    return {
+        "revenue_score":
+            score_revenue(
+                outcome.get(
+                    "future_revenue_growth"
+                )
+            ),
+
+        "profit_score":
+            score_profit(
+                outcome.get(
+                    "future_profit_growth"
+                )
+            ),
+
+        "margin_score":
+            score_margin(
+                outcome.get(
+                    "future_margin_change"
+                )
+            ),
+
+        "ocf_score":
+            score_cash(
+                outcome.get(
+                    "future_ocf_change_robust"
+                )
+            ),
+
+        "fcf_score":
+            score_cash(
+                outcome.get(
+                    "future_fcf_change_robust"
+                )
+            )
+    }
+
+
+# ============================================================
+# Outcome Score مركب
 #
-# هذا لا يغيّر Signal Engine
-# فقط يقيس ما حدث لاحقًا
+# الربح أهم ثم الهوامش
 # ============================================================
 
-def score_future_outcome(outcome):
+def calculate_outcome_score(
+    components
+):
 
-    components = []
+    weights = {
+        "revenue_score": 20,
+        "profit_score": 30,
+        "margin_score": 20,
+        "ocf_score": 15,
+        "fcf_score": 15
+    }
 
-    revenue_growth = safe_number(
-        outcome.get(
-            "future_revenue_growth"
-        )
-    )
+    weighted_sum = 0.0
+    total_weight = 0.0
 
-    profit_growth = safe_number(
-        outcome.get(
-            "future_profit_growth"
-        )
-    )
+    for name, weight in weights.items():
 
-    margin_change = safe_number(
-        outcome.get(
-            "future_margin_change"
-        )
-    )
-
-    ocf_growth = safe_number(
-        outcome.get(
-            "future_ocf_growth"
-        )
-    )
-
-    fcf_growth = safe_number(
-        outcome.get(
-            "future_fcf_growth"
-        )
-    )
-
-    # --------------------------------------------------------
-    # Revenue
-    # --------------------------------------------------------
-
-    if revenue_growth is not None:
-
-        if revenue_growth >= 15:
-            components.append(80)
-
-        elif revenue_growth >= 5:
-            components.append(65)
-
-        elif revenue_growth >= 0:
-            components.append(55)
-
-        elif revenue_growth >= -5:
-            components.append(40)
-
-        else:
-            components.append(20)
-
-    # --------------------------------------------------------
-    # Profit
-    # أهم من Revenue
-    # --------------------------------------------------------
-
-    if profit_growth is not None:
-
-        if profit_growth >= 20:
-            components.extend(
-                [
-                    90,
-                    90
-                ]
+        value = safe_number(
+            components.get(
+                name
             )
+        )
 
-        elif profit_growth >= 8:
-            components.extend(
-                [
-                    75,
-                    75
-                ]
-            )
+        if value is None:
+            continue
 
-        elif profit_growth >= 0:
-            components.extend(
-                [
-                    55,
-                    55
-                ]
-            )
+        weighted_sum += (
+            value * weight
+        )
 
-        elif profit_growth >= -10:
-            components.extend(
-                [
-                    35,
-                    35
-                ]
-            )
+        total_weight += weight
 
-        else:
-            components.extend(
-                [
-                    10,
-                    10
-                ]
-            )
+    if total_weight == 0:
+        return None
 
-    # --------------------------------------------------------
-    # Margin
-    # --------------------------------------------------------
-
-    if margin_change is not None:
-
-        if margin_change >= 2:
-            components.append(85)
-
-        elif margin_change >= 0.5:
-            components.append(70)
-
-        elif margin_change >= 0:
-            components.append(55)
-
-        elif margin_change >= -1:
-            components.append(40)
-
-        else:
-            components.append(20)
-
-    # --------------------------------------------------------
-    # OCF
-    # --------------------------------------------------------
-
-    if ocf_growth is not None:
-
-        if ocf_growth >= 15:
-            components.append(80)
-
-        elif ocf_growth >= 5:
-            components.append(65)
-
-        elif ocf_growth >= 0:
-            components.append(55)
-
-        elif ocf_growth >= -10:
-            components.append(35)
-
-        else:
-            components.append(15)
-
-    # --------------------------------------------------------
-    # FCF
-    # --------------------------------------------------------
-
-    if fcf_growth is not None:
-
-        if fcf_growth >= 15:
-            components.append(80)
-
-        elif fcf_growth >= 5:
-            components.append(65)
-
-        elif fcf_growth >= 0:
-            components.append(55)
-
-        elif fcf_growth >= -10:
-            components.append(35)
-
-        else:
-            components.append(15)
-
-    return average(
-        components
+    return (
+        weighted_sum
+        / total_weight
     )
 
 
 # ============================================================
-# تحويل Outcome Score
+# Outcome Direction
 # ============================================================
 
 def classify_outcome(score):
@@ -524,10 +628,10 @@ def classify_outcome(score):
     if score is None:
         return "NO_DATA"
 
-    if score >= 70:
+    if score >= 75:
         return "STRONG_IMPROVEMENT"
 
-    if score >= 58:
+    if score >= 60:
         return "IMPROVEMENT"
 
     if score >= 45:
@@ -540,100 +644,136 @@ def classify_outcome(score):
 
 
 # ============================================================
-# هل الإشارة كانت صحيحة؟
+# تحويل الإشارة إلى Direction رقمي
 # ============================================================
 
-def evaluate_prediction(
-    signal_class,
-    outcome_class
+def signal_direction(
+    signal_class
 ):
 
-    if signal_class in (
-        "NO_SIGNAL",
-        "LOW_CONFIDENCE",
-        "NEUTRAL"
-    ):
+    mapping = {
+        "POSITIVE": 1.0,
+        "EARLY_POSITIVE": 0.5,
+        "NEUTRAL": 0.0,
+        "EARLY_NEGATIVE": -0.5,
+        "NEGATIVE": -1.0
+    }
 
-        return None
-
-    positive_signal = (
+    return mapping.get(
         signal_class
-        in (
-            "POSITIVE",
-            "EARLY_POSITIVE"
-        )
     )
-
-    negative_signal = (
-        signal_class
-        in (
-            "NEGATIVE",
-            "EARLY_NEGATIVE"
-        )
-    )
-
-    positive_outcome = (
-        outcome_class
-        in (
-            "STRONG_IMPROVEMENT",
-            "IMPROVEMENT"
-        )
-    )
-
-    negative_outcome = (
-        outcome_class
-        in (
-            "STRONG_DETERIORATION",
-            "DETERIORATION"
-        )
-    )
-
-    if (
-        positive_signal
-        and positive_outcome
-    ):
-
-        return 1
-
-    if (
-        negative_signal
-        and negative_outcome
-    ):
-
-        return 1
-
-    if (
-        positive_signal
-        and negative_outcome
-    ):
-
-        return 0
-
-    if (
-        negative_signal
-        and positive_outcome
-    ):
-
-        return 0
-
-    # Outcome محايد
-    return 0.5
 
 
 # ============================================================
-# طباعة اختبار ربع واحد
+# تحويل Outcome إلى Direction رقمي
+# ============================================================
+
+def outcome_direction(
+    outcome_score
+):
+
+    outcome_score = safe_number(
+        outcome_score
+    )
+
+    if outcome_score is None:
+        return None
+
+    # 50 = neutral center
+    direction = (
+        outcome_score
+        - 50
+    ) / 25
+
+    return clamp(
+        direction,
+        -1,
+        1
+    )
+
+
+# ============================================================
+# Prediction Alignment
+#
+# 100 = ممتاز
+# 50 = جزئي
+# 0 = عكس الاتجاه
+# ============================================================
+
+def calculate_alignment(
+    signal_class,
+    outcome_score
+):
+
+    signal = signal_direction(
+        signal_class
+    )
+
+    outcome = outcome_direction(
+        outcome_score
+    )
+
+    if (
+        signal is None
+        or outcome is None
+    ):
+        return None
+
+    distance = abs(
+        signal - outcome
+    )
+
+    alignment = (
+        1
+        - (
+            distance / 2
+        )
+    ) * 100
+
+    return clamp(
+        alignment,
+        0,
+        100
+    )
+
+
+# ============================================================
+# قوة النتيجة المستقبلية
+# ============================================================
+
+def calculate_outcome_strength(
+    outcome_score
+):
+
+    outcome_score = safe_number(
+        outcome_score
+    )
+
+    if outcome_score is None:
+        return None
+
+    return abs(
+        outcome_score - 50
+    ) * 2
+
+
+# ============================================================
+# طباعة اختبار
 # ============================================================
 
 def print_backtest_result(
     base_date,
+    future_date,
     forward_quarters,
     signal_class,
     net_score,
     confidence,
     outcome,
+    components,
     outcome_score,
     outcome_class,
-    correct
+    alignment,
+    strength
 ):
 
     print(
@@ -643,78 +783,173 @@ def print_backtest_result(
     )
 
     print(
-        f"📅 Base Quarter: {base_date}",
+        f"📅 Base Quarter: "
+        f"{base_date}",
         flush=True
     )
 
     print(
-        f"⏩ Forward: "
-        f"{forward_quarters} quarter(s)",
+        f"🔮 Future Quarter: "
+        f"{future_date}",
         flush=True
     )
 
     print(
-        f"🧠 Signal: {signal_class}",
+        f"⏩ Horizon: "
+        f"Q+{forward_quarters}",
         flush=True
     )
 
     print(
-        f"⚖️ Net Score: {net_score}",
+        f"🧠 Signal: "
+        f"{signal_class}",
         flush=True
     )
 
     print(
-        f"🎯 Confidence: {confidence}",
+        f"⚖️ Net Score: "
+        f"{net_score}",
         flush=True
     )
 
     print(
-        f"📊 Future Revenue Growth: "
+        f"🎯 Confidence: "
+        f"{confidence}",
+        flush=True
+    )
+
+    print(
+        "\n📊 Future Raw Outcome",
+        flush=True
+    )
+
+    print(
+        f"Revenue Growth: "
         f"{outcome['future_revenue_growth']}",
         flush=True
     )
 
     print(
-        f"💰 Future Profit Growth: "
+        f"Profit Growth: "
         f"{outcome['future_profit_growth']}",
         flush=True
     )
 
     print(
-        f"📉 Future Margin Change: "
+        f"Margin Change: "
         f"{outcome['future_margin_change']}",
         flush=True
     )
 
     print(
-        f"💵 Future OCF Growth: "
-        f"{outcome['future_ocf_growth']}",
+        f"OCF Robust Change: "
+        f"{outcome['future_ocf_change_robust']}",
         flush=True
     )
 
     print(
-        f"💸 Future FCF Growth: "
-        f"{outcome['future_fcf_growth']}",
+        f"FCF Robust Change: "
+        f"{outcome['future_fcf_change_robust']}",
         flush=True
     )
 
     print(
-        f"📈 Outcome Score: "
+        "\n🧩 Outcome Components",
+        flush=True
+    )
+
+    for name, value in (
+        components.items()
+    ):
+
+        print(
+            f"{name}: {value}",
+            flush=True
+        )
+
+    print(
+        f"\n📈 Outcome Score: "
         f"{outcome_score}",
         flush=True
     )
 
     print(
-        f"🧭 Outcome: "
+        f"🧭 Outcome Class: "
         f"{outcome_class}",
         flush=True
     )
 
     print(
-        f"✅ Prediction Result: "
-        f"{correct}",
+        f"🎯 Prediction Alignment: "
+        f"{alignment}",
         flush=True
     )
+
+    print(
+        f"💪 Outcome Strength: "
+        f"{strength}",
+        flush=True
+    )
+
+
+# ============================================================
+# Summary حسب الأفق
+# ============================================================
+
+def print_horizon_summary(
+    results_by_horizon
+):
+
+    print(
+        "\n"
+        "============================================================",
+        flush=True
+    )
+
+    print(
+        "📊 BACKTEST SUMMARY BY HORIZON",
+        flush=True
+    )
+
+    print(
+        "============================================================",
+        flush=True
+    )
+
+    for horizon in sorted(
+        results_by_horizon.keys()
+    ):
+
+        values = (
+            results_by_horizon[
+                horizon
+            ]
+        )
+
+        if not values:
+            continue
+
+        average_alignment = (
+            sum(values)
+            / len(values)
+        )
+
+        print(
+            f"\nQ+{horizon}",
+            flush=True
+        )
+
+        print(
+            f"Predictions: "
+            f"{len(values)}",
+            flush=True
+        )
+
+        print(
+            f"Average Alignment: "
+            f"{average_alignment:.2f}%",
+            flush=True
+        )
 
 
 # ============================================================
@@ -751,7 +986,7 @@ def run_backtest(stock_id):
     )
 
     print(
-        "🧪 BACKTEST ENGINE v1",
+        "🧪 BACKTEST ENGINE v1.1",
         flush=True
     )
 
@@ -760,7 +995,11 @@ def run_backtest(stock_id):
         flush=True
     )
 
-    all_results = []
+    results_by_horizon = defaultdict(
+        list
+    )
+
+    total_evaluated = 0
 
     for index, base_date in enumerate(
         quarter_dates
@@ -787,11 +1026,16 @@ def run_backtest(stock_id):
             confidence
         )
 
+        if signal_class in (
+            "NO_SIGNAL",
+            "LOW_CONFIDENCE"
+        ):
+            continue
+
         for forward in FORWARD_QUARTERS:
 
             future_index = (
-                index
-                + forward
+                index + forward
             )
 
             if future_index >= len(
@@ -814,9 +1058,15 @@ def run_backtest(stock_id):
                 )
             )
 
-            outcome_score = (
-                score_future_outcome(
+            components = (
+                build_outcome_components(
                     outcome
+                )
+            )
+
+            outcome_score = (
+                calculate_outcome_score(
+                    components
                 )
             )
 
@@ -826,30 +1076,47 @@ def run_backtest(stock_id):
                 )
             )
 
-            correct = (
-                evaluate_prediction(
+            alignment = (
+                calculate_alignment(
                     signal_class,
-                    outcome_class
+                    outcome_score
+                )
+            )
+
+            strength = (
+                calculate_outcome_strength(
+                    outcome_score
                 )
             )
 
             print_backtest_result(
                 base_date,
+                future_date,
                 forward,
                 signal_class,
                 net_score,
                 confidence,
                 outcome,
+                components,
                 outcome_score,
                 outcome_class,
-                correct
+                alignment,
+                strength
             )
 
-            if correct is not None:
+            if alignment is not None:
 
-                all_results.append(
-                    correct
+                results_by_horizon[
+                    forward
+                ].append(
+                    alignment
                 )
+
+                total_evaluated += 1
+
+    print_horizon_summary(
+        results_by_horizon
+    )
 
     print(
         "\n"
@@ -858,39 +1125,22 @@ def run_backtest(stock_id):
     )
 
     print(
-        "📊 BACKTEST SUMMARY",
+        f"🎯 Total Evaluated Predictions: "
+        f"{total_evaluated}",
         flush=True
     )
 
-    print(
-        "============================================================",
-        flush=True
-    )
-
-    if not all_results:
+    if total_evaluated < 20:
 
         print(
-            "⚠️ لا توجد إشارات كافية "
-            "لحساب دقة تاريخية",
+            "⚠️ العينة التاريخية ما زالت صغيرة، "
+            "ولا نعتمد نسبة دقة نهائية حتى نختبر "
+            "شركات وفترات أكثر.",
             flush=True
         )
 
-        return
-
-    hit_rate = (
-        sum(all_results)
-        / len(all_results)
-    ) * 100
-
     print(
-        f"🎯 Evaluated Predictions: "
-        f"{len(all_results)}",
-        flush=True
-    )
-
-    print(
-        f"✅ Historical Hit Rate: "
-        f"{hit_rate:.2f}%",
+        "============================================================",
         flush=True
     )
 
