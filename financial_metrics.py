@@ -17,6 +17,33 @@ supabase = create_client(
 
 
 # ============================================================
+# جلب الشركات المفعلة
+# ============================================================
+
+def get_active_stocks():
+
+    response = (
+        supabase
+        .table("stocks")
+        .select(
+            "id,"
+            "symbol,"
+            "company_name,"
+            "sector,"
+            "analysis_model,"
+            "priority,"
+            "data_status"
+        )
+        .eq("is_active", True)
+        .order("priority", desc=True)
+        .order("id")
+        .execute()
+    )
+
+    return response.data or []
+
+
+# ============================================================
 # جلب البيانات المالية الخام
 # ============================================================
 
@@ -30,7 +57,7 @@ def get_financial_data(stock_id):
         .execute()
     )
 
-    return response.data
+    return response.data or []
 
 
 # ============================================================
@@ -54,7 +81,11 @@ def safe_divide(a, b):
     a = safe_number(a)
     b = safe_number(b)
 
-    if a is None or b is None or b == 0:
+    if (
+        a is None
+        or b is None
+        or b == 0
+    ):
         return None
 
     return a / b
@@ -95,7 +126,10 @@ def sum_if_complete(values):
 
     if (
         len(cleaned) != 4
-        or any(value is None for value in cleaned)
+        or any(
+            value is None
+            for value in cleaned
+        )
     ):
         return None
 
@@ -107,7 +141,10 @@ def difference(current, previous):
     current = safe_number(current)
     previous = safe_number(previous)
 
-    if current is None or previous is None:
+    if (
+        current is None
+        or previous is None
+    ):
         return None
 
     return current - previous
@@ -170,7 +207,7 @@ def save_metrics(
             flush=True
         )
 
-        return
+        return 0
 
     (
         supabase
@@ -191,6 +228,8 @@ def save_metrics(
         f"للفترة {period_end}",
         flush=True
     )
+
+    return len(records)
 
 
 # ============================================================
@@ -232,14 +271,18 @@ def organize_financial_data(rows):
             if period_end not in annual:
                 annual[period_end] = {}
 
-            annual[period_end][metric] = metric_value
+            annual[
+                period_end
+            ][metric] = metric_value
 
         elif period_type == "3M":
 
             if period_end not in quarterly:
                 quarterly[period_end] = {}
 
-            quarterly[period_end][metric] = metric_value
+            quarterly[
+                period_end
+            ][metric] = metric_value
 
     return annual, quarterly
 
@@ -345,7 +388,7 @@ def calculate_annual_metrics(
         else None
     )
 
-    metrics = {
+    return {
 
         "annual_revenue_growth_yoy":
             growth_rate(
@@ -451,8 +494,6 @@ def calculate_annual_metrics(
             capex
     }
 
-    return metrics
-
 
 # ============================================================
 # حساب مؤشرات الربع
@@ -539,7 +580,10 @@ def calculate_quarter_metrics(
         "quarterlyCapitalExpenditure"
     )
 
-    # السابق مباشرة
+    # ========================================================
+    # الربع السابق
+    # ========================================================
+
     prev_revenue = value(
         previous_quarter,
         "quarterlyTotalRevenue"
@@ -590,7 +634,10 @@ def calculate_quarter_metrics(
         "quarterlyFreeCashFlow"
     )
 
-    # نفس الربع العام السابق
+    # ========================================================
+    # نفس الربع من العام السابق
+    # ========================================================
+
     yoy_revenue = value(
         same_quarter_last_year,
         "quarterlyTotalRevenue"
@@ -620,6 +667,10 @@ def calculate_quarter_metrics(
         same_quarter_last_year,
         "quarterlyFreeCashFlow"
     )
+
+    # ========================================================
+    # الهوامش
+    # ========================================================
 
     gross_margin = pct(
         safe_divide(
@@ -684,11 +735,11 @@ def calculate_quarter_metrics(
         )
     )
 
-    metrics = {
+    return {
 
-        # ----------------------------------------------------
-        # نمو ربع على ربع
-        # ----------------------------------------------------
+        # ====================================================
+        # QoQ
+        # ====================================================
 
         "q_revenue_growth_qoq":
             growth_rate(
@@ -714,9 +765,9 @@ def calculate_quarter_metrics(
                 prev_fcf
             ),
 
-        # ----------------------------------------------------
-        # نمو سنوي لنفس الربع
-        # ----------------------------------------------------
+        # ====================================================
+        # YoY
+        # ====================================================
 
         "q_revenue_growth_yoy":
             growth_rate(
@@ -742,9 +793,9 @@ def calculate_quarter_metrics(
                 yoy_fcf
             ),
 
-        # ----------------------------------------------------
-        # الهوامش الحالية
-        # ----------------------------------------------------
+        # ====================================================
+        # الهوامش
+        # ====================================================
 
         "q_gross_margin":
             gross_margin,
@@ -754,10 +805,6 @@ def calculate_quarter_metrics(
 
         "q_net_margin":
             net_margin,
-
-        # ----------------------------------------------------
-        # تغير الهوامش عن الربع السابق
-        # ----------------------------------------------------
 
         "q_gross_margin_change_qoq":
             difference(
@@ -777,10 +824,6 @@ def calculate_quarter_metrics(
                 prev_net_margin
             ),
 
-        # ----------------------------------------------------
-        # تغير الهوامش عن نفس الربع العام السابق
-        # ----------------------------------------------------
-
         "q_gross_margin_change_yoy":
             difference(
                 gross_margin,
@@ -799,9 +842,9 @@ def calculate_quarter_metrics(
                 yoy_net_margin
             ),
 
-        # ----------------------------------------------------
+        # ====================================================
         # العائد والكفاءة
-        # ----------------------------------------------------
+        # ====================================================
 
         "q_roa":
             pct(
@@ -833,9 +876,9 @@ def calculate_quarter_metrics(
                 )
             ),
 
-        # ----------------------------------------------------
+        # ====================================================
         # الدين والسيولة
-        # ----------------------------------------------------
+        # ====================================================
 
         "q_debt_to_equity":
             safe_divide(
@@ -871,9 +914,9 @@ def calculate_quarter_metrics(
                 current_liabilities
             ),
 
-        # ----------------------------------------------------
+        # ====================================================
         # المخزون والذمم
-        # ----------------------------------------------------
+        # ====================================================
 
         "q_inventory_growth_qoq":
             growth_rate(
@@ -903,9 +946,9 @@ def calculate_quarter_metrics(
                 )
             ),
 
-        # ----------------------------------------------------
-        # الأرقام الخام المهمة
-        # ----------------------------------------------------
+        # ====================================================
+        # الأرقام الخام
+        # ====================================================
 
         "q_revenue":
             revenue,
@@ -922,8 +965,6 @@ def calculate_quarter_metrics(
         "q_capex":
             capex
     }
-
-    return metrics
 
 
 # ============================================================
@@ -1030,7 +1071,7 @@ def calculate_ttm_metrics(
         "quarterlyStockholdersEquity"
     )
 
-    metrics = {
+    return {
 
         "ttm_revenue":
             ttm_revenue,
@@ -1108,8 +1149,6 @@ def calculate_ttm_metrics(
             )
     }
 
-    return metrics
-
 
 # ============================================================
 # درجة اكتمال البيانات
@@ -1152,7 +1191,10 @@ def calculate_data_confidence(
 
 
 # ============================================================
-# حساب إشارات التحسن والخطر
+# إشارات Legacy
+#
+# نبقيها الآن للتوافق مع النظام السابق.
+# Signal Engine 2.2 هو المحرك الرئيسي الفعلي.
 # ============================================================
 
 def calculate_signal_scores(metrics):
@@ -1197,56 +1239,36 @@ def calculate_signal_scores(metrics):
             elif metric_value > negative_threshold:
                 risk += 1
 
-    # نمو الأعمال
     evaluate(
-        "q_revenue_growth_yoy",
-        0,
-        0
+        "q_revenue_growth_yoy"
     )
 
     evaluate(
-        "q_net_income_growth_yoy",
-        0,
-        0
-    )
-
-    # تغير الهوامش
-    evaluate(
-        "q_gross_margin_change_yoy",
-        0,
-        0
+        "q_net_income_growth_yoy"
     )
 
     evaluate(
-        "q_operating_margin_change_yoy",
-        0,
-        0
+        "q_gross_margin_change_yoy"
     )
 
     evaluate(
-        "q_net_margin_change_yoy",
-        0,
-        0
-    )
-
-    # التدفقات
-    evaluate(
-        "q_ocf_growth_yoy",
-        0,
-        0
+        "q_operating_margin_change_yoy"
     )
 
     evaluate(
-        "q_fcf_growth_yoy",
-        0,
-        0
+        "q_net_margin_change_yoy"
     )
 
-    # الدين: الانخفاض أفضل
+    evaluate(
+        "q_ocf_growth_yoy"
+    )
+
+    evaluate(
+        "q_fcf_growth_yoy"
+    )
+
     evaluate(
         "q_debt_growth_qoq",
-        0,
-        0,
         inverse=True
     )
 
@@ -1278,7 +1300,6 @@ def calculate_signal_scores(metrics):
         elif current_ratio < 0.8:
             risk += 1
 
-    # المخزون يرتفع أسرع بكثير من المبيعات = إشارة خطر
     inventory_growth = metrics.get(
         "q_inventory_growth_qoq"
     )
@@ -1306,7 +1327,6 @@ def calculate_signal_scores(metrics):
         ):
             improvement += 1
 
-    # الذمم ترتفع أسرع بكثير من الإيرادات
     receivables_growth = metrics.get(
         "q_receivables_growth_qoq"
     )
@@ -1348,11 +1368,6 @@ def calculate_signal_scores(metrics):
         / used_signals
     ) * 100
 
-    net_score = (
-        improvement_score
-        - risk_score
-    )
-
     return {
 
         "signal_improvement_score":
@@ -1362,15 +1377,44 @@ def calculate_signal_scores(metrics):
             risk_score,
 
         "signal_net_score":
-            net_score
+            (
+                improvement_score
+                - risk_score
+            )
     }
 
 
 # ============================================================
-# الحساب الرئيسي
+# حساب شركة Standard واحدة
 # ============================================================
 
-def calculate_metrics(stock_id):
+def calculate_standard_metrics(stock):
+
+    stock_id = stock["id"]
+
+    symbol = stock["symbol"]
+
+    company_name = (
+        stock.get("company_name")
+        or symbol
+    )
+
+    print(
+        "\n\n"
+        "############################################################",
+        flush=True
+    )
+
+    print(
+        f"🧮 STANDARD METRICS | "
+        f"{company_name} | {symbol}",
+        flush=True
+    )
+
+    print(
+        "############################################################",
+        flush=True
+    )
 
     rows = get_financial_data(
         stock_id
@@ -1379,11 +1423,15 @@ def calculate_metrics(stock_id):
     if not rows:
 
         print(
-            "⚠️ No financial data found",
+            f"⚠️ لا توجد بيانات مالية لـ "
+            f"{symbol}",
             flush=True
         )
 
-        return
+        return {
+            "status": "no_data",
+            "saved_metrics": 0
+        }
 
     annual, quarterly = (
         organize_financial_data(
@@ -1391,25 +1439,14 @@ def calculate_metrics(stock_id):
         )
     )
 
+    total_saved = 0
+
     # ========================================================
     # السنوي
     # ========================================================
 
     annual_dates = sorted(
         annual.keys()
-    )
-
-    print(
-        "\n"
-        "============================================================"
-    )
-
-    print(
-        "📅 ANNUAL METRICS"
-    )
-
-    print(
-        "============================================================"
     )
 
     for index, period_end in enumerate(
@@ -1422,7 +1459,9 @@ def calculate_metrics(stock_id):
 
         previous = (
             annual[
-                annual_dates[index - 1]
+                annual_dates[
+                    index - 1
+                ]
             ]
             if index > 0
             else None
@@ -1436,22 +1475,12 @@ def calculate_metrics(stock_id):
         )
 
         print(
-            f"\nANNUAL PERIOD: "
+            f"\n📅 ANNUAL: "
             f"{period_end}",
             flush=True
         )
 
-        for name, metric_value in (
-            metrics.items()
-        ):
-
-            print(
-                f"{name}: "
-                f"{metric_value}",
-                flush=True
-            )
-
-        save_metrics(
+        total_saved += save_metrics(
             stock_id,
             period_end,
             metrics
@@ -1465,19 +1494,6 @@ def calculate_metrics(stock_id):
         quarterly.keys()
     )
 
-    print(
-        "\n"
-        "============================================================"
-    )
-
-    print(
-        "📊 QUARTERLY + TTM + SIGNAL METRICS"
-    )
-
-    print(
-        "============================================================"
-    )
-
     for index, period_end in enumerate(
         quarter_dates
     ):
@@ -1488,7 +1504,9 @@ def calculate_metrics(stock_id):
 
         previous_quarter = (
             quarterly[
-                quarter_dates[index - 1]
+                quarter_dates[
+                    index - 1
+                ]
             ]
             if index > 0
             else None
@@ -1543,37 +1561,373 @@ def calculate_metrics(stock_id):
             current
         )
 
-        signal_scores = (
+        legacy_signals = (
             calculate_signal_scores(
                 all_metrics
             )
         )
 
         all_metrics.update(
-            signal_scores
+            legacy_signals
         )
 
         print(
-            f"\nQUARTER: "
+            f"\n📊 QUARTER: "
             f"{period_end}",
             flush=True
         )
 
-        for name, metric_value in (
-            all_metrics.items()
-        ):
+        print(
+            f"🎯 Data Confidence: "
+            f"{all_metrics.get('data_confidence_score')}",
+            flush=True
+        )
 
-            print(
-                f"{name}: "
-                f"{metric_value}",
-                flush=True
-            )
-
-        save_metrics(
+        total_saved += save_metrics(
             stock_id,
             period_end,
             all_metrics
         )
+
+    print(
+        f"\n🟢 انتهت مؤشرات {symbol} "
+        f"| Saved Metrics: {total_saved}",
+        flush=True
+    )
+
+    return {
+        "status": "success",
+        "saved_metrics": total_saved
+    }
+
+
+# ============================================================
+# Router حسب نموذج التحليل
+# ============================================================
+
+def calculate_metrics_for_stock(stock):
+
+    model = (
+        stock.get("analysis_model")
+        or "standard"
+    )
+
+    symbol = stock["symbol"]
+
+    company_name = (
+        stock.get("company_name")
+        or symbol
+    )
+
+    if model == "standard":
+
+        return calculate_standard_metrics(
+            stock
+        )
+
+    if model == "bank":
+
+        print(
+            "\n"
+            f"🏦 {company_name} | {symbol}\n"
+            "⏭️ تم تجاوز الحساب Standard.\n"
+            "السبب: البنك يحتاج Bank Metrics Engine متخصص.",
+            flush=True
+        )
+
+        return {
+            "status": "special_model_pending",
+            "saved_metrics": 0
+        }
+
+    if model == "insurance":
+
+        print(
+            "\n"
+            f"🛡️ {company_name} | {symbol}\n"
+            "⏭️ تم تجاوز الحساب Standard.\n"
+            "السبب: شركة التأمين تحتاج Insurance Metrics Engine متخصص.",
+            flush=True
+        )
+
+        return {
+            "status": "special_model_pending",
+            "saved_metrics": 0
+        }
+
+    if model == "reit":
+
+        print(
+            "\n"
+            f"🏢 {company_name} | {symbol}\n"
+            "⏭️ تم تجاوز الحساب Standard.\n"
+            "السبب: REIT يحتاج REIT Metrics Engine متخصص.",
+            flush=True
+        )
+
+        return {
+            "status": "special_model_pending",
+            "saved_metrics": 0
+        }
+
+    print(
+        f"🔴 نموذج تحليل غير معروف: "
+        f"{model} | {symbol}",
+        flush=True
+    )
+
+    return {
+        "status": "unknown_model",
+        "saved_metrics": 0
+    }
+
+
+# ============================================================
+# تشغيل جميع الشركات
+# ============================================================
+
+def run_metrics_pipeline():
+
+    stocks = get_active_stocks()
+
+    print(
+        "\n\n"
+        "============================================================",
+        flush=True
+    )
+
+    print(
+        "🧮 MULTI-COMPANY FINANCIAL METRICS PIPELINE",
+        flush=True
+    )
+
+    print(
+        "============================================================",
+        flush=True
+    )
+
+    print(
+        f"🏢 Active Stocks: "
+        f"{len(stocks)}",
+        flush=True
+    )
+
+    if not stocks:
+
+        print(
+            "🔴 لا توجد شركات مفعلة",
+            flush=True
+        )
+
+        return
+
+    results = []
+
+    for index, stock in enumerate(
+        stocks,
+        start=1
+    ):
+
+        print(
+            "\n"
+            "------------------------------------------------------------",
+            flush=True
+        )
+
+        print(
+            f"🚦 Company "
+            f"{index}/{len(stocks)} "
+            f"| {stock['symbol']}",
+            flush=True
+        )
+
+        try:
+
+            result = (
+                calculate_metrics_for_stock(
+                    stock
+                )
+            )
+
+        except Exception as e:
+
+            print(
+                f"🔴 فشل حساب مؤشرات "
+                f"{stock['symbol']} | "
+                f"{type(e).__name__}: {e}",
+                flush=True
+            )
+
+            result = {
+                "status": "error",
+                "saved_metrics": 0
+            }
+
+        results.append({
+            "symbol":
+                stock["symbol"],
+
+            "company_name":
+                stock.get(
+                    "company_name"
+                ),
+
+            "analysis_model":
+                stock.get(
+                    "analysis_model"
+                )
+                or "standard",
+
+            "status":
+                result[
+                    "status"
+                ],
+
+            "saved_metrics":
+                result[
+                    "saved_metrics"
+                ]
+        })
+
+    # ========================================================
+    # الملخص
+    # ========================================================
+
+    success_count = sum(
+        1
+        for item in results
+        if item["status"] == "success"
+    )
+
+    special_count = sum(
+        1
+        for item in results
+        if item["status"] == "special_model_pending"
+    )
+
+    no_data_count = sum(
+        1
+        for item in results
+        if item["status"] == "no_data"
+    )
+
+    error_count = sum(
+        1
+        for item in results
+        if item["status"] in (
+            "error",
+            "unknown_model"
+        )
+    )
+
+    total_saved = sum(
+        item["saved_metrics"]
+        for item in results
+    )
+
+    print(
+        "\n\n"
+        "============================================================",
+        flush=True
+    )
+
+    print(
+        "📊 FINAL METRICS SUMMARY",
+        flush=True
+    )
+
+    print(
+        "============================================================",
+        flush=True
+    )
+
+    print(
+        f"🟢 Standard Success: "
+        f"{success_count}",
+        flush=True
+    )
+
+    print(
+        f"🧠 Specialized Pending: "
+        f"{special_count}",
+        flush=True
+    )
+
+    print(
+        f"🟠 No Data: "
+        f"{no_data_count}",
+        flush=True
+    )
+
+    print(
+        f"🔴 Errors: "
+        f"{error_count}",
+        flush=True
+    )
+
+    print(
+        f"💾 Total Metrics Saved: "
+        f"{total_saved}",
+        flush=True
+    )
+
+    print(
+        "\n📋 Companies:",
+        flush=True
+    )
+
+    for item in results:
+
+        print(
+            f"{item['symbol']} | "
+            f"{item['analysis_model']} | "
+            f"{item['status']} | "
+            f"{item['saved_metrics']} metrics",
+            flush=True
+        )
+
+    print(
+        "============================================================",
+        flush=True
+    )
+
+
+# ============================================================
+# توافق مع الاستدعاء القديم
+# ============================================================
+
+def calculate_metrics(stock_id):
+
+    response = (
+        supabase
+        .table("stocks")
+        .select(
+            "id,"
+            "symbol,"
+            "company_name,"
+            "sector,"
+            "analysis_model,"
+            "priority,"
+            "data_status"
+        )
+        .eq("id", stock_id)
+        .limit(1)
+        .execute()
+    )
+
+    if not response.data:
+
+        print(
+            f"🔴 stock_id={stock_id} "
+            f"غير موجود",
+            flush=True
+        )
+
+        return
+
+    calculate_metrics_for_stock(
+        response.data[0]
+    )
 
 
 # ============================================================
@@ -1582,13 +1936,4 @@ def calculate_metrics(stock_id):
 
 if __name__ == "__main__":
 
-    stock_id = int(
-        os.environ.get(
-            "STOCK_ID",
-            "1"
-        )
-    )
-
-    calculate_metrics(
-        stock_id
-    )
+    run_metrics_pipeline()
