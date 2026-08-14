@@ -24,11 +24,19 @@ jobs:
       - name: Install requirements
         run: pip install -r requirements.txt
 
+      # ======================================================
+      # 1) جلب البيانات المالية لجميع الشركات
+      # ======================================================
+
       - name: Fetch financial data
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python financial_data.py
+
+      # ======================================================
+      # 2) الشركات العادية Standard
+      # ======================================================
 
       - name: Calculate financial metrics
         env:
@@ -36,8 +44,22 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python financial_metrics.py
 
+      # ======================================================
+      # 3) البنوك Bank
+      # ======================================================
+
       - name: Calculate bank metrics
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python bank_metrics.py
+
+      # ======================================================
+      # 4) التأمين Insurance
+      # ======================================================
+
+      - name: Calculate insurance metrics
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: python insurance_metrics.py
