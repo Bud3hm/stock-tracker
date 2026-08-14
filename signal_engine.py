@@ -20,8 +20,8 @@ supabase = create_client(
 # إعدادات المحرك
 # ============================================================
 
-ENGINE_VERSION = "2.1"
-ENGINE_PREFIX = "engine21_"
+ENGINE_VERSION = "2.2"
+ENGINE_PREFIX = "engine22_"
 
 MIN_DATA_CONFIDENCE = 60.0
 
@@ -46,23 +46,41 @@ def clamp(value, minimum=0.0, maximum=100.0):
 
     return max(
         minimum,
-        min(
-            maximum,
-            value
-        )
+        min(maximum, value)
     )
+
+
+def weighted_average(items):
+
+    total_value = 0.0
+    total_weight = 0.0
+
+    for value, weight in items:
+
+        value = safe_number(value)
+
+        if value is None:
+            continue
+
+        total_value += value * weight
+        total_weight += weight
+
+    if total_weight == 0:
+        return None
+
+    return total_value / total_weight
 
 
 def average(values):
 
     clean = []
 
-    for value in values:
+    for item in values:
 
-        number = safe_number(value)
+        item = safe_number(item)
 
-        if number is not None:
-            clean.append(number)
+        if item is not None:
+            clean.append(item)
 
     if not clean:
         return None
@@ -93,7 +111,7 @@ def get_financial_metrics(stock_id):
 
 
 # ============================================================
-# تنظيم المؤشرات حسب الفترة
+# تنظيم المؤشرات
 # ============================================================
 
 def organize_metrics(rows):
@@ -126,15 +144,13 @@ def organize_metrics(rows):
 
         periods[
             period_end
-        ][
-            metric_name
-        ] = metric_value
+        ][metric_name] = metric_value
 
     return periods
 
 
 # ============================================================
-# تحديد الفترات الربعية
+# تحديد الأرباع
 # ============================================================
 
 def get_quarter_dates(periods):
@@ -148,6 +164,7 @@ def get_quarter_dates(periods):
             or "q_net_income" in metrics
             or "data_confidence_score" in metrics
         ):
+
             quarter_dates.append(
                 period_end
             )
@@ -158,7 +175,7 @@ def get_quarter_dates(periods):
 
 
 # ============================================================
-# إنشاء حالة التقييم
+# حالة التقييم
 # ============================================================
 
 def new_state():
@@ -166,11 +183,9 @@ def new_state():
     return {
         "positive_points": 0.0,
         "risk_points": 0.0,
+
         "available_weight": 0.0,
         "possible_weight": 0.0,
-
-        "strong_positive": 0,
-        "strong_negative": 0,
 
         "positive_reasons": [],
         "negative_reasons": [],
@@ -180,7 +195,7 @@ def new_state():
 
 
 # ============================================================
-# تسجيل نتيجة مجموعة
+# إضافة Component
 # ============================================================
 
 def add_component(
@@ -274,7 +289,7 @@ def add_component(
 
 
 # ============================================================
-# تحويل معدل نمو إلى تقييم
+# تحويل النمو إلى Score
 # ============================================================
 
 def score_growth(value):
@@ -314,8 +329,7 @@ def score_growth(value):
 
 
 # ============================================================
-# تقييم تغير الهامش
-# القيمة بالنقاط المئوية
+# تغير الهامش
 # ============================================================
 
 def score_margin_change(value):
@@ -352,8 +366,8 @@ def score_margin_change(value):
 
 
 # ============================================================
-# مجموعة النمو
-# YoY أهم من QoQ
+# النمو
+# YoY أهم بكثير من QoQ
 # ============================================================
 
 def evaluate_growth_component(metrics):
@@ -364,7 +378,7 @@ def evaluate_growth_component(metrics):
         )
     )
 
-    net_income_yoy = safe_number(
+    profit_yoy = safe_number(
         metrics.get(
             "q_net_income_growth_yoy"
         )
@@ -376,152 +390,128 @@ def evaluate_growth_component(metrics):
         )
     )
 
-    net_income_qoq = safe_number(
+    profit_qoq = safe_number(
         metrics.get(
             "q_net_income_growth_qoq"
         )
     )
 
-    scores = []
-    weights = []
+    items = []
 
-    positive_reasons = []
-    negative_reasons = []
+    positive = []
+    negative = []
 
-    # --------------------------------------------------------
-    # YoY = الوزن الأساسي
-    # --------------------------------------------------------
+    possible = 100
+    available = 0
 
     if revenue_yoy is not None:
 
-        scores.append(
-            score_growth(
-                revenue_yoy
+        items.append(
+            (
+                score_growth(
+                    revenue_yoy
+                ),
+                35
             )
         )
 
-        weights.append(
-            35
-        )
+        available += 35
 
         if revenue_yoy >= 8:
 
-            positive_reasons.append(
+            positive.append(
                 f"نمو الإيرادات YoY جيد "
                 f"({revenue_yoy:.2f}%)"
             )
 
         elif revenue_yoy <= -5:
 
-            negative_reasons.append(
-                f"تراجع الإيرادات YoY "
+            negative.append(
+                f"الإيرادات تتراجع YoY "
                 f"({revenue_yoy:.2f}%)"
             )
 
-    if net_income_yoy is not None:
+    if profit_yoy is not None:
 
-        scores.append(
-            score_growth(
-                net_income_yoy
+        items.append(
+            (
+                score_growth(
+                    profit_yoy
+                ),
+                45
             )
         )
 
-        weights.append(
-            40
-        )
+        available += 45
 
-        if net_income_yoy >= 8:
+        if profit_yoy >= 8:
 
-            positive_reasons.append(
-                f"نمو الأرباح YoY قوي "
-                f"({net_income_yoy:.2f}%)"
+            positive.append(
+                f"نمو صافي الربح YoY قوي "
+                f"({profit_yoy:.2f}%)"
             )
 
-        elif net_income_yoy <= -8:
+        elif profit_yoy <= -8:
 
-            negative_reasons.append(
-                f"تراجع الأرباح YoY "
-                f"({net_income_yoy:.2f}%)"
+            negative.append(
+                f"صافي الربح يتراجع YoY "
+                f"({profit_yoy:.2f}%)"
             )
 
-    # --------------------------------------------------------
-    # QoQ = وزن مساند فقط
-    # --------------------------------------------------------
-
+    # QoQ وزن صغير بسبب الموسمية
     if revenue_qoq is not None:
 
-        scores.append(
-            score_growth(
-                revenue_qoq
+        items.append(
+            (
+                score_growth(
+                    revenue_qoq
+                ),
+                8
             )
         )
 
-        weights.append(
-            10
-        )
+        available += 8
 
-    if net_income_qoq is not None:
+    if profit_qoq is not None:
 
-        scores.append(
-            score_growth(
-                net_income_qoq
+        items.append(
+            (
+                score_growth(
+                    profit_qoq
+                ),
+                12
             )
         )
 
-        weights.append(
-            15
-        )
+        available += 12
 
-    if not scores:
+    score = weighted_average(
+        items
+    )
+
+    if score is None:
         return None
 
-    weighted_sum = 0
-    total_weight = 0
-
-    for score, weight in zip(
-        scores,
-        weights
-    ):
-
-        weighted_sum += (
-            score * weight
-        )
-
-        total_weight += weight
-
-    improvement = (
-        weighted_sum
-        / total_weight
-    )
-
-    risk = (
-        100
-        - improvement
-    )
-
-    coverage = (
-        total_weight
-        / 100
-    ) * 100
-
     return {
-        "improvement": improvement,
-        "risk": risk,
-        "coverage": coverage,
-        "positive": positive_reasons,
-        "negative": negative_reasons
+        "improvement": score,
+        "risk": 100 - score,
+        "coverage": (
+            available
+            / possible
+        ) * 100,
+        "positive": positive,
+        "negative": negative
     }
 
 
 # ============================================================
-# مجموعة الهوامش
+# Margin Pressure Engine
 #
-# تمنع Double Counting
-# الهامش الإجمالي + التشغيلي + الصافي
-# تعامل كمجموعة واحدة
+# يقرأ الهوامش كمجموعة واحدة
+# ولا يكرر العقوبة
 # ============================================================
 
-def evaluate_margin_component(metrics):
+def evaluate_margin_pressure(metrics):
 
     gross_yoy = safe_number(
         metrics.get(
@@ -547,94 +537,139 @@ def evaluate_margin_component(metrics):
         )
     )
 
-    values = []
-    weights = []
+    items = []
 
-    positive_reasons = []
-    negative_reasons = []
+    available = 0
+    possible = 100
+
+    positive = []
+    negative = []
 
     if gross_yoy is not None:
 
-        values.append(
-            score_margin_change(
-                gross_yoy
+        items.append(
+            (
+                score_margin_change(
+                    gross_yoy
+                ),
+                25
             )
         )
 
-        weights.append(
-            25
-        )
+        available += 25
 
     if operating_yoy is not None:
 
-        values.append(
-            score_margin_change(
-                operating_yoy
+        items.append(
+            (
+                score_margin_change(
+                    operating_yoy
+                ),
+                35
             )
         )
 
-        weights.append(
-            35
-        )
+        available += 35
 
     if net_yoy is not None:
 
-        values.append(
-            score_margin_change(
-                net_yoy
+        items.append(
+            (
+                score_margin_change(
+                    net_yoy
+                ),
+                30
             )
         )
 
-        weights.append(
-            30
-        )
+        available += 30
 
     if operating_qoq is not None:
 
-        values.append(
-            score_margin_change(
-                operating_qoq
+        items.append(
+            (
+                score_margin_change(
+                    operating_qoq
+                ),
+                10
             )
         )
 
-        weights.append(
-            10
-        )
+        available += 10
 
-    if not values:
+    score = weighted_average(
+        items
+    )
+
+    if score is None:
         return None
 
-    weighted_sum = 0
-    total_weight = 0
+    # --------------------------------------------------------
+    # Pressure magnitude
+    # --------------------------------------------------------
 
-    for score, weight in zip(
-        values,
-        weights
+    pressure_values = []
+
+    for margin_change in [
+        gross_yoy,
+        operating_yoy,
+        net_yoy
+    ]:
+
+        if margin_change is not None:
+
+            pressure_values.append(
+                min(
+                    margin_change,
+                    0
+                )
+            )
+
+    pressure_average = average(
+        pressure_values
+    )
+
+    if pressure_average is None:
+        pressure_average = 0
+
+    pressure_magnitude = abs(
+        min(
+            pressure_average,
+            0
+        )
+    )
+
+    # --------------------------------------------------------
+    # Cascade
+    #
+    # لو الصافي أسوأ من التشغيلي
+    # والتشغيلي أسوأ من الإجمالي
+    # فهذا ضغط يمتد خلال قائمة الدخل
+    # --------------------------------------------------------
+
+    cascade_pressure = 0.0
+
+    if (
+        gross_yoy is not None
+        and operating_yoy is not None
+        and net_yoy is not None
+        and net_yoy < operating_yoy
+        and operating_yoy < gross_yoy
+        and net_yoy < 0
     ):
 
-        weighted_sum += (
-            score * weight
+        cascade_pressure = min(
+            abs(net_yoy - gross_yoy),
+            10
         )
-
-        total_weight += weight
-
-    improvement = (
-        weighted_sum
-        / total_weight
-    )
-
-    risk = (
-        100
-        - improvement
-    )
 
     if (
         operating_yoy is not None
         and operating_yoy >= 1
     ):
 
-        positive_reasons.append(
-            f"تحسن الهامش التشغيلي YoY "
+        positive.append(
+            f"الهامش التشغيلي يتحسن YoY "
             f"({operating_yoy:.2f} نقطة)"
         )
 
@@ -643,58 +678,168 @@ def evaluate_margin_component(metrics):
         and net_yoy >= 1
     ):
 
-        positive_reasons.append(
-            f"تحسن الهامش الصافي YoY "
+        positive.append(
+            f"الهامش الصافي يتحسن YoY "
             f"({net_yoy:.2f} نقطة)"
         )
 
-    if (
-        operating_yoy is not None
-        and operating_yoy <= -1.5
-    ):
+    if pressure_magnitude >= 1.5:
 
-        negative_reasons.append(
-            f"تآكل الهامش التشغيلي YoY "
-            f"({operating_yoy:.2f} نقطة)"
+        negative.append(
+            f"ضغط جماعي على الهوامش "
+            f"بمتوسط {pressure_magnitude:.2f} نقطة"
         )
 
-    if (
-        net_yoy is not None
-        and net_yoy <= -1.5
-    ):
+    if cascade_pressure >= 1:
 
-        negative_reasons.append(
-            f"تآكل الهامش الصافي YoY "
-            f"({net_yoy:.2f} نقطة)"
+        negative.append(
+            "الضغط يزداد من الهامش الإجمالي "
+            "إلى التشغيلي ثم الصافي"
         )
 
-    coverage = (
-        total_weight
-        / 100
-    ) * 100
+    # تعديل محدود فقط
+    pressure_penalty = min(
+        (
+            pressure_magnitude * 4
+        )
+        + (
+            cascade_pressure * 2
+        ),
+        20
+    )
+
+    risk = clamp(
+        100 - score
+        + pressure_penalty
+    )
+
+    improvement = clamp(
+        score
+        - (
+            pressure_penalty * 0.4
+        )
+    )
 
     return {
         "improvement": improvement,
         "risk": risk,
-        "coverage": coverage,
-        "positive": positive_reasons,
-        "negative": negative_reasons
+        "coverage": (
+            available
+            / possible
+        ) * 100,
+        "positive": positive,
+        "negative": negative,
+        "pressure_score": clamp(
+            pressure_penalty * 5
+        )
     }
 
 
 # ============================================================
-# جودة الأرباح والتدفقات
+# Profit Conversion Gap
+#
+# هل نمو الإيرادات يتحول إلى نمو أرباح؟
 # ============================================================
 
-def evaluate_cash_quality_component(metrics):
+def evaluate_profit_conversion_gap(metrics):
 
-    cash_conversion = safe_number(
+    revenue_yoy = safe_number(
+        metrics.get(
+            "q_revenue_growth_yoy"
+        )
+    )
+
+    profit_yoy = safe_number(
+        metrics.get(
+            "q_net_income_growth_yoy"
+        )
+    )
+
+    if (
+        revenue_yoy is None
+        or profit_yoy is None
+    ):
+        return None
+
+    gap = (
+        revenue_yoy
+        - profit_yoy
+    )
+
+    positive = []
+    negative = []
+
+    # الربح ينمو أسرع من الإيرادات = Operating leverage جيد
+    if gap <= -10:
+
+        score = 100
+
+        positive.append(
+            f"الأرباح تنمو أسرع بكثير من الإيرادات "
+            f"(Gap {gap:.2f})"
+        )
+
+    elif gap <= -3:
+
+        score = 85
+
+        positive.append(
+            "الأرباح تنمو أسرع من الإيرادات"
+        )
+
+    elif gap <= 5:
+
+        score = 70
+
+    elif gap <= 10:
+
+        score = 55
+
+    elif gap <= 15:
+
+        score = 40
+
+    elif gap <= 25:
+
+        score = 20
+
+        negative.append(
+            f"نمو المبيعات لا يتحول بالكامل إلى الأرباح "
+            f"(Gap {gap:.2f} نقطة)"
+        )
+
+    else:
+
+        score = 5
+
+        negative.append(
+            f"فجوة كبيرة جدًا بين نمو الإيرادات والأرباح "
+            f"({gap:.2f} نقطة)"
+        )
+
+    return {
+        "improvement": score,
+        "risk": 100 - score,
+        "coverage": 100,
+        "positive": positive,
+        "negative": negative,
+        "gap": gap
+    }
+
+
+# ============================================================
+# جودة الأرباح والنقد
+# ============================================================
+
+def evaluate_cash_quality(metrics):
+
+    q_conversion = safe_number(
         metrics.get(
             "q_cash_conversion"
         )
     )
 
-    ttm_cash_conversion = safe_number(
+    ttm_conversion = safe_number(
         metrics.get(
             "ttm_cash_conversion"
         )
@@ -718,102 +863,108 @@ def evaluate_cash_quality_component(metrics):
         )
     )
 
-    scores = []
-    weights = []
+    items = []
 
-    positive_reasons = []
-    negative_reasons = []
+    available = 0
+    possible = 100
 
-    if cash_conversion is not None:
+    positive = []
+    negative = []
 
-        if cash_conversion >= 1.2:
+    if q_conversion is not None:
+
+        if q_conversion >= 1.2:
             score = 100
 
-        elif cash_conversion >= 1:
+        elif q_conversion >= 1:
             score = 85
 
-        elif cash_conversion >= 0.8:
+        elif q_conversion >= 0.8:
             score = 65
 
-        elif cash_conversion >= 0.7:
+        elif q_conversion >= 0.7:
             score = 45
 
-        elif cash_conversion >= 0.5:
+        elif q_conversion >= 0.5:
             score = 20
 
         else:
             score = 0
 
-        scores.append(
-            score
+        items.append(
+            (
+                score,
+                25
+            )
         )
 
-        weights.append(
-            25
-        )
+        available += 25
 
-        if cash_conversion >= 1:
+        if q_conversion >= 1:
 
-            positive_reasons.append(
-                f"تحويل الأرباح إلى نقد جيد "
-                f"({cash_conversion:.2f})"
+            positive.append(
+                f"تحويل الأرباح الربعية إلى نقد جيد "
+                f"({q_conversion:.2f})"
             )
 
-        elif cash_conversion < 0.7:
+        elif q_conversion < 0.7:
 
-            negative_reasons.append(
+            negative.append(
                 f"جودة الأرباح النقدية ضعيفة "
-                f"({cash_conversion:.2f})"
+                f"({q_conversion:.2f})"
             )
 
-    if ttm_cash_conversion is not None:
+    if ttm_conversion is not None:
 
-        if ttm_cash_conversion >= 1.2:
+        if ttm_conversion >= 1.2:
             score = 100
 
-        elif ttm_cash_conversion >= 1:
+        elif ttm_conversion >= 1:
             score = 85
 
-        elif ttm_cash_conversion >= 0.8:
+        elif ttm_conversion >= 0.8:
             score = 65
 
-        elif ttm_cash_conversion >= 0.7:
+        elif ttm_conversion >= 0.7:
             score = 45
 
         else:
             score = 15
 
-        scores.append(
-            score
+        items.append(
+            (
+                score,
+                30
+            )
         )
 
-        weights.append(
-            30
-        )
+        available += 30
 
     if ocf_yoy is not None:
 
-        scores.append(
-            score_growth(
-                ocf_yoy
+        items.append(
+            (
+                score_growth(
+                    ocf_yoy
+                ),
+                20
             )
         )
 
-        weights.append(
-            20
-        )
+        available += 20
 
     if fcf_yoy is not None:
 
-        scores.append(
-            score_growth(
-                fcf_yoy
+        items.append(
+            (
+                score_growth(
+                    fcf_yoy
+                ),
+                15
             )
         )
 
-        weights.append(
-            15
-        )
+        available += 15
 
     if ttm_fcf_margin is not None:
 
@@ -832,60 +983,39 @@ def evaluate_cash_quality_component(metrics):
         else:
             score = 20
 
-        scores.append(
-            score
+        items.append(
+            (
+                score,
+                10
+            )
         )
 
-        weights.append(
-            10
-        )
+        available += 10
 
-    if not scores:
+    score = weighted_average(
+        items
+    )
+
+    if score is None:
         return None
 
-    weighted_sum = 0
-    total_weight = 0
-
-    for score, weight in zip(
-        scores,
-        weights
-    ):
-
-        weighted_sum += (
-            score * weight
-        )
-
-        total_weight += weight
-
-    improvement = (
-        weighted_sum
-        / total_weight
-    )
-
-    risk = (
-        100
-        - improvement
-    )
-
-    coverage = (
-        total_weight
-        / 100
-    ) * 100
-
     return {
-        "improvement": improvement,
-        "risk": risk,
-        "coverage": coverage,
-        "positive": positive_reasons,
-        "negative": negative_reasons
+        "improvement": score,
+        "risk": 100 - score,
+        "coverage": (
+            available
+            / possible
+        ) * 100,
+        "positive": positive,
+        "negative": negative
     }
 
 
 # ============================================================
-# مجموعة المركز المالي
+# المركز المالي
 # ============================================================
 
-def evaluate_balance_sheet_component(metrics):
+def evaluate_balance_sheet(metrics):
 
     debt_growth = safe_number(
         metrics.get(
@@ -911,11 +1041,12 @@ def evaluate_balance_sheet_component(metrics):
         )
     )
 
-    scores = []
-    weights = []
+    items = []
+    available = 0
+    possible = 100
 
-    positive_reasons = []
-    negative_reasons = []
+    positive = []
+    negative = []
 
     if debt_growth is not None:
 
@@ -937,13 +1068,28 @@ def evaluate_balance_sheet_component(metrics):
         else:
             score = 5
 
-        scores.append(
-            score
+        items.append(
+            (
+                score,
+                30
+            )
         )
 
-        weights.append(
-            30
-        )
+        available += 30
+
+        if debt_growth <= -3:
+
+            positive.append(
+                f"الدين ينخفض "
+                f"({debt_growth:.2f}% QoQ)"
+            )
+
+        elif debt_growth >= 8:
+
+            negative.append(
+                f"الدين يرتفع بسرعة "
+                f"({debt_growth:.2f}% QoQ)"
+            )
 
     if debt_to_equity is not None:
 
@@ -962,13 +1108,14 @@ def evaluate_balance_sheet_component(metrics):
         else:
             score = 15
 
-        scores.append(
-            score
+        items.append(
+            (
+                score,
+                25
+            )
         )
 
-        weights.append(
-            25
-        )
+        available += 25
 
     if current_ratio is not None:
 
@@ -987,103 +1134,59 @@ def evaluate_balance_sheet_component(metrics):
         else:
             score = 15
 
-        scores.append(
-            score
-        )
-
-        weights.append(
-            30
-        )
-
-    if cash_growth is not None:
-
-        scores.append(
-            score_growth(
-                cash_growth
+        items.append(
+            (
+                score,
+                30
             )
         )
 
-        weights.append(
-            15
+        available += 30
+
+        if current_ratio < 0.8:
+
+            negative.append(
+                f"السيولة الجارية ضعيفة "
+                f"({current_ratio:.2f})"
+            )
+
+    if cash_growth is not None:
+
+        items.append(
+            (
+                score_growth(
+                    cash_growth
+                ),
+                15
+            )
         )
 
-    if not scores:
+        available += 15
+
+    score = weighted_average(
+        items
+    )
+
+    if score is None:
         return None
 
-    weighted_sum = 0
-    total_weight = 0
-
-    for score, weight in zip(
-        scores,
-        weights
-    ):
-
-        weighted_sum += (
-            score * weight
-        )
-
-        total_weight += weight
-
-    improvement = (
-        weighted_sum
-        / total_weight
-    )
-
-    risk = (
-        100
-        - improvement
-    )
-
-    if (
-        debt_growth is not None
-        and debt_growth <= -3
-    ):
-
-        positive_reasons.append(
-            f"الدين ينخفض "
-            f"({debt_growth:.2f}% QoQ)"
-        )
-
-    if (
-        debt_growth is not None
-        and debt_growth >= 8
-    ):
-
-        negative_reasons.append(
-            f"الدين يرتفع بسرعة "
-            f"({debt_growth:.2f}% QoQ)"
-        )
-
-    if (
-        current_ratio is not None
-        and current_ratio < 0.8
-    ):
-
-        negative_reasons.append(
-            f"السيولة الجارية ضعيفة "
-            f"({current_ratio:.2f})"
-        )
-
-    coverage = (
-        total_weight
-        / 100
-    ) * 100
-
     return {
-        "improvement": improvement,
-        "risk": risk,
-        "coverage": coverage,
-        "positive": positive_reasons,
-        "negative": negative_reasons
+        "improvement": score,
+        "risk": 100 - score,
+        "coverage": (
+            available
+            / possible
+        ) * 100,
+        "positive": positive,
+        "negative": negative
     }
 
 
 # ============================================================
 # رأس المال العامل
-# المخزون + الذمم
 # ============================================================
 
-def evaluate_working_capital_component(metrics):
+def evaluate_working_capital(metrics):
 
     revenue_growth = safe_number(
         metrics.get(
@@ -1103,11 +1206,13 @@ def evaluate_working_capital_component(metrics):
         )
     )
 
-    scores = []
-    weights = []
+    items = []
 
-    positive_reasons = []
-    negative_reasons = []
+    available = 0
+    possible = 100
+
+    positive = []
+    negative = []
 
     if (
         revenue_growth is not None
@@ -1134,17 +1239,18 @@ def evaluate_working_capital_component(metrics):
         else:
             score = 5
 
-        scores.append(
-            score
+        items.append(
+            (
+                score,
+                50
+            )
         )
 
-        weights.append(
-            50
-        )
+        available += 50
 
         if spread >= 12:
 
-            negative_reasons.append(
+            negative.append(
                 f"المخزون ينمو أسرع من الإيرادات "
                 f"بـ {spread:.2f} نقطة"
             )
@@ -1174,64 +1280,43 @@ def evaluate_working_capital_component(metrics):
         else:
             score = 5
 
-        scores.append(
-            score
+        items.append(
+            (
+                score,
+                50
+            )
         )
 
-        weights.append(
-            50
-        )
+        available += 50
 
         if spread >= 12:
 
-            negative_reasons.append(
+            negative.append(
                 f"الذمم تنمو أسرع من الإيرادات "
                 f"بـ {spread:.2f} نقطة"
             )
 
-    if not scores:
+    score = weighted_average(
+        items
+    )
+
+    if score is None:
         return None
 
-    weighted_sum = 0
-    total_weight = 0
-
-    for score, weight in zip(
-        scores,
-        weights
-    ):
-
-        weighted_sum += (
-            score * weight
-        )
-
-        total_weight += weight
-
-    improvement = (
-        weighted_sum
-        / total_weight
-    )
-
-    risk = (
-        100
-        - improvement
-    )
-
-    coverage = (
-        total_weight
-        / 100
-    ) * 100
-
     return {
-        "improvement": improvement,
-        "risk": risk,
-        "coverage": coverage,
-        "positive": positive_reasons,
-        "negative": negative_reasons
+        "improvement": score,
+        "risk": 100 - score,
+        "coverage": (
+            available
+            / possible
+        ) * 100,
+        "positive": positive,
+        "negative": negative
     }
 
 
 # ============================================================
-# كفاية التاريخ
+# Historical Sufficiency
 # ============================================================
 
 def calculate_history_sufficiency(
@@ -1240,34 +1325,29 @@ def calculate_history_sufficiency(
     index
 ):
 
-    score = 0
-
-    # --------------------------------------------------------
-    # عدد الأرباع
-    # --------------------------------------------------------
-
     quarter_count = (
         index + 1
     )
 
-    if quarter_count >= 8:
-        score += 40
+    score = 0.0
+
+    if quarter_count >= 12:
+        score += 50
+
+    elif quarter_count >= 8:
+        score += 42
 
     elif quarter_count >= 6:
-        score += 32
+        score += 34
 
     elif quarter_count >= 4:
-        score += 24
+        score += 25
 
     elif quarter_count >= 3:
-        score += 16
+        score += 17
 
     elif quarter_count >= 2:
         score += 8
-
-    # --------------------------------------------------------
-    # هل توجد بيانات YoY؟
-    # --------------------------------------------------------
 
     current = periods[
         quarter_dates[index]
@@ -1294,21 +1374,13 @@ def calculate_history_sufficiency(
 
             available_yoy += 1
 
-    yoy_ratio = (
+    score += (
         available_yoy
         / len(yoy_metrics)
-    )
-
-    score += (
-        yoy_ratio * 40
-    )
-
-    # --------------------------------------------------------
-    # توفر 3 أرباع لقياس الاتجاه
-    # --------------------------------------------------------
+    ) * 35
 
     if index >= 2:
-        score += 20
+        score += 15
 
     return clamp(
         score
@@ -1316,10 +1388,10 @@ def calculate_history_sufficiency(
 
 
 # ============================================================
-# قياس التسارع
+# Trend Reliability
 # ============================================================
 
-def calculate_acceleration(
+def calculate_trend_reliability(
     quarter_dates,
     periods,
     index
@@ -1328,27 +1400,163 @@ def calculate_acceleration(
     if index < 2:
 
         return {
-            "score": 0.0,
-            "coverage": 0.0
+            "score": 20.0,
+            "available_series": 0
         }
 
     watched = [
-        "q_revenue_growth_qoq",
-        "q_net_income_growth_qoq",
-        "q_operating_margin_change_qoq",
-        "q_net_margin_change_qoq"
+        "q_revenue_growth_yoy",
+        "q_net_income_growth_yoy",
+        "q_operating_margin_change_yoy",
+        "q_net_margin_change_yoy",
+        "q_cash_conversion",
+        "ttm_net_margin",
+        "ttm_fcf_margin"
     ]
 
-    acceleration_points = []
-    available = 0
+    available_series = 0
+    stable_series = 0
+
+    dates = quarter_dates[
+        max(
+            0,
+            index - 2
+        ):index + 1
+    ]
 
     for metric_name in watched:
 
         values = []
 
-        for date in quarter_dates[
-            index - 2:index + 1
-        ]:
+        for date in dates:
+
+            metric_value = safe_number(
+                periods[
+                    date
+                ].get(
+                    metric_name
+                )
+            )
+
+            if metric_value is not None:
+
+                values.append(
+                    metric_value
+                )
+
+        if len(values) < 2:
+            continue
+
+        available_series += 1
+
+        # إذا التحرك الأخير ليس انعكاسًا عنيفًا جدًا
+        last_move = abs(
+            values[-1]
+            - values[-2]
+        )
+
+        historical_range = max(
+            values
+        ) - min(
+            values
+        )
+
+        if (
+            historical_range == 0
+            or last_move
+            <= (
+                historical_range * 1.25
+            )
+        ):
+
+            stable_series += 1
+
+    if available_series == 0:
+
+        return {
+            "score": 20.0,
+            "available_series": 0
+        }
+
+    reliability = (
+        stable_series
+        / available_series
+    ) * 100
+
+    history_factor = min(
+        (
+            index + 1
+        ) / 8,
+        1
+    )
+
+    reliability = (
+        reliability * 0.70
+        + (
+            history_factor * 100
+        ) * 0.30
+    )
+
+    return {
+        "score": clamp(
+            reliability
+        ),
+        "available_series":
+            available_series
+    }
+
+
+# ============================================================
+# Acceleration 2.0
+#
+# الأولوية لـ YoY
+# ولا يعطي 100 بدون تاريخ كافٍ
+# ============================================================
+
+def calculate_acceleration(
+    quarter_dates,
+    periods,
+    index
+):
+
+    # نحتاج 3 نقاط على الأقل
+    if index < 2:
+
+        return {
+            "score": 50.0,
+            "coverage": 0.0,
+            "reliability": 0.0
+        }
+
+    yoy_metrics = [
+        "q_revenue_growth_yoy",
+        "q_net_income_growth_yoy",
+        "q_operating_margin_change_yoy",
+        "q_net_margin_change_yoy"
+    ]
+
+    qoq_fallback = [
+        "q_revenue_growth_qoq",
+        "q_net_income_growth_qoq"
+    ]
+
+    accelerations = []
+
+    yoy_available = 0
+
+    dates = quarter_dates[
+        index - 2:index + 1
+    ]
+
+    # --------------------------------------------------------
+    # YoY أولًا
+    # --------------------------------------------------------
+
+    for metric_name in yoy_metrics:
+
+        values = []
+
+        for date in dates:
 
             metric_value = safe_number(
                 periods[
@@ -1359,6 +1567,7 @@ def calculate_acceleration(
             )
 
             if metric_value is None:
+
                 values = []
                 break
 
@@ -1369,72 +1578,168 @@ def calculate_acceleration(
         if len(values) != 3:
             continue
 
-        available += 1
+        yoy_available += 1
 
-        first_change = (
+        first_delta = (
             values[1]
             - values[0]
         )
 
-        second_change = (
+        second_delta = (
             values[2]
             - values[1]
         )
 
-        acceleration = (
-            second_change
-            - first_change
+        accelerations.append(
+            second_delta
+            - first_delta
         )
 
-        acceleration_points.append(
-            acceleration
-        )
+    # --------------------------------------------------------
+    # إذا لا يوجد YoY كافٍ
+    # نستخدم QoQ لكن بموثوقية منخفضة
+    # --------------------------------------------------------
 
-    if not acceleration_points:
+    fallback_available = 0
+
+    if yoy_available == 0:
+
+        for metric_name in qoq_fallback:
+
+            values = []
+
+            for date in dates:
+
+                metric_value = safe_number(
+                    periods[
+                        date
+                    ].get(
+                        metric_name
+                    )
+                )
+
+                if metric_value is None:
+
+                    values = []
+                    break
+
+                values.append(
+                    metric_value
+                )
+
+            if len(values) != 3:
+                continue
+
+            fallback_available += 1
+
+            first_delta = (
+                values[1]
+                - values[0]
+            )
+
+            second_delta = (
+                values[2]
+                - values[1]
+            )
+
+            accelerations.append(
+                (
+                    second_delta
+                    - first_delta
+                ) * 0.35
+            )
+
+    if not accelerations:
 
         return {
-            "score": 0.0,
-            "coverage": 0.0
+            "score": 50.0,
+            "coverage": 0.0,
+            "reliability": 0.0
         }
 
-    avg_acceleration = average(
-        acceleration_points
+    acceleration_value = average(
+        accelerations
     )
 
-    if avg_acceleration >= 10:
-        score = 100
+    if acceleration_value >= 12:
+        raw_score = 90
 
-    elif avg_acceleration >= 5:
-        score = 80
+    elif acceleration_value >= 6:
+        raw_score = 78
 
-    elif avg_acceleration >= 1:
-        score = 65
+    elif acceleration_value >= 2:
+        raw_score = 65
 
-    elif avg_acceleration >= -1:
-        score = 50
+    elif acceleration_value >= -2:
+        raw_score = 50
 
-    elif avg_acceleration >= -5:
-        score = 35
+    elif acceleration_value >= -6:
+        raw_score = 35
 
-    elif avg_acceleration >= -10:
-        score = 20
+    elif acceleration_value >= -12:
+        raw_score = 22
 
     else:
-        score = 0
+        raw_score = 10
 
-    coverage = (
-        available
-        / len(watched)
-    ) * 100
+    if yoy_available > 0:
+
+        coverage = (
+            yoy_available
+            / len(yoy_metrics)
+        ) * 100
+
+        reliability = (
+            50
+            + (
+                coverage * 0.5
+            )
+        )
+
+    else:
+
+        coverage = (
+            fallback_available
+            / len(qoq_fallback)
+        ) * 40
+
+        reliability = min(
+            coverage,
+            40
+        )
+
+    # قرب النتيجة من 50 إذا الموثوقية ضعيفة
+    adjusted_score = (
+        50
+        + (
+            raw_score - 50
+        )
+        * (
+            reliability
+            / 100
+        )
+    )
 
     return {
-        "score": score,
-        "coverage": coverage
+        "score":
+            clamp(
+                adjusted_score
+            ),
+
+        "coverage":
+            clamp(
+                coverage
+            ),
+
+        "reliability":
+            clamp(
+                reliability
+            )
     }
 
 
 # ============================================================
-# قياس الاستمرارية
+# Persistence
 # ============================================================
 
 def calculate_persistence(
@@ -1462,13 +1767,15 @@ def calculate_persistence(
     negative = 0
     available = 0
 
+    dates = quarter_dates[
+        index - 2:index + 1
+    ]
+
     for metric_name in watched:
 
         values = []
 
-        for date in quarter_dates[
-            index - 2:index + 1
-        ]:
+        for date in dates:
 
             metric_value = safe_number(
                 periods[
@@ -1479,6 +1786,7 @@ def calculate_persistence(
             )
 
             if metric_value is None:
+
                 values = []
                 break
 
@@ -1495,12 +1803,14 @@ def calculate_persistence(
             value > 0
             for value in values
         ):
+
             positive += 1
 
         elif all(
             value < 0
             for value in values
         ):
+
             negative += 1
 
     if available == 0:
@@ -1511,97 +1821,24 @@ def calculate_persistence(
         }
 
     raw = (
-        positive - negative
+        positive
+        - negative
     ) / available
 
-    score = clamp(
-        50 + (
-            raw * 50
-        )
-    )
-
-    coverage = (
-        available
-        / len(watched)
-    ) * 100
-
     return {
-        "score": score,
-        "coverage": coverage
-    }
+        "score":
+            clamp(
+                50
+                + (
+                    raw * 50
+                )
+            ),
 
-
-# ============================================================
-# كشف التناقضات بدون تكرار العقوبة
-# ============================================================
-
-def calculate_contradiction_penalty(metrics):
-
-    penalty = 0.0
-    reasons = []
-
-    revenue_yoy = safe_number(
-        metrics.get(
-            "q_revenue_growth_yoy"
-        )
-    )
-
-    net_income_yoy = safe_number(
-        metrics.get(
-            "q_net_income_growth_yoy"
-        )
-    )
-
-    ocf_yoy = safe_number(
-        metrics.get(
-            "q_ocf_growth_yoy"
-        )
-    )
-
-    # --------------------------------------------------------
-    # الإيرادات تنمو بقوة والأرباح لا تلحق بها
-    # --------------------------------------------------------
-
-    if (
-        revenue_yoy is not None
-        and net_income_yoy is not None
-        and revenue_yoy >= 10
-        and net_income_yoy
-        < revenue_yoy - 10
-    ):
-
-        penalty += 8
-
-        reasons.append(
-            "نمو الإيرادات لا ينعكس بنفس القوة "
-            "على صافي الربح"
-        )
-
-    # --------------------------------------------------------
-    # الأرباح جيدة لكن التدفق التشغيلي يتراجع بقوة
-    # --------------------------------------------------------
-
-    if (
-        net_income_yoy is not None
-        and ocf_yoy is not None
-        and net_income_yoy >= 5
-        and ocf_yoy <= -15
-    ):
-
-        penalty += 10
-
-        reasons.append(
-            "نمو الأرباح غير مدعوم "
-            "بالتدفق التشغيلي"
-        )
-
-    return {
-        "penalty": clamp(
-            penalty,
-            0,
-            20
-        ),
-        "reasons": reasons
+        "coverage":
+            (
+                available
+                / len(watched)
+            ) * 100
     }
 
 
@@ -1613,9 +1850,11 @@ def finalize_engine(
     state,
     data_confidence,
     history,
+    trend_reliability,
     acceleration,
     persistence,
-    contradiction
+    margin_pressure_score,
+    profit_gap
 ):
 
     available_weight = state[
@@ -1627,7 +1866,6 @@ def finalize_engine(
     ]
 
     if available_weight <= 0:
-
         return None
 
     raw_improvement = (
@@ -1650,9 +1888,7 @@ def finalize_engine(
     ) * 100
 
     # --------------------------------------------------------
-    # عامل التغطية
-    #
-    # يمنع درجة 60+ من إشارة واحدة فقط
+    # منع الثقة الزائفة عند نقص الإشارات
     # --------------------------------------------------------
 
     coverage_factor = (
@@ -1674,86 +1910,70 @@ def finalize_engine(
     )
 
     # --------------------------------------------------------
-    # تأثير الاستمرارية
+    # Persistence
     # --------------------------------------------------------
 
-    persistence_score = (
-        persistence[
-            "score"
-        ]
-    )
-
-    persistence_coverage = (
+    if (
         persistence[
             "coverage"
-        ]
-    )
+        ] >= 40
+    ):
 
-    if persistence_coverage >= 40:
-
-        persistence_adjustment = (
-            persistence_score
+        adjustment = (
+            persistence[
+                "score"
+            ]
             - 50
-        ) * 0.10
+        ) * 0.08
 
-        if persistence_adjustment > 0:
-
-            improvement += (
-                persistence_adjustment
-            )
+        if adjustment > 0:
+            improvement += adjustment
 
         else:
-
             risk += abs(
-                persistence_adjustment
+                adjustment
             )
 
     # --------------------------------------------------------
-    # تأثير التسارع
+    # Acceleration
+    #
+    # تأثيره حسب Reliability
     # --------------------------------------------------------
 
-    acceleration_score = (
-        acceleration[
-            "score"
-        ]
-    )
-
-    acceleration_coverage = (
+    if (
         acceleration[
             "coverage"
-        ]
-    )
+        ] >= 30
+    ):
 
-    if acceleration_coverage >= 40:
-
-        acceleration_adjustment = (
-            acceleration_score
+        acceleration_effect = (
+            acceleration[
+                "score"
+            ]
             - 50
-        ) * 0.10
+        ) * 0.08
 
-        if acceleration_adjustment > 0:
+        acceleration_effect *= (
+            acceleration[
+                "reliability"
+            ]
+            / 100
+        )
 
-            improvement += (
-                acceleration_adjustment
-            )
+        if acceleration_effect > 0:
+            improvement += acceleration_effect
 
         else:
-
             risk += abs(
-                acceleration_adjustment
+                acceleration_effect
             )
 
     # --------------------------------------------------------
-    # عقوبة التناقض
+    # Trend Reliability
+    #
+    # لا نزيد النتيجة
+    # فقط نخفض الثقة عند ضعفها
     # --------------------------------------------------------
-
-    contradiction_penalty = (
-        contradiction[
-            "penalty"
-        ]
-    )
-
-    risk += contradiction_penalty
 
     improvement = clamp(
         improvement
@@ -1775,16 +1995,11 @@ def finalize_engine(
         or 0
     )
 
-    # --------------------------------------------------------
-    # Confidence الحقيقي
-    #
-    # Data Quality ≠ Signal Confidence
-    # --------------------------------------------------------
-
     confidence = (
-        data_confidence * 0.40
-        + signal_coverage * 0.30
-        + history * 0.30
+        data_confidence * 0.30
+        + signal_coverage * 0.25
+        + history * 0.25
+        + trend_reliability * 0.20
     )
 
     confidence = clamp(
@@ -1810,30 +2025,47 @@ def finalize_engine(
         "history_sufficiency_score":
             history,
 
+        "trend_reliability_score":
+            trend_reliability,
+
         "acceleration_score":
-            acceleration_score,
+            acceleration[
+                "score"
+            ],
 
         "acceleration_coverage":
-            acceleration_coverage,
+            acceleration[
+                "coverage"
+            ],
+
+        "acceleration_reliability":
+            acceleration[
+                "reliability"
+            ],
 
         "persistence_score":
-            persistence_score,
+            persistence[
+                "score"
+            ],
 
         "persistence_coverage":
-            persistence_coverage,
+            persistence[
+                "coverage"
+            ],
 
-        "contradiction_penalty":
-            contradiction_penalty
+        "margin_pressure_score":
+            margin_pressure_score,
+
+        "profit_conversion_gap":
+            profit_gap
     }
 
 
 # ============================================================
-# تفسير النتيجة
+# تصنيف النتيجة
 # ============================================================
 
-def classify_result(
-    scores
-):
+def classify_result(scores):
 
     net_score = scores[
         "net_score"
@@ -1847,13 +2079,19 @@ def classify_result(
         "history_sufficiency_score"
     ]
 
+    reliability = scores[
+        "trend_reliability_score"
+    ]
+
     if (
         confidence < 55
         or history < 40
+        or reliability < 35
     ):
+
         return (
             "INSUFFICIENT_HISTORY",
-            "التاريخ غير كافٍ لحكم قوي"
+            "التاريخ أو موثوقية الاتجاه غير كافية"
         )
 
     if net_score >= 45:
@@ -1905,7 +2143,7 @@ def classify_result(
 
 
 # ============================================================
-# حفظ النتائج
+# الحفظ
 # ============================================================
 
 def save_engine_metrics(
@@ -1976,10 +2214,7 @@ def save_engine_metrics(
 # طباعة الأسباب
 # ============================================================
 
-def print_reasons(
-    state,
-    contradiction
-):
+def print_reasons(state):
 
     positive = sorted(
         state[
@@ -2009,7 +2244,7 @@ def print_reasons(
             flush=True
         )
 
-    for _, component, reason in positive[:5]:
+    for _, component, reason in positive[:6]:
 
         print(
             f"- [{component}] {reason}",
@@ -2021,35 +2256,23 @@ def print_reasons(
         flush=True
     )
 
-    if (
-        not negative
-        and not contradiction["reasons"]
-    ):
+    if not negative:
 
         print(
             "- لا توجد إشارة خطر قوية",
             flush=True
         )
 
-    for _, component, reason in negative[:5]:
+    for _, component, reason in negative[:6]:
 
         print(
             f"- [{component}] {reason}",
             flush=True
         )
 
-    for reason in contradiction[
-        "reasons"
-    ]:
-
-        print(
-            f"- [contradiction] {reason}",
-            flush=True
-        )
-
 
 # ============================================================
-# تشغيل المحرك
+# تشغيل Signal Engine
 # ============================================================
 
 def run_signal_engine(stock_id):
@@ -2078,7 +2301,7 @@ def run_signal_engine(stock_id):
     if not quarter_dates:
 
         print(
-            "🔴 لا توجد أرباع للتحليل",
+            "🔴 لا توجد بيانات ربعية",
             flush=True
         )
 
@@ -2091,7 +2314,7 @@ def run_signal_engine(stock_id):
     )
 
     print(
-        "🧠 SIGNAL ENGINE 2.1",
+        "🧠 SIGNAL ENGINE 2.2",
         flush=True
     )
 
@@ -2120,15 +2343,12 @@ def run_signal_engine(stock_id):
             < MIN_DATA_CONFIDENCE
         ):
 
-            print(
-                f"\n⚠️ تجاهل {period_end} "
-                f"بسبب انخفاض جودة البيانات",
-                flush=True
-            )
-
             continue
 
         state = new_state()
+
+        margin_pressure_score = 0.0
+        profit_gap_value = 0.0
 
         # ====================================================
         # Growth
@@ -2145,7 +2365,7 @@ def run_signal_engine(stock_id):
             add_component(
                 state,
                 "growth",
-                weight=30,
+                weight=27,
                 improvement=component[
                     "improvement"
                 ],
@@ -2164,21 +2384,27 @@ def run_signal_engine(stock_id):
             )
 
         # ====================================================
-        # Margins
+        # Margin Pressure
         # ====================================================
 
         component = (
-            evaluate_margin_component(
+            evaluate_margin_pressure(
                 metrics
             )
         )
 
         if component:
 
+            margin_pressure_score = (
+                component[
+                    "pressure_score"
+                ]
+            )
+
             add_component(
                 state,
-                "margins",
-                weight=22,
+                "margin_pressure",
+                weight=20,
                 improvement=component[
                     "improvement"
                 ],
@@ -2197,11 +2423,50 @@ def run_signal_engine(stock_id):
             )
 
         # ====================================================
-        # Cash quality
+        # Profit Conversion Gap
         # ====================================================
 
         component = (
-            evaluate_cash_quality_component(
+            evaluate_profit_conversion_gap(
+                metrics
+            )
+        )
+
+        if component:
+
+            profit_gap_value = (
+                component[
+                    "gap"
+                ]
+            )
+
+            add_component(
+                state,
+                "profit_conversion",
+                weight=10,
+                improvement=component[
+                    "improvement"
+                ],
+                risk=component[
+                    "risk"
+                ],
+                coverage=component[
+                    "coverage"
+                ],
+                positive_reasons=component[
+                    "positive"
+                ],
+                negative_reasons=component[
+                    "negative"
+                ]
+            )
+
+        # ====================================================
+        # Cash Quality
+        # ====================================================
+
+        component = (
+            evaluate_cash_quality(
                 metrics
             )
         )
@@ -2211,7 +2476,7 @@ def run_signal_engine(stock_id):
             add_component(
                 state,
                 "cash_quality",
-                weight=25,
+                weight=23,
                 improvement=component[
                     "improvement"
                 ],
@@ -2230,11 +2495,11 @@ def run_signal_engine(stock_id):
             )
 
         # ====================================================
-        # Balance sheet
+        # Balance Sheet
         # ====================================================
 
         component = (
-            evaluate_balance_sheet_component(
+            evaluate_balance_sheet(
                 metrics
             )
         )
@@ -2244,7 +2509,7 @@ def run_signal_engine(stock_id):
             add_component(
                 state,
                 "balance_sheet",
-                weight=15,
+                weight=13,
                 improvement=component[
                     "improvement"
                 ],
@@ -2263,11 +2528,11 @@ def run_signal_engine(stock_id):
             )
 
         # ====================================================
-        # Working capital
+        # Working Capital
         # ====================================================
 
         component = (
-            evaluate_working_capital_component(
+            evaluate_working_capital(
                 metrics
             )
         )
@@ -2277,7 +2542,7 @@ def run_signal_engine(stock_id):
             add_component(
                 state,
                 "working_capital",
-                weight=8,
+                weight=7,
                 improvement=component[
                     "improvement"
                 ],
@@ -2296,7 +2561,7 @@ def run_signal_engine(stock_id):
             )
 
         # ====================================================
-        # History
+        # Historical Quality
         # ====================================================
 
         history = (
@@ -2307,9 +2572,13 @@ def run_signal_engine(stock_id):
             )
         )
 
-        # ====================================================
-        # Acceleration
-        # ====================================================
+        trend = (
+            calculate_trend_reliability(
+                quarter_dates,
+                periods,
+                index
+            )
+        )
 
         acceleration = (
             calculate_acceleration(
@@ -2319,10 +2588,6 @@ def run_signal_engine(stock_id):
             )
         )
 
-        # ====================================================
-        # Persistence
-        # ====================================================
-
         persistence = (
             calculate_persistence(
                 quarter_dates,
@@ -2331,23 +2596,17 @@ def run_signal_engine(stock_id):
             )
         )
 
-        # ====================================================
-        # Contradictions
-        # ====================================================
-
-        contradiction = (
-            calculate_contradiction_penalty(
-                metrics
-            )
-        )
-
         scores = finalize_engine(
             state,
             data_confidence,
             history,
+            trend[
+                "score"
+            ],
             acceleration,
             persistence,
-            contradiction
+            margin_pressure_score,
+            profit_gap_value
         )
 
         if not scores:
@@ -2395,8 +2654,14 @@ def run_signal_engine(stock_id):
         )
 
         print(
-            f"🗂️ History Sufficiency: "
+            f"🗂️ History: "
             f"{scores['history_sufficiency_score']:.2f}",
+            flush=True
+        )
+
+        print(
+            f"🧬 Trend Reliability: "
+            f"{scores['trend_reliability_score']:.2f}",
             flush=True
         )
 
@@ -2407,14 +2672,26 @@ def run_signal_engine(stock_id):
         )
 
         print(
+            f"🎚️ Acceleration Reliability: "
+            f"{scores['acceleration_reliability']:.2f}",
+            flush=True
+        )
+
+        print(
             f"🔁 Persistence: "
             f"{scores['persistence_score']:.2f}",
             flush=True
         )
 
         print(
-            f"⚠️ Contradiction Penalty: "
-            f"{scores['contradiction_penalty']:.2f}",
+            f"📉 Margin Pressure: "
+            f"{scores['margin_pressure_score']:.2f}",
+            flush=True
+        )
+
+        print(
+            f"💰 Profit Conversion Gap: "
+            f"{scores['profit_conversion_gap']:.2f}",
             flush=True
         )
 
@@ -2426,8 +2703,7 @@ def run_signal_engine(stock_id):
         )
 
         print_reasons(
-            state,
-            contradiction
+            state
         )
 
         save_engine_metrics(
