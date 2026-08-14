@@ -24,11 +24,19 @@ jobs:
       - name: Install requirements
         run: pip install -r requirements.txt
 
+      # ======================================================
+      # 1) جلب البيانات المالية
+      # ======================================================
+
       - name: Fetch financial data
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python financial_data.py
+
+      # ======================================================
+      # 2) الشركات العادية
+      # ======================================================
 
       - name: Calculate financial metrics
         env:
@@ -36,11 +44,19 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python financial_metrics.py
 
+      # ======================================================
+      # 3) البنوك
+      # ======================================================
+
       - name: Calculate bank metrics
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python bank_metrics.py
+
+      # ======================================================
+      # 4) التأمين
+      # ======================================================
 
       - name: Calculate insurance metrics
         env:
@@ -48,11 +64,19 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python insurance_metrics.py
 
+      # ======================================================
+      # 5) REIT
+      # ======================================================
+
       - name: Calculate REIT metrics
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python reit_metrics.py
+
+      # ======================================================
+      # 6) Scoring
+      # ======================================================
 
       - name: Run Scoring Engine
         env:
@@ -60,11 +84,30 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python scoring_engine.py
 
+      # ======================================================
+      # 7) Turning Point
+      # ======================================================
+
       - name: Run Turning Point Engine
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python turning_point_engine.py
+
+      # ======================================================
+      # 8) Data Quality
+      # لازم يسبق Decision
+      # ======================================================
+
+      - name: Run Data Quality Engine
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: python data_quality_engine.py
+
+      # ======================================================
+      # 9) Final Decision
+      # ======================================================
 
       - name: Run Decision Engine
         env:
