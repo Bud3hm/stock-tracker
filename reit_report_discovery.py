@@ -16,29 +16,43 @@ from supabase import create_client
 
 
 # ============================================================
-# REIT REPORT DISCOVERY ENGINE v5.1 FAST
+# REIT REPORT DISCOVERY ENGINE v5.2
+#
+# FAST + CACHED + STRICT DATE MATCH
 #
 # READ ONLY
 #
-# التحسينات:
-# 1) Priority Crawl
-# 2) إزالة fragments والتكرار
-# 3) قراءة Anchor + Context
-# 4) دعم صفحات HTML كتقرير صحيح
-# 5) تقليل عدد الصفحات والطلبات
-# 6) Timeout أقصر
-# 7) Early Stop عند العثور على مستند قوي
-# 8) عام لكل صناديق REIT
+# التحسينات الرئيسية:
+#
+# 1) HTTP CACHE
+#    نفس الرابط لا يُطلب أكثر من مرة في نفس التشغيل.
+#
+# 2) PAGE CACHE
+#    Q2 و H1 يعيدون استخدام نفس HTML المحمّل.
+#
+# 3) STRICT DATE VALIDATION
+#    أي تقرير لا يطابق سنة period_end لا يمكن اعتباره VERIFIED.
+#
+# 4) Period guard
+#    يحاول منع اختيار Q1/Q3/H1/FY كبديل خاطئ.
+#
+# 5) Early Stop
+#    فقط إذا:
+#       - Score قوي
+#       - السنة صحيحة
+#       - الفترة متوافقة
+#
+# 6) عام لجميع صناديق REIT.
 #
 # لا توجد كتابة في Supabase.
 # ============================================================
 
 
-ENGINE_NAME = "REIT REPORT DISCOVERY ENGINE v5.1 FAST"
+ENGINE_NAME = "REIT REPORT DISCOVERY ENGINE v5.2 FAST CACHED"
 
 REGISTRY_FILENAME = "reit_official_sources.json"
 
-HTTP_TIMEOUT = 10
+HTTP_TIMEOUT = 8
 
 MAX_CRAWL_DEPTH = 2
 MAX_PAGES = 10
@@ -47,10 +61,17 @@ MAX_DOCUMENT_CHECKS = 20
 
 MIN_ACCEPT_SCORE = 60.0
 STRONG_ACCEPT_SCORE = 80.0
-
-# إذا وجدنا مستند بهذه الدرجة أو أعلى
-# نوقف التحقق من بقية المرشحين
 EARLY_STOP_SCORE = 90.0
+
+
+# ============================================================
+# Runtime caches
+# ============================================================
+
+
+HTTP_CACHE = {}
+
+LINK_CACHE = {}
 
 
 # ============================================================
@@ -81,7 +102,7 @@ supabase = create_client(
 
 
 # ============================================================
-# HTML PARSER WITH LINK CONTEXT
+# HTML parser
 # ============================================================
 
 
@@ -192,7 +213,7 @@ def print_header(title):
 
     print(
         "\n"
-        + "=" * 116,
+        + "=" * 118,
         flush=True
     )
 
@@ -202,7 +223,7 @@ def print_header(title):
     )
 
     print(
-        "=" * 116,
+        "=" * 118,
         flush=True
     )
 
@@ -210,7 +231,7 @@ def print_header(title):
 def print_separator():
 
     print(
-        "-" * 116,
+        "-" * 118,
         flush=True
     )
 
@@ -456,9 +477,7 @@ def find_registry_file():
 
     for candidate in candidates:
 
-        candidate = (
-            candidate.resolve()
-        )
+        candidate = candidate.resolve()
 
         if candidate.exists():
 
@@ -548,11 +567,29 @@ def get_active_reits():
 
 
 # ============================================================
-# HTTP
+# HTTP with cache
 # ============================================================
 
 
 def fetch_url(url):
+
+    url = canonical_url(
+        url
+    )
+
+
+    if url in HTTP_CACHE:
+
+        cached = HTTP_CACHE[
+            url
+        ].copy()
+
+        cached[
+            "from_cache"
+        ] = True
+
+        return cached
+
 
     request = urllib.request.Request(
         url,
@@ -591,7 +628,7 @@ def fetch_url(url):
             timeout=HTTP_TIMEOUT
         ) as response:
 
-            return {
+            result = {
                 "status":
                     "SUCCESS",
 
@@ -617,13 +654,16 @@ def fetch_url(url):
                     response.geturl(),
 
                 "error":
-                    None
+                    None,
+
+                "from_cache":
+                    False
             }
 
 
     except urllib.error.HTTPError as error:
 
-        return {
+        result = {
             "status":
                 "HTTP_ERROR",
 
@@ -642,13 +682,16 @@ def fetch_url(url):
             "error":
                 str(
                     error
-                )
+                ),
+
+            "from_cache":
+                False
         }
 
 
     except urllib.error.URLError as error:
 
-        return {
+        result = {
             "status":
                 "NETWORK_ERROR",
 
@@ -667,13 +710,16 @@ def fetch_url(url):
             "error":
                 str(
                     error
-                )
+                ),
+
+            "from_cache":
+                False
         }
 
 
     except Exception as error:
 
-        return {
+        result = {
             "status":
                 "ERROR",
 
@@ -693,8 +739,19 @@ def fetch_url(url):
                 (
                     f"{type(error).__name__}: "
                     f"{error}"
-                )
+                ),
+
+            "from_cache":
+                False
         }
+
+
+    HTTP_CACHE[
+        url
+    ] = result.copy()
+
+
+    return result
 
 
 # ============================================================
@@ -758,7 +815,7 @@ def detect_document_type(
 
 
 # ============================================================
-# HTML links
+# HTML links with cache
 # ============================================================
 
 
@@ -766,6 +823,18 @@ def extract_links(
     base_url,
     content
 ):
+
+    base_url = canonical_url(
+        base_url
+    )
+
+
+    if base_url in LINK_CACHE:
+
+        return LINK_CACHE[
+            base_url
+        ]
+
 
     try:
 
@@ -848,6 +917,11 @@ def extract_links(
                     )
                 )
         })
+
+
+    LINK_CACHE[
+        base_url
+    ] = results
 
 
     return results
@@ -993,6 +1067,179 @@ def period_keywords(
         rt,
         []
     )
+
+
+# ============================================================
+# Strict date helpers
+# ============================================================
+
+
+def extract_years(text):
+
+    text = normalize_text(
+        text
+    )
+
+    years = re.findall(
+        r"\b(20\d{2})\b",
+        text
+    )
+
+    return sorted(
+        set(
+            years
+        )
+    )
+
+
+def strict_year_match(
+    period_end,
+    url,
+    anchor_text,
+    context
+):
+
+    required_year = report_year(
+        period_end
+    )
+
+
+    if not required_year:
+
+        return False
+
+
+    combined = normalize_text(
+        f"{url} {anchor_text} {context}"
+    )
+
+
+    years_found = extract_years(
+        combined
+    )
+
+
+    if not years_found:
+
+        return False
+
+
+    return (
+        required_year in years_found
+    )
+
+
+def strict_period_match(
+    report_type,
+    url,
+    anchor_text,
+    context
+):
+
+    combined = normalize_text(
+        f"{url} {anchor_text} {context}"
+    )
+
+
+    rt = str(
+        report_type
+    ).upper()
+
+
+    if rt == "Q1":
+
+        positive = any(
+            keyword in combined
+            for keyword in [
+                "q1",
+                "first quarter",
+                "quarter 1",
+                "march",
+                "31 march"
+            ]
+        )
+
+
+    elif rt == "Q2":
+
+        positive = any(
+            keyword in combined
+            for keyword in [
+                "q2",
+                "second quarter",
+                "quarter 2",
+                "june",
+                "30 june"
+            ]
+        )
+
+
+    elif rt == "Q3":
+
+        positive = any(
+            keyword in combined
+            for keyword in [
+                "q3",
+                "third quarter",
+                "quarter 3",
+                "september",
+                "30 september"
+            ]
+        )
+
+
+    elif rt == "Q4":
+
+        positive = any(
+            keyword in combined
+            for keyword in [
+                "q4",
+                "fourth quarter",
+                "quarter 4",
+                "december",
+                "31 december"
+            ]
+        )
+
+
+    elif rt == "H1":
+
+        positive = any(
+            keyword in combined
+            for keyword in [
+                "h1",
+                "semi annual",
+                "semiannual",
+                "half year",
+                "six months",
+                "30 june",
+                "june"
+            ]
+        )
+
+
+    elif rt == "FY":
+
+        positive = any(
+            keyword in combined
+            for keyword in [
+                "fy",
+                "annual",
+                "annual report",
+                "full year",
+                "year end",
+                "31 december",
+                "december"
+            ]
+        )
+
+
+    else:
+
+        positive = True
+
+
+    return positive
 
 
 # ============================================================
@@ -1219,7 +1466,7 @@ def calculate_page_priority(
 
 
 # ============================================================
-# Document relevance
+# Document score
 # ============================================================
 
 
@@ -1324,28 +1571,28 @@ def calculate_document_score(
         )
 
 
-    year = report_year(
+    required_year = report_year(
         period_end
     )
 
 
     if (
-        year
-        and year in combined
+        required_year
+        and required_year in combined
     ):
 
-        score += 20
+        score += 25
 
         reasons.append(
-            "+20 year"
+            "+25 exact year"
         )
 
 
-    if any(
-        keyword in combined
-        for keyword in period_keywords(
-            report_type
-        )
+    if strict_period_match(
+        report_type,
+        url,
+        anchor_text,
+        context
     ):
 
         score += 25
@@ -1505,6 +1752,50 @@ def calculate_document_score(
         )
 
 
+    # ========================================================
+    # STRICT YEAR GATE
+    # ========================================================
+
+    year_ok = strict_year_match(
+        period_end,
+        url,
+        anchor_text,
+        context
+    )
+
+
+    period_ok = strict_period_match(
+        report_type,
+        url,
+        anchor_text,
+        context
+    )
+
+
+    if not year_ok:
+
+        score = min(
+            score,
+            45.0
+        )
+
+        reasons.append(
+            "YEAR_GATE_FAIL"
+        )
+
+
+    if not period_ok:
+
+        score = min(
+            score,
+            55.0
+        )
+
+        reasons.append(
+            "PERIOD_GATE_FAIL"
+        )
+
+
     score = max(
         0.0,
         min(
@@ -1516,7 +1807,9 @@ def calculate_document_score(
 
     return (
         score,
-        reasons
+        reasons,
+        year_ok,
+        period_ok
     )
 
 
@@ -1608,17 +1901,27 @@ def crawl_manager_site(
         )
 
 
-        print(
-            f"🌐 Crawl "
-            f"{len(visited)}/{MAX_PAGES} | "
-            f"Depth={depth} | "
-            f"{url}",
-            flush=True
+        response = fetch_url(
+            url
         )
 
 
-        response = fetch_url(
-            url
+        cache_text = (
+            "CACHE"
+            if response.get(
+                "from_cache"
+            )
+            else "LIVE"
+        )
+
+
+        print(
+            f"🌐 Crawl "
+            f"{len(visited)}/{MAX_PAGES} | "
+            f"{cache_text} | "
+            f"Depth={depth} | "
+            f"{url}",
+            flush=True
         )
 
 
@@ -2020,10 +2323,46 @@ def dedupe_candidates(
         )
 
 
-        if len(
-            current_text
-        ) > len(
-            old_text
+        # بدل الاحتفاظ فقط بالأطول،
+        # نفضّل السياق الذي يحتوي سنة التقرير المطلوبة.
+
+        required_year = report_year(
+            item.get(
+                "_period_end"
+            )
+        )
+
+
+        current_has_year = (
+            required_year
+            and required_year
+            in current_text
+        )
+
+        old_has_year = (
+            required_year
+            and required_year
+            in old_text
+        )
+
+
+        if (
+            current_has_year
+            and not old_has_year
+        ):
+
+            unique[
+                url
+            ] = item
+
+        elif (
+            current_has_year
+            == old_has_year
+            and len(
+                current_text
+            ) > len(
+                old_text
+            )
         ):
 
             unique[
@@ -2075,7 +2414,9 @@ def inspect_candidate(
 
     (
         score,
-        reasons
+        reasons,
+        year_ok,
+        period_ok
     ) = calculate_document_score(
         symbol,
         company_name,
@@ -2135,6 +2476,18 @@ def inspect_candidate(
 
         "relevance_score":
             score,
+
+        "year_match":
+            year_ok,
+
+        "period_match":
+            period_ok,
+
+        "from_cache":
+            response.get(
+                "from_cache",
+                False
+            ),
 
         "reasons":
             reasons,
@@ -2229,7 +2582,7 @@ def discover_report(
 
 
     # ========================================================
-    # Registry URLs أيضاً تدخل كمرشحين
+    # Registry URLs
     # ========================================================
 
     for field in [
@@ -2270,6 +2623,14 @@ def discover_report(
     )
 
 
+    # تمرير period_end للـdedupe
+    for item in all_candidates:
+
+        item[
+            "_period_end"
+        ] = period_end
+
+
     all_candidates = (
         dedupe_candidates(
             all_candidates
@@ -2297,26 +2658,29 @@ def discover_report(
         )
 
 
-        pre_score, _ = (
-            calculate_document_score(
-                symbol,
-                company_name,
-                report_type,
-                period_end,
-                item[
-                    "url"
-                ],
-                item.get(
-                    "anchor_text",
-                    ""
-                ),
-                item.get(
-                    "context",
-                    ""
-                ),
-                probable_type,
-                True
-            )
+        (
+            pre_score,
+            _,
+            year_ok,
+            period_ok
+        ) = calculate_document_score(
+            symbol,
+            company_name,
+            report_type,
+            period_end,
+            item[
+                "url"
+            ],
+            item.get(
+                "anchor_text",
+                ""
+            ),
+            item.get(
+                "context",
+                ""
+            ),
+            probable_type,
+            True
         )
 
 
@@ -2324,16 +2688,32 @@ def discover_report(
             "pre_score"
         ] = pre_score
 
+        item[
+            "pre_year_ok"
+        ] = year_ok
+
+        item[
+            "pre_period_ok"
+        ] = period_ok
+
+
         pre_ranked.append(
             item
         )
 
 
     pre_ranked.sort(
-        key=lambda item:
+        key=lambda item: (
+            item[
+                "pre_year_ok"
+            ],
+            item[
+                "pre_period_ok"
+            ],
             item[
                 "pre_score"
-            ],
+            ]
+        ),
         reverse=True
     )
 
@@ -2344,7 +2724,7 @@ def discover_report(
 
 
     # ========================================================
-    # Fetch + Verify + Early Stop
+    # Fetch + verify
     # ========================================================
 
     attempts = []
@@ -2362,6 +2742,10 @@ def discover_report(
             f"{index}/{len(pre_ranked)} | "
             f"PreScore="
             f"{item['pre_score']:.2f} | "
+            f"YearOK="
+            f"{item['pre_year_ok']} | "
+            f"PeriodOK="
+            f"{item['pre_period_ok']} | "
             f"{item['url']}",
             flush=True
         )
@@ -2387,6 +2771,12 @@ def discover_report(
             ]
             == "SUCCESS"
             and result[
+                "year_match"
+            ]
+            and result[
+                "period_match"
+            ]
+            and result[
                 "relevance_score"
             ]
             >= EARLY_STOP_SCORE
@@ -2396,7 +2786,7 @@ def discover_report(
 
             print(
                 f"🚀 EARLY STOP | "
-                f"Strong document found | "
+                f"Verified date + period | "
                 f"Score="
                 f"{result['relevance_score']:.2f}",
                 flush=True
@@ -2407,6 +2797,12 @@ def discover_report(
 
     attempts.sort(
         key=lambda item: (
+            item[
+                "year_match"
+            ],
+            item[
+                "period_match"
+            ],
             item[
                 "relevance_score"
             ],
@@ -2423,6 +2819,10 @@ def discover_report(
     )
 
 
+    # ========================================================
+    # STRICT USABLE
+    # ========================================================
+
     usable = [
         item
         for item in attempts
@@ -2431,6 +2831,12 @@ def discover_report(
                 "status"
             ]
             == "SUCCESS"
+            and item[
+                "year_match"
+            ]
+            and item[
+                "period_match"
+            ]
             and item[
                 "relevance_score"
             ]
@@ -2488,6 +2894,29 @@ def discover_report(
 
             state = (
                 "CANDIDATE_FOUND_REVIEW"
+            )
+
+
+    elif attempts:
+
+        date_failed = all(
+            not item[
+                "year_match"
+            ]
+            for item in attempts
+        )
+
+
+        if date_failed:
+
+            state = (
+                "ONLY_OLD_OR_WRONG_YEAR_DOCUMENTS"
+            )
+
+        else:
+
+            state = (
+                "REIT_PAGE_FOUND_NO_VALID_REPORT"
             )
 
 
@@ -2644,17 +3073,6 @@ def print_result(
     )
 
 
-    if result[
-        "best_anchor_text"
-    ]:
-
-        print(
-            f"🏷 Best Anchor: "
-            f"{result['best_anchor_text']}",
-            flush=True
-        )
-
-
     print(
         f"🌐 Pages Crawled: "
         f"{len(result['pages_crawled'])}",
@@ -2663,7 +3081,7 @@ def print_result(
 
 
     print(
-        f"📄 Verified Candidates: "
+        f"📄 Checked: "
         f"{len(result['attempts'])}",
         flush=True
     )
@@ -2673,50 +3091,9 @@ def print_result(
 
 
     print(
-        "🌐 TOP CRAWLED PAGES",
-        flush=True
-    )
-
-
-    for index, page in enumerate(
-        result[
-            "pages_crawled"
-        ][
-            :10
-        ],
-        start=1
-    ):
-
-        print(
-            f"{index:02d}. "
-            f"Priority="
-            f"{page['priority']:.2f} | "
-            f"Depth="
-            f"{page['depth']} | "
-            f"Anchor="
-            f"{page['anchor_text'] or 'N/A'} | "
-            f"{page['url']}",
-            flush=True
-        )
-
-
-    print_separator()
-
-
-    print(
         "🏅 TOP DOCUMENT CANDIDATES",
         flush=True
     )
-
-
-    if not result[
-        "attempts"
-    ]:
-
-        print(
-            "⚠️ No document candidates",
-            flush=True
-        )
 
 
     for index, item in enumerate(
@@ -2736,10 +3113,10 @@ def print_result(
 
         if len(
             context
-        ) > 200:
+        ) > 180:
 
             context = context[
-                -200:
+                -180:
             ]
 
 
@@ -2747,8 +3124,12 @@ def print_result(
             f"{index:02d}. "
             f"Score="
             f"{item['relevance_score']:.2f} | "
-            f"Origin="
-            f"{item['origin']} | "
+            f"YearOK="
+            f"{item['year_match']} | "
+            f"PeriodOK="
+            f"{item['period_match']} | "
+            f"Cache="
+            f"{item['from_cache']} | "
             f"HTTP="
             f"{item['http_status']} | "
             f"Type="
@@ -2769,19 +3150,15 @@ def print_result(
             )
 
 
-        if item[
-            "reasons"
-        ]:
-
-            print(
-                "    Reasons: "
-                + ", ".join(
-                    item[
-                        "reasons"
-                    ]
-                ),
-                flush=True
-            )
+        print(
+            "    Reasons: "
+            + ", ".join(
+                item[
+                    "reasons"
+                ]
+            ),
+            flush=True
+        )
 
 
 # ============================================================
@@ -2794,7 +3171,7 @@ def print_summary(
 ):
 
     print_header(
-        "🏆 REIT REPORT DISCOVERY SUMMARY v5.1 FAST"
+        "🏆 REIT REPORT DISCOVERY SUMMARY v5.2 FAST CACHED"
     )
 
 
@@ -2861,6 +3238,20 @@ def print_summary(
 
 
     print(
+        f"🧠 HTTP Cache Entries: "
+        f"{len(HTTP_CACHE)}",
+        flush=True
+    )
+
+
+    print(
+        f"🔗 Link Cache Entries: "
+        f"{len(LINK_CACHE)}",
+        flush=True
+    )
+
+
+    print(
         "\n📊 STATES",
         flush=True
     )
@@ -2878,7 +3269,7 @@ def print_summary(
 
 
     print(
-        "=" * 116,
+        "=" * 118,
         flush=True
     )
 
@@ -2923,15 +3314,14 @@ def run_discovery():
 
 
     print(
-        f"📄 Max Document Checks: "
+        f"📄 Max Checks: "
         f"{MAX_DOCUMENT_CHECKS}",
         flush=True
     )
 
 
     print(
-        f"🚀 Early Stop Score: "
-        f"{EARLY_STOP_SCORE}",
+        "🔐 Strict Year Match: ENABLED",
         flush=True
     )
 
