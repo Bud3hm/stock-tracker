@@ -4,20 +4,60 @@ from supabase import create_client
 
 
 # ============================================================
-# REIT METRICS ENGINE v2
+# REIT METRICS ENGINE v3
 #
-# أهم تحسينات v2:
-# 1) معالجة غياب Q4 الربعي في Yahoo
-# 2) اشتقاق Q4 من Annual - Q1 - Q2 - Q3 عند توفرها
-# 3) استخدام Annual balance sheet كـ Q4 snapshot
-# 4) مطابقة YoY بالتاريخ الأقرب ضمن هامش زمني
-# 5) عدم اختلاق أي بيانات ناقصة
-# 6) تسجيل هل الربع مشتق أم أصلي
+# YAHOO SAFE MODE
+#
+# المبادئ:
+#
+# 1) Yahoo هو المصدر التشغيلي الحالي للـ REIT.
+#
+# 2) البيانات الناقصة لا تعتبر صفراً.
+#
+# 3) المؤشر الذي لا يمكن حسابه لا يتم اختلاقه.
+#
+# 4) QoQ لا يحسب إلا إذا كان الربع السابق زمنياً صالحاً.
+#
+# 5) YoY لا يحسب إلا إذا وجد نفس الربع تقريباً في العام السابق.
+#
+# 6) TTM لا يحسب إلا بوجود 4 أرباع متصلة زمنياً.
+#
+# 7) Q4 يمكن اشتقاقه فقط من:
+#       Annual - Q1 - Q2 - Q3
+#    عند توفر الثلاثة بشكل موثوق.
+#
+# 8) نقص الأرباع ينتج:
+#       PARTIAL DATA
+#    وليس:
+#       SYSTEM FAILURE
+#
+# 9) إضافة Coverage / Availability Flags
+#    حتى تستخدمها Data Quality و System Audit لاحقاً.
+#
+# 10) لا توجد أي محاولة لجلب مصادر رسمية خارج Yahoo.
 # ============================================================
 
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY")
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL"
+)
+
+SUPABASE_SECRET_KEY = os.environ.get(
+    "SUPABASE_SECRET_KEY"
+)
+
+
+if not SUPABASE_URL:
+    raise RuntimeError(
+        "SUPABASE_URL environment variable is missing"
+    )
+
+
+if not SUPABASE_SECRET_KEY:
+    raise RuntimeError(
+        "SUPABASE_SECRET_KEY environment variable is missing"
+    )
+
 
 supabase = create_client(
     SUPABASE_URL,
@@ -25,11 +65,16 @@ supabase = create_client(
 )
 
 
+ENGINE_NAME = "REIT METRICS ENGINE v3 | YAHOO SAFE MODE"
+
+
 # ============================================================
-# خرائط Annual -> Quarterly
+# Annual -> Quarterly maps
 # ============================================================
 
+
 FLOW_METRIC_MAP = {
+
     "annualTotalRevenue":
         "quarterlyTotalRevenue",
 
@@ -51,6 +96,7 @@ FLOW_METRIC_MAP = {
 
 
 BALANCE_METRIC_MAP = {
+
     "annualTotalAssets":
         "quarterlyTotalAssets",
 
@@ -75,8 +121,42 @@ BALANCE_METRIC_MAP = {
 
 
 # ============================================================
-# أدوات أساسية
+# Required fields
 # ============================================================
+
+
+CURRENT_CORE_FIELDS = [
+
+    "quarterlyTotalRevenue",
+    "quarterlyOperatingIncome",
+    "quarterlyNetIncome",
+    "quarterlyTotalAssets",
+    "quarterlyStockholdersEquity",
+    "quarterlyTotalDebt"
+]
+
+
+YOY_CORE_FIELDS = [
+
+    "quarterlyTotalRevenue",
+    "quarterlyOperatingIncome",
+    "quarterlyNetIncome"
+]
+
+
+ANNUAL_CORE_FIELDS = [
+
+    "annualTotalRevenue",
+    "annualNetIncome",
+    "annualTotalAssets",
+    "annualStockholdersEquity"
+]
+
+
+# ============================================================
+# Basic helpers
+# ============================================================
+
 
 def safe_number(value):
 
@@ -84,16 +164,30 @@ def safe_number(value):
         return None
 
     try:
-        return float(value)
+        return float(
+            value
+        )
 
-    except (TypeError, ValueError):
+    except (
+        TypeError,
+        ValueError
+    ):
         return None
 
 
-def safe_divide(a, b):
+def safe_divide(
+    a,
+    b
+):
 
-    a = safe_number(a)
-    b = safe_number(b)
+    a = safe_number(
+        a
+    )
+
+    b = safe_number(
+        b
+    )
+
 
     if (
         a is None
@@ -102,23 +196,37 @@ def safe_divide(a, b):
     ):
         return None
 
+
     return a / b
 
 
 def pct(value):
 
-    value = safe_number(value)
+    value = safe_number(
+        value
+    )
+
 
     if value is None:
         return None
 
+
     return value * 100
 
 
-def growth_rate(current, previous):
+def growth_rate(
+    current,
+    previous
+):
 
-    current = safe_number(current)
-    previous = safe_number(previous)
+    current = safe_number(
+        current
+    )
+
+    previous = safe_number(
+        previous
+    )
+
 
     if (
         current is None
@@ -127,16 +235,31 @@ def growth_rate(current, previous):
     ):
         return None
 
+
     return (
-        (current - previous)
-        / abs(previous)
+        (
+            current
+            - previous
+        )
+        / abs(
+            previous
+        )
     ) * 100
 
 
-def difference(current, previous):
+def difference(
+    current,
+    previous
+):
 
-    current = safe_number(current)
-    previous = safe_number(previous)
+    current = safe_number(
+        current
+    )
+
+    previous = safe_number(
+        previous
+    )
+
 
     if (
         current is None
@@ -144,25 +267,38 @@ def difference(current, previous):
     ):
         return None
 
-    return current - previous
+
+    return (
+        current
+        - previous
+    )
 
 
-def value(data, metric):
+def value(
+    data,
+    metric
+):
 
     if not data:
         return None
 
+
     return safe_number(
-        data.get(metric)
+        data.get(
+            metric
+        )
     )
 
 
 def sum_if_complete(values):
 
     cleaned = [
-        safe_number(item)
+        safe_number(
+            item
+        )
         for item in values
     ]
+
 
     if (
         not cleaned
@@ -173,57 +309,109 @@ def sum_if_complete(values):
     ):
         return None
 
-    return sum(cleaned)
+
+    return sum(
+        cleaned
+    )
 
 
-def parse_date(date_string):
+def parse_date(
+    date_string
+):
 
     try:
+
         return datetime.strptime(
-            str(date_string),
+            str(
+                date_string
+            ),
             "%Y-%m-%d"
         ).date()
 
     except Exception:
+
         return None
 
 
+def calculate_field_coverage(
+    data,
+    required_fields
+):
+
+    if not required_fields:
+        return 0.0
+
+
+    available = sum(
+        1
+        for metric in required_fields
+        if value(
+            data,
+            metric
+        ) is not None
+    )
+
+
+    return (
+        available
+        / len(
+            required_fields
+        )
+    ) * 100
+
+
 # ============================================================
-# جلب صناديق REIT
+# REIT stocks
 # ============================================================
+
 
 def get_reit_stocks():
 
     response = (
         supabase
-        .table("stocks")
+        .table(
+            "stocks"
+        )
         .select(
             "id,"
             "symbol,"
             "company_name,"
             "analysis_model,"
-            "data_status"
+            "data_status,"
+            "is_active"
         )
         .eq(
             "analysis_model",
             "reit"
         )
+        .eq(
+            "is_active",
+            True
+        )
         .execute()
     )
+
 
     return response.data or []
 
 
 # ============================================================
-# جلب البيانات المالية
+# Financial data
 # ============================================================
 
-def get_financial_data(stock_id):
+
+def get_financial_data(
+    stock_id
+):
 
     response = (
         supabase
-        .table("financial_statements")
-        .select("*")
+        .table(
+            "financial_statements"
+        )
+        .select(
+            "*"
+        )
         .eq(
             "stock_id",
             stock_id
@@ -231,48 +419,65 @@ def get_financial_data(stock_id):
         .execute()
     )
 
+
     return response.data or []
 
 
 # ============================================================
-# ترتيب البيانات
+# Organize Yahoo financial data
 # ============================================================
 
-def organize_financial_data(rows):
+
+def organize_financial_data(
+    rows
+):
 
     annual = {}
     quarterly = {}
 
+
     for row in rows:
 
         period_type = str(
-            row.get("period_type") or ""
-        )
+            row.get(
+                "period_type"
+            )
+            or ""
+        ).upper()
+
 
         period_end_raw = row.get(
             "period_end"
         )
 
+
         if not period_end_raw:
             continue
+
 
         period_end = str(
             period_end_raw
         )
 
+
         metric = row.get(
             "metric"
         )
 
+
         metric_value = safe_number(
-            row.get("value")
+            row.get(
+                "value"
+            )
         )
+
 
         if (
             not metric
             or metric_value is None
         ):
             continue
+
 
         if period_type == "12M":
 
@@ -281,11 +486,13 @@ def organize_financial_data(rows):
                 {}
             )
 
+
             annual[
                 period_end
             ][
                 metric
             ] = metric_value
+
 
         elif period_type == "3M":
 
@@ -294,11 +501,13 @@ def organize_financial_data(rows):
                 {}
             )
 
+
             quarterly[
                 period_end
             ][
                 metric
             ] = metric_value
+
 
     return (
         annual,
@@ -307,8 +516,270 @@ def organize_financial_data(rows):
 
 
 # ============================================================
-# اشتقاق Q4 من Annual عند غياب الربع الرابع
+# Quarter spacing helpers
 # ============================================================
+
+
+def quarter_gap_days(
+    earlier_period,
+    later_period
+):
+
+    earlier = parse_date(
+        earlier_period
+    )
+
+    later = parse_date(
+        later_period
+    )
+
+
+    if (
+        earlier is None
+        or later is None
+    ):
+        return None
+
+
+    return (
+        later
+        - earlier
+    ).days
+
+
+def is_valid_quarter_gap(
+    earlier_period,
+    later_period
+):
+
+    gap = quarter_gap_days(
+        earlier_period,
+        later_period
+    )
+
+
+    if gap is None:
+        return False
+
+
+    # يسمح باختلاف نهايات الأشهر والإجازات
+    return (
+        60
+        <= gap
+        <= 125
+    )
+
+
+# ============================================================
+# Previous quarter
+#
+# لا نستخدم السجل السابق بشكل أعمى.
+# ============================================================
+
+
+def find_previous_quarter(
+    current_period,
+    quarterly
+):
+
+    current_date = parse_date(
+        current_period
+    )
+
+
+    if current_date is None:
+        return (
+            None,
+            None
+        )
+
+
+    candidates = []
+
+
+    for period_end in quarterly.keys():
+
+        if period_end == current_period:
+            continue
+
+
+        candidate_date = parse_date(
+            period_end
+        )
+
+
+        if candidate_date is None:
+            continue
+
+
+        if candidate_date >= current_date:
+            continue
+
+
+        gap_days = (
+            current_date
+            - candidate_date
+        ).days
+
+
+        if (
+            60
+            <= gap_days
+            <= 125
+        ):
+
+            candidates.append(
+                (
+                    gap_days,
+                    period_end
+                )
+            )
+
+
+    if not candidates:
+
+        return (
+            None,
+            None
+        )
+
+
+    candidates.sort(
+        key=lambda item:
+            item[
+                0
+            ]
+    )
+
+
+    best_period = candidates[
+        0
+    ][
+        1
+    ]
+
+
+    return (
+        quarterly.get(
+            best_period
+        ),
+        best_period
+    )
+
+
+# ============================================================
+# Same quarter last year
+# ============================================================
+
+
+def find_same_quarter_last_year(
+    current_period,
+    quarterly
+):
+
+    current_date = parse_date(
+        current_period
+    )
+
+
+    if current_date is None:
+
+        return (
+            None,
+            None
+        )
+
+
+    target_year = (
+        current_date.year
+        - 1
+    )
+
+
+    candidates = []
+
+
+    for period_end in quarterly.keys():
+
+        candidate_date = parse_date(
+            period_end
+        )
+
+
+        if candidate_date is None:
+            continue
+
+
+        if candidate_date.year != target_year:
+            continue
+
+
+        month_day_distance = abs(
+            (
+                candidate_date.month
+                * 31
+                + candidate_date.day
+            )
+            -
+            (
+                current_date.month
+                * 31
+                + current_date.day
+            )
+        )
+
+
+        candidates.append(
+            (
+                month_day_distance,
+                period_end
+            )
+        )
+
+
+    if not candidates:
+
+        return (
+            None,
+            None
+        )
+
+
+    candidates.sort(
+        key=lambda item:
+            item[
+                0
+            ]
+    )
+
+
+    distance, best_period = (
+        candidates[
+            0
+        ]
+    )
+
+
+    if distance > 45:
+
+        return (
+            None,
+            None
+        )
+
+
+    return (
+        quarterly.get(
+            best_period
+        ),
+        best_period
+    )
+
+
+# ============================================================
+# Q4 synthesis
+# ============================================================
+
 
 def build_synthetic_q4(
     annual,
@@ -316,6 +787,7 @@ def build_synthetic_q4(
 ):
 
     synthesized_periods = set()
+
 
     for annual_date in sorted(
         annual.keys()
@@ -325,16 +797,15 @@ def build_synthetic_q4(
             annual_date
         )
 
+
         if annual_dt is None:
             continue
 
+
         year = annual_dt.year
 
-        # ----------------------------------------------------
-        # إذا كان لدينا بالفعل Quarterly في نفس تاريخ السنة
-        # فلا نعيد بناء الربع
-        # ----------------------------------------------------
 
+        # Yahoo already provided a 3M entry
         if annual_date in quarterly:
 
             quarterly[
@@ -346,11 +817,9 @@ def build_synthetic_q4(
 
             continue
 
-        # ----------------------------------------------------
-        # نبحث عن الأرباع الموجودة في نفس السنة قبل نهاية السنة
-        # ----------------------------------------------------
 
         same_year_dates = []
+
 
         for quarter_date in quarterly.keys():
 
@@ -358,33 +827,47 @@ def build_synthetic_q4(
                 quarter_date
             )
 
+
             if quarter_dt is None:
                 continue
 
+
             if (
-                quarter_dt.year == year
-                and quarter_dt < annual_dt
+                quarter_dt.year
+                == year
+                and quarter_dt
+                < annual_dt
             ):
 
                 same_year_dates.append(
                     quarter_date
                 )
 
+
         same_year_dates = sorted(
             same_year_dates
         )
 
-        # لا نشتق Q4 إلا بوجود 3 أرباع فعلية كاملة
-        if len(same_year_dates) < 3:
+
+        # يجب أن نجد 3 أرباع فقط قبل نهاية السنة
+        if len(
+            same_year_dates
+        ) < 3:
             continue
 
-        q123_dates = same_year_dates[-3:]
 
-        # نتأكد أنها بالفعل منتشرة خلال السنة
+        q123_dates = same_year_dates[
+            -3:
+        ]
+
+
         q123_parsed = [
-            parse_date(item)
+            parse_date(
+                item
+            )
             for item in q123_dates
         ]
+
 
         if any(
             item is None
@@ -392,14 +875,57 @@ def build_synthetic_q4(
         ):
             continue
 
-        # يجب أن تغطي تقريبًا Q1/Q2/Q3 لا ثلاثة سجلات متقاربة
-        span_days = (
-            q123_parsed[-1]
-            - q123_parsed[0]
-        ).days
 
-        if span_days < 150:
+        # ====================================================
+        # نتأكد أن Q1/Q2/Q3 متسلسلة فعلاً
+        # ====================================================
+
+        valid_sequence = True
+
+
+        for idx in range(
+            1,
+            len(
+                q123_dates
+            )
+        ):
+
+            if not is_valid_quarter_gap(
+                q123_dates[
+                    idx - 1
+                ],
+                q123_dates[
+                    idx
+                ]
+            ):
+
+                valid_sequence = False
+                break
+
+
+        if not valid_sequence:
             continue
+
+
+        # Q3 -> year end أيضاً يجب أن يكون منطقياً
+        q3_to_year_end = quarter_gap_days(
+            q123_dates[
+                -1
+            ],
+            annual_date
+        )
+
+
+        if (
+            q3_to_year_end is None
+            or not (
+                60
+                <= q3_to_year_end
+                <= 125
+            )
+        ):
+            continue
+
 
         synthetic = {}
 
@@ -407,9 +933,9 @@ def build_synthetic_q4(
             annual_date
         ]
 
+
         # ====================================================
-        # FLOW METRICS
-        # Annual - Q1 - Q2 - Q3 = Q4
+        # Flow metrics
         # ====================================================
 
         for (
@@ -422,26 +948,33 @@ def build_synthetic_q4(
                 annual_metric
             )
 
+
             if annual_value is None:
                 continue
 
+
             q_values = [
+
                 value(
                     quarterly[
                         quarter_date
                     ],
                     quarterly_metric
                 )
+
                 for quarter_date
                 in q123_dates
             ]
+
 
             q123_sum = sum_if_complete(
                 q_values
             )
 
+
             if q123_sum is None:
                 continue
+
 
             synthetic[
                 quarterly_metric
@@ -450,9 +983,9 @@ def build_synthetic_q4(
                 - q123_sum
             )
 
+
         # ====================================================
-        # BALANCE SHEET METRICS
-        # Annual year-end = Q4 year-end snapshot
+        # Balance sheet snapshot
         # ====================================================
 
         for (
@@ -465,27 +998,32 @@ def build_synthetic_q4(
                 annual_metric
             )
 
+
             if annual_value is not None:
 
                 synthetic[
                     quarterly_metric
                 ] = annual_value
 
-        # نحتاج قيمة مالية واحدة على الأقل حتى نسجل الربع
+
         if not synthetic:
             continue
+
 
         synthetic[
             "_synthesized"
         ] = 1.0
 
+
         quarterly[
             annual_date
         ] = synthetic
 
+
         synthesized_periods.add(
             annual_date
         )
+
 
         print(
             f"🧩 Synthetic Q4 built: "
@@ -494,93 +1032,17 @@ def build_synthetic_q4(
             flush=True
         )
 
+
     return synthesized_periods
 
 
 # ============================================================
-# إيجاد نفس الربع في العام السابق
+# Save metrics
 #
-# نستخدم أقرب تاريخ للهدف ضمن 45 يومًا.
-# لا نستخدم ربعًا مختلفًا بعيدًا.
+# None is NOT saved.
+# This means missing ≠ zero.
 # ============================================================
 
-def find_same_quarter_last_year(
-    current_period,
-    quarterly
-):
-
-    current_date = parse_date(
-        current_period
-    )
-
-    if current_date is None:
-        return None, None
-
-    target_year = (
-        current_date.year
-        - 1
-    )
-
-    candidates = []
-
-    for period_end in quarterly.keys():
-
-        candidate_date = parse_date(
-            period_end
-        )
-
-        if candidate_date is None:
-            continue
-
-        if candidate_date.year != target_year:
-            continue
-
-        # فرق الأيام الموسمي بين التاريخين
-        month_day_distance = abs(
-            (
-                candidate_date.month * 31
-                + candidate_date.day
-            )
-            -
-            (
-                current_date.month * 31
-                + current_date.day
-            )
-        )
-
-        candidates.append(
-            (
-                month_day_distance,
-                period_end
-            )
-        )
-
-    if not candidates:
-        return None, None
-
-    candidates.sort(
-        key=lambda item: item[0]
-    )
-
-    distance, best_period = (
-        candidates[0]
-    )
-
-    # لا نقبل مقارنة بعيدة زمنيًا
-    if distance > 45:
-        return None, None
-
-    return (
-        quarterly.get(
-            best_period
-        ),
-        best_period
-    )
-
-
-# ============================================================
-# حفظ المؤشرات
-# ============================================================
 
 def save_metrics(
     stock_id,
@@ -592,7 +1054,9 @@ def save_metrics(
         timezone.utc
     ).isoformat()
 
+
     records = []
+
 
     for (
         metric_name,
@@ -603,30 +1067,32 @@ def save_metrics(
             metric_value
         )
 
+
         if metric_value is None:
             continue
 
-        records.append(
-            {
-                "stock_id":
-                    stock_id,
 
-                "calculated_at":
-                    calculated_at,
+        records.append({
+            "stock_id":
+                stock_id,
 
-                "metric_name":
-                    metric_name,
+            "calculated_at":
+                calculated_at,
 
-                "metric_value":
-                    metric_value,
+            "metric_name":
+                metric_name,
 
-                "period_end":
-                    period_end
-            }
-        )
+            "metric_value":
+                metric_value,
+
+            "period_end":
+                period_end
+        })
+
 
     if not records:
         return 0
+
 
     (
         supabase
@@ -644,14 +1110,16 @@ def save_metrics(
         .execute()
     )
 
+
     return len(
         records
     )
 
 
 # ============================================================
-# مؤشرات REIT السنوية
+# Annual metrics
 # ============================================================
+
 
 def calculate_reit_annual_metrics(
     current,
@@ -708,6 +1176,7 @@ def calculate_reit_annual_metrics(
         "annualFreeCashFlow"
     )
 
+
     previous_revenue = (
         value(
             previous,
@@ -762,7 +1231,41 @@ def calculate_reit_annual_metrics(
         else None
     )
 
+
+    annual_coverage = (
+        calculate_field_coverage(
+            current,
+            ANNUAL_CORE_FIELDS
+        )
+    )
+
+
     return {
+
+        # ----------------------------------------------------
+        # Coverage
+        # ----------------------------------------------------
+
+        "reit_annual_data_coverage_pct":
+            annual_coverage,
+
+        "reit_annual_data_available_flag":
+            (
+                1.0
+                if annual_coverage > 0
+                else 0.0
+            ),
+
+        "reit_annual_data_complete_flag":
+            (
+                1.0
+                if annual_coverage >= 100
+                else 0.0
+            ),
+
+        # ----------------------------------------------------
+        # Growth
+        # ----------------------------------------------------
 
         "reit_annual_revenue_growth_yoy":
             growth_rate(
@@ -800,6 +1303,10 @@ def calculate_reit_annual_metrics(
                 previous_ocf
             ),
 
+        # ----------------------------------------------------
+        # Profitability
+        # ----------------------------------------------------
+
         "reit_annual_operating_margin":
             pct(
                 safe_divide(
@@ -831,6 +1338,10 @@ def calculate_reit_annual_metrics(
                     equity
                 )
             ),
+
+        # ----------------------------------------------------
+        # Leverage
+        # ----------------------------------------------------
 
         "reit_annual_debt_to_equity":
             safe_divide(
@@ -864,13 +1375,18 @@ def calculate_reit_annual_metrics(
 
         "reit_annual_net_debt":
             (
-                total_debt - cash
+                total_debt
+                - cash
                 if (
                     total_debt is not None
                     and cash is not None
                 )
                 else None
             ),
+
+        # ----------------------------------------------------
+        # Cash flow
+        # ----------------------------------------------------
 
         "reit_annual_cash_conversion":
             safe_divide(
@@ -885,6 +1401,10 @@ def calculate_reit_annual_metrics(
                     revenue
                 )
             ),
+
+        # ----------------------------------------------------
+        # Raw annual values
+        # ----------------------------------------------------
 
         "reit_annual_revenue":
             revenue,
@@ -919,8 +1439,9 @@ def calculate_reit_annual_metrics(
 
 
 # ============================================================
-# مؤشرات REIT الربعية
+# Quarterly metrics
 # ============================================================
+
 
 def calculate_reit_quarter_metrics(
     current,
@@ -978,6 +1499,7 @@ def calculate_reit_quarter_metrics(
         "quarterlyFreeCashFlow"
     )
 
+
     prev_revenue = value(
         previous_quarter,
         "quarterlyTotalRevenue"
@@ -1017,6 +1539,7 @@ def calculate_reit_quarter_metrics(
         previous_quarter,
         "quarterlyFreeCashFlow"
     )
+
 
     yoy_revenue = value(
         same_quarter_last_year,
@@ -1058,6 +1581,7 @@ def calculate_reit_quarter_metrics(
         "quarterlyFreeCashFlow"
     )
 
+
     operating_margin = pct(
         safe_divide(
             operating_income,
@@ -1071,6 +1595,7 @@ def calculate_reit_quarter_metrics(
             revenue
         )
     )
+
 
     prev_operating_margin = pct(
         safe_divide(
@@ -1086,6 +1611,7 @@ def calculate_reit_quarter_metrics(
         )
     )
 
+
     yoy_operating_margin = pct(
         safe_divide(
             yoy_operating_income,
@@ -1100,7 +1626,12 @@ def calculate_reit_quarter_metrics(
         )
     )
 
+
     return {
+
+        # ----------------------------------------------------
+        # QoQ
+        # ----------------------------------------------------
 
         "reit_q_revenue_growth_qoq":
             growth_rate(
@@ -1150,6 +1681,10 @@ def calculate_reit_quarter_metrics(
                 prev_fcf
             ),
 
+        # ----------------------------------------------------
+        # YoY
+        # ----------------------------------------------------
+
         "reit_q_revenue_growth_yoy":
             growth_rate(
                 revenue,
@@ -1198,6 +1733,10 @@ def calculate_reit_quarter_metrics(
                 yoy_fcf
             ),
 
+        # ----------------------------------------------------
+        # Margins
+        # ----------------------------------------------------
+
         "reit_q_operating_margin":
             operating_margin,
 
@@ -1227,6 +1766,10 @@ def calculate_reit_quarter_metrics(
                 net_margin,
                 yoy_net_margin
             ),
+
+        # ----------------------------------------------------
+        # Balance sheet
+        # ----------------------------------------------------
 
         "reit_q_debt_to_equity":
             safe_divide(
@@ -1260,13 +1803,18 @@ def calculate_reit_quarter_metrics(
 
         "reit_q_net_debt":
             (
-                total_debt - cash
+                total_debt
+                - cash
                 if (
                     total_debt is not None
                     and cash is not None
                 )
                 else None
             ),
+
+        # ----------------------------------------------------
+        # Returns
+        # ----------------------------------------------------
 
         "reit_q_roa_annualized":
             pct(
@@ -1292,6 +1840,10 @@ def calculate_reit_quarter_metrics(
                 )
             ),
 
+        # ----------------------------------------------------
+        # Cash
+        # ----------------------------------------------------
+
         "reit_q_cash_conversion":
             safe_divide(
                 operating_cash_flow,
@@ -1305,6 +1857,10 @@ def calculate_reit_quarter_metrics(
                     revenue
                 )
             ),
+
+        # ----------------------------------------------------
+        # Raw quarterly
+        # ----------------------------------------------------
 
         "reit_q_revenue":
             revenue,
@@ -1339,8 +1895,57 @@ def calculate_reit_quarter_metrics(
 
 
 # ============================================================
-# TTM
+# TTM continuity
 # ============================================================
+
+
+def get_valid_ttm_dates(
+    quarter_dates,
+    index
+):
+
+    if index < 3:
+        return None
+
+
+    dates = quarter_dates[
+        index - 3:
+        index + 1
+    ]
+
+
+    if len(
+        dates
+    ) != 4:
+        return None
+
+
+    for idx in range(
+        1,
+        len(
+            dates
+        )
+    ):
+
+        if not is_valid_quarter_gap(
+            dates[
+                idx - 1
+            ],
+            dates[
+                idx
+            ]
+        ):
+
+            return None
+
+
+    return dates
+
+
+# ============================================================
+# TTM metrics
+# ============================================================
+
 
 def calculate_reit_ttm_metrics(
     quarter_dates,
@@ -1348,69 +1953,83 @@ def calculate_reit_ttm_metrics(
     index
 ):
 
-    if index < 3:
+    dates = get_valid_ttm_dates(
+        quarter_dates,
+        index
+    )
+
+
+    if dates is None:
         return {}
 
-    dates = quarter_dates[
-        index - 3:index + 1
-    ]
 
     quarters = [
-        quarterly[item]
+        quarterly[
+            item
+        ]
         for item in dates
     ]
+
 
     revenue = sum_if_complete(
         [
             value(
-                q,
+                quarter,
                 "quarterlyTotalRevenue"
             )
-            for q in quarters
+            for quarter in quarters
         ]
     )
+
 
     operating_income = sum_if_complete(
         [
             value(
-                q,
+                quarter,
                 "quarterlyOperatingIncome"
             )
-            for q in quarters
+            for quarter in quarters
         ]
     )
+
 
     net_income = sum_if_complete(
         [
             value(
-                q,
+                quarter,
                 "quarterlyNetIncome"
             )
-            for q in quarters
+            for quarter in quarters
         ]
     )
+
 
     ocf = sum_if_complete(
         [
             value(
-                q,
+                quarter,
                 "quarterlyOperatingCashFlow"
             )
-            for q in quarters
+            for quarter in quarters
         ]
     )
+
 
     fcf = sum_if_complete(
         [
             value(
-                q,
+                quarter,
                 "quarterlyFreeCashFlow"
             )
-            for q in quarters
+            for quarter in quarters
         ]
     )
 
-    latest = quarters[-1]
+
+    latest = quarters[
+        -1
+    ]
+
 
     assets = value(
         latest,
@@ -1426,6 +2045,7 @@ def calculate_reit_ttm_metrics(
         latest,
         "quarterlyTotalDebt"
     )
+
 
     return {
 
@@ -1499,67 +2119,84 @@ def calculate_reit_ttm_metrics(
 
 
 # ============================================================
-# ثقة بيانات REIT
+# Data confidence
 # ============================================================
+
 
 def calculate_reit_data_confidence(
     current,
-    same_quarter_last_year
+    previous_quarter,
+    same_quarter_last_year,
+    ttm_ready
 ):
 
-    current_required = [
-        "quarterlyTotalRevenue",
-        "quarterlyOperatingIncome",
-        "quarterlyNetIncome",
-        "quarterlyTotalAssets",
-        "quarterlyStockholdersEquity",
-        "quarterlyTotalDebt"
-    ]
-
-    current_available = sum(
-        1
-        for metric in current_required
-        if value(
-            current,
-            metric
-        ) is not None
-    )
-
     current_score = (
-        current_available
-        / len(current_required)
-    ) * 100
-
-    # YoY reference is also part of confidence
-    yoy_required = [
-        "quarterlyTotalRevenue",
-        "quarterlyOperatingIncome",
-        "quarterlyNetIncome"
-    ]
-
-    yoy_available = sum(
-        1
-        for metric in yoy_required
-        if value(
-            same_quarter_last_year,
-            metric
-        ) is not None
+        calculate_field_coverage(
+            current,
+            CURRENT_CORE_FIELDS
+        )
     )
+
+
+    qoq_score = (
+        calculate_field_coverage(
+            previous_quarter,
+            YOY_CORE_FIELDS
+        )
+        if previous_quarter
+        else 0.0
+    )
+
 
     yoy_score = (
-        yoy_available
-        / len(yoy_required)
-    ) * 100
-
-    return (
-        current_score * 0.70
-        + yoy_score * 0.30
+        calculate_field_coverage(
+            same_quarter_last_year,
+            YOY_CORE_FIELDS
+        )
+        if same_quarter_last_year
+        else 0.0
     )
+
+
+    ttm_score = (
+        100.0
+        if ttm_ready
+        else 0.0
+    )
+
+
+    # Current data has the highest importance.
+    confidence = (
+        current_score * 0.55
+        + qoq_score * 0.15
+        + yoy_score * 0.20
+        + ttm_score * 0.10
+    )
+
+
+    return {
+        "confidence":
+            confidence,
+
+        "current_coverage":
+            current_score,
+
+        "qoq_coverage":
+            qoq_score,
+
+        "yoy_coverage":
+            yoy_score
+    }
 
 
 # ============================================================
 # Signal Engine
+#
+# Important:
+# Only available metrics participate.
+# Missing data is neutral, not negative.
 # ============================================================
+
 
 def calculate_reit_signal_scores(
     metrics
@@ -1569,11 +2206,15 @@ def calculate_reit_signal_scores(
     risk = 0
     used = 0
 
-    def evaluate_positive(metric_name):
+
+    def evaluate_positive(
+        metric_name
+    ):
 
         nonlocal improvement
         nonlocal risk
         nonlocal used
+
 
         metric_value = safe_number(
             metrics.get(
@@ -1581,16 +2222,23 @@ def calculate_reit_signal_scores(
             )
         )
 
+
         if metric_value is None:
             return
 
+
         used += 1
 
+
         if metric_value > 0:
+
             improvement += 1
 
+
         elif metric_value < 0:
+
             risk += 1
+
 
     evaluate_positive(
         "reit_q_revenue_growth_yoy"
@@ -1612,23 +2260,28 @@ def calculate_reit_signal_scores(
         "reit_q_operating_margin_change_yoy"
     )
 
+
     debt_growth = safe_number(
         metrics.get(
             "reit_q_debt_growth_yoy"
         )
     )
 
+
     if debt_growth is not None:
 
         used += 1
+
 
         if debt_growth <= 0:
 
             improvement += 1
 
+
         elif debt_growth > 15:
 
             risk += 1
+
 
     debt_to_assets = safe_number(
         metrics.get(
@@ -1636,17 +2289,21 @@ def calculate_reit_signal_scores(
         )
     )
 
+
     if debt_to_assets is not None:
 
         used += 1
+
 
         if debt_to_assets <= 35:
 
             improvement += 1
 
+
         elif debt_to_assets >= 50:
 
             risk += 1
+
 
     cash_conversion = safe_number(
         metrics.get(
@@ -1654,21 +2311,26 @@ def calculate_reit_signal_scores(
         )
     )
 
+
     if cash_conversion is not None:
 
         used += 1
+
 
         if cash_conversion >= 1:
 
             improvement += 1
 
+
         elif cash_conversion < 0.6:
 
             risk += 1
 
+
     if used == 0:
 
         return {
+
             "reit_signal_improvement_score":
                 None,
 
@@ -1676,18 +2338,24 @@ def calculate_reit_signal_scores(
                 None,
 
             "reit_signal_net_score":
-                None
+                None,
+
+            "reit_signal_inputs_used":
+                0.0
         }
+
 
     improvement_score = (
         improvement
         / used
     ) * 100
 
+
     risk_score = (
         risk
         / used
     ) * 100
+
 
     return {
 
@@ -1699,15 +2367,23 @@ def calculate_reit_signal_scores(
 
         "reit_signal_net_score":
             improvement_score
-            - risk_score
+            - risk_score,
+
+        "reit_signal_inputs_used":
+            float(
+                used
+            )
     }
 
 
 # ============================================================
-# تشغيل REIT واحد
+# Calculate one REIT
 # ============================================================
 
-def calculate_reit_metrics(stock):
+
+def calculate_reit_metrics(
+    stock
+):
 
     stock_id = stock[
         "id"
@@ -1724,9 +2400,10 @@ def calculate_reit_metrics(stock):
         or symbol
     )
 
+
     print(
         "\n"
-        + "=" * 72,
+        + "=" * 78,
         flush=True
     )
 
@@ -1738,28 +2415,43 @@ def calculate_reit_metrics(stock):
     )
 
     print(
-        "=" * 72,
+        "=" * 78,
         flush=True
     )
+
 
     rows = get_financial_data(
         stock_id
     )
 
+
     if not rows:
 
         print(
-            "⚠️ No financial data",
+            "🟡 DATA_INCOMPLETE | "
+            "No Yahoo financial data",
             flush=True
         )
 
+
         return {
+
             "status":
-                "no_data",
+                "data_incomplete",
 
             "metrics":
+                0,
+
+            "quarterly_periods":
+                0,
+
+            "annual_periods":
+                0,
+
+            "synthetic_periods":
                 0
         }
+
 
     (
         annual,
@@ -1767,6 +2459,7 @@ def calculate_reit_metrics(stock):
     ) = organize_financial_data(
         rows
     )
+
 
     print(
         f"📅 Raw annual periods: "
@@ -1780,8 +2473,9 @@ def calculate_reit_metrics(stock):
         flush=True
     )
 
+
     # ========================================================
-    # إصلاح فجوات Q4
+    # Synthetic Q4
     # ========================================================
 
     synthesized_periods = (
@@ -1791,11 +2485,13 @@ def calculate_reit_metrics(stock):
         )
     )
 
+
     print(
         f"🧩 Synthetic Q4 periods: "
         f"{len(synthesized_periods)}",
         flush=True
     )
+
 
     print(
         f"📅 Final quarterly periods: "
@@ -1803,15 +2499,18 @@ def calculate_reit_metrics(stock):
         flush=True
     )
 
+
     total_saved = 0
 
+
     # ========================================================
-    # Annual
+    # Annual metrics
     # ========================================================
 
     annual_dates = sorted(
         annual.keys()
     )
+
 
     for index, period_end in enumerate(
         annual_dates
@@ -1820,6 +2519,7 @@ def calculate_reit_metrics(stock):
         current = annual[
             period_end
         ]
+
 
         previous = (
             annual[
@@ -1831,12 +2531,12 @@ def calculate_reit_metrics(stock):
             else None
         )
 
-        metrics = (
-            calculate_reit_annual_metrics(
-                current,
-                previous
-            )
+
+        metrics = calculate_reit_annual_metrics(
+            current,
+            previous
         )
+
 
         total_saved += save_metrics(
             stock_id,
@@ -1844,13 +2544,20 @@ def calculate_reit_metrics(stock):
             metrics
         )
 
+
     # ========================================================
-    # Quarterly
+    # Quarterly metrics
     # ========================================================
 
     quarter_dates = sorted(
         quarterly.keys()
     )
+
+
+    latest_confidence = None
+
+    latest_data_partial = True
+
 
     for index, period_end in enumerate(
         quarter_dates
@@ -1860,15 +2567,15 @@ def calculate_reit_metrics(stock):
             period_end
         ]
 
-        previous_quarter = (
-            quarterly[
-                quarter_dates[
-                    index - 1
-                ]
-            ]
-            if index > 0
-            else None
+
+        (
+            previous_quarter,
+            previous_quarter_period
+        ) = find_previous_quarter(
+            period_end,
+            quarterly
         )
+
 
         (
             same_quarter_last_year,
@@ -1878,29 +2585,69 @@ def calculate_reit_metrics(stock):
             quarterly
         )
 
-        metrics = (
-            calculate_reit_quarter_metrics(
-                current,
-                previous_quarter,
-                same_quarter_last_year
-            )
+
+        metrics = calculate_reit_quarter_metrics(
+            current,
+            previous_quarter,
+            same_quarter_last_year
         )
 
-        ttm_metrics = (
-            calculate_reit_ttm_metrics(
+
+        # ====================================================
+        # TTM
+        # ====================================================
+
+        valid_ttm_dates = (
+            get_valid_ttm_dates(
                 quarter_dates,
-                quarterly,
                 index
             )
         )
 
-        metrics.update(
-            ttm_metrics
+
+        ttm_ready = (
+            valid_ttm_dates
+            is not None
         )
 
-        # ----------------------------------------------------
-        # Provenance / quality flags
-        # ----------------------------------------------------
+
+        if ttm_ready:
+
+            ttm_metrics = (
+                calculate_reit_ttm_metrics(
+                    quarter_dates,
+                    quarterly,
+                    index
+                )
+            )
+
+
+            metrics.update(
+                ttm_metrics
+            )
+
+
+        # ====================================================
+        # Provenance / Availability
+        # ====================================================
+
+        current_coverage = (
+            calculate_field_coverage(
+                current,
+                CURRENT_CORE_FIELDS
+            )
+        )
+
+
+        confidence = (
+            calculate_reit_data_confidence(
+                current,
+                previous_quarter,
+                same_quarter_last_year,
+                ttm_ready
+            )
+        )
+
 
         metrics[
             "reit_q_synthesized_flag"
@@ -1911,6 +2658,16 @@ def calculate_reit_metrics(stock):
             else 0.0
         )
 
+
+        metrics[
+            "reit_q_qoq_reference_available"
+        ] = (
+            1.0
+            if previous_quarter
+            else 0.0
+        )
+
+
         metrics[
             "reit_q_yoy_reference_available"
         ] = (
@@ -1919,22 +2676,91 @@ def calculate_reit_metrics(stock):
             else 0.0
         )
 
+
         metrics[
-            "reit_data_confidence_score"
-        ] = calculate_reit_data_confidence(
-            current,
-            same_quarter_last_year
+            "reit_ttm_ready_flag"
+        ] = (
+            1.0
+            if ttm_ready
+            else 0.0
         )
 
-        signals = (
-            calculate_reit_signal_scores(
-                metrics
-            )
+
+        metrics[
+            "reit_data_current_coverage_pct"
+        ] = current_coverage
+
+
+        metrics[
+            "reit_data_qoq_coverage_pct"
+        ] = confidence[
+            "qoq_coverage"
+        ]
+
+
+        metrics[
+            "reit_data_yoy_coverage_pct"
+        ] = confidence[
+            "yoy_coverage"
+        ]
+
+
+        metrics[
+            "reit_data_confidence_score"
+        ] = confidence[
+            "confidence"
+        ]
+
+
+        # ----------------------------------------------------
+        # Usable means:
+        # there is enough current data to analyze something.
+        # It does NOT require YoY or TTM.
+        # ----------------------------------------------------
+
+        metrics[
+            "reit_data_usable_flag"
+        ] = (
+            1.0
+            if current_coverage >= 50
+            else 0.0
         )
+
+
+        # ----------------------------------------------------
+        # Partial data is expected and is not a system error.
+        # ----------------------------------------------------
+
+        partial_data = (
+            current_coverage < 100
+            or previous_quarter is None
+            or same_quarter_last_year is None
+            or not ttm_ready
+        )
+
+
+        metrics[
+            "reit_data_partial_flag"
+        ] = (
+            1.0
+            if partial_data
+            else 0.0
+        )
+
+
+        # ====================================================
+        # Signals
+        # ====================================================
+
+        signals = calculate_reit_signal_scores(
+            metrics
+        )
+
 
         metrics.update(
             signals
         )
+
 
         total_saved += save_metrics(
             stock_id,
@@ -1942,108 +2768,220 @@ def calculate_reit_metrics(stock):
             metrics
         )
 
+
+        latest_confidence = confidence[
+            "confidence"
+        ]
+
+
+        latest_data_partial = partial_data
+
+
         print(
             f"📊 {period_end} | "
             f"Synthetic="
             f"{int(metrics['reit_q_synthesized_flag'])} | "
+            f"QoQRef="
+            f"{previous_quarter_period or 'N/A'} | "
             f"YoYRef="
             f"{yoy_period or 'N/A'} | "
+            f"TTM="
+            f"{'READY' if ttm_ready else 'N/A'} | "
+            f"CurrentCoverage="
+            f"{current_coverage:.1f}% | "
             f"Confidence="
-            f"{metrics['reit_data_confidence_score']:.2f}",
+            f"{confidence['confidence']:.1f}%",
             flush=True
         )
 
+
+    # ========================================================
+    # Final status
+    # ========================================================
+
+    if (
+        not annual_dates
+        and not quarter_dates
+    ):
+
+        final_status = (
+            "data_incomplete"
+        )
+
+
+    elif quarter_dates:
+
+        if (
+            latest_confidence is not None
+            and latest_confidence >= 75
+            and not latest_data_partial
+        ):
+
+            final_status = (
+                "success"
+            )
+
+        else:
+
+            final_status = (
+                "success_with_limitations"
+            )
+
+
+    else:
+
+        # Annual-only REIT is still analyzable.
+        final_status = (
+            "success_with_limitations"
+        )
+
+
     print(
         f"✅ {symbol} | "
-        f"{total_saved} REIT metrics saved",
+        f"{total_saved} REIT metrics saved | "
+        f"Status="
+        f"{final_status}",
         flush=True
     )
 
+
     return {
+
         "status":
-            "success",
+            final_status,
 
         "metrics":
             total_saved,
 
         "quarterly_periods":
-            len(quarter_dates),
+            len(
+                quarter_dates
+            ),
+
+        "annual_periods":
+            len(
+                annual_dates
+            ),
 
         "synthetic_periods":
-            len(synthesized_periods)
+            len(
+                synthesized_periods
+            ),
+
+        "latest_confidence":
+            latest_confidence
     }
 
 
 # ============================================================
-# تشغيل جميع REIT
+# Run all REITs
 # ============================================================
+
 
 def run_reit_metrics():
 
     print(
         "\n"
-        + "#" * 72,
+        + "#" * 78,
         flush=True
     )
 
+
     print(
-        "🏢 REIT METRICS ENGINE v2",
+        f"🏢 {ENGINE_NAME}",
         flush=True
     )
 
+
     print(
-        "#" * 72,
+        "#" * 78,
         flush=True
     )
+
+
+    print(
+        "📡 Primary data source: Yahoo Finance",
+        flush=True
+    )
+
+
+    print(
+        "🛡 Missing REIT data = limitation, not failure",
+        flush=True
+    )
+
 
     stocks = get_reit_stocks()
 
+
     print(
-        f"🏢 Total REITs: "
+        f"🏢 Total active REITs: "
         f"{len(stocks)}",
         flush=True
     )
 
+
     success = 0
-    no_data = 0
+
+    limited = 0
+
+    incomplete = 0
+
     errors = 0
+
     total_metrics = 0
 
     details = []
+
 
     for stock in stocks:
 
         try:
 
-            result = (
-                calculate_reit_metrics(
-                    stock
-                )
+            result = calculate_reit_metrics(
+                stock
             )
+
 
             status = result[
                 "status"
             ]
 
+
             count = result[
                 "metrics"
             ]
 
+
             total_metrics += count
+
 
             if status == "success":
 
                 success += 1
 
-            elif status == "no_data":
 
-                no_data += 1
+            elif status == "success_with_limitations":
+
+                limited += 1
+
+
+            elif status == "data_incomplete":
+
+                incomplete += 1
+
 
             details.append(
                 (
-                    stock["symbol"],
+                    stock[
+                        "symbol"
+                    ],
                     status,
                     count,
+                    result.get(
+                        "annual_periods",
+                        0
+                    ),
                     result.get(
                         "quarterly_periods",
                         0
@@ -2051,23 +2989,33 @@ def run_reit_metrics():
                     result.get(
                         "synthetic_periods",
                         0
+                    ),
+                    result.get(
+                        "latest_confidence"
                     )
                 )
             )
+
 
         except Exception as error:
 
             errors += 1
 
+
             details.append(
                 (
-                    stock["symbol"],
+                    stock[
+                        "symbol"
+                    ],
                     "error",
                     0,
                     0,
-                    0
+                    0,
+                    0,
+                    None
                 )
             )
+
 
             print(
                 f"🔴 "
@@ -2077,21 +3025,29 @@ def run_reit_metrics():
                 flush=True
             )
 
+
+    # ========================================================
+    # Summary
+    # ========================================================
+
     print(
         "\n"
-        + "=" * 72,
+        + "=" * 78,
         flush=True
     )
 
+
     print(
-        "📋 FINAL REIT METRICS SUMMARY v2",
+        "📋 FINAL REIT METRICS SUMMARY v3",
         flush=True
     )
 
+
     print(
-        "=" * 72,
+        "=" * 78,
         flush=True
     )
+
 
     print(
         f"🏢 Total REITs: "
@@ -2099,23 +3055,34 @@ def run_reit_metrics():
         flush=True
     )
 
+
     print(
-        f"🟢 Success: "
+        f"🟢 Full Success: "
         f"{success}",
         flush=True
     )
 
+
     print(
-        f"🟡 No Data: "
-        f"{no_data}",
+        f"🟡 Success With Limitations: "
+        f"{limited}",
         flush=True
     )
 
+
     print(
-        f"🔴 Errors: "
+        f"🟠 Data Incomplete: "
+        f"{incomplete}",
+        flush=True
+    )
+
+
+    print(
+        f"🔴 System Errors: "
         f"{errors}",
         flush=True
     )
+
 
     print(
         f"💾 Total REIT Metrics Saved: "
@@ -2123,30 +3090,44 @@ def run_reit_metrics():
         flush=True
     )
 
+
     print(
         "\n📋 REITs:",
         flush=True
     )
 
+
     for (
         symbol,
         status,
         count,
+        annual_count,
         quarterly_count,
-        synthetic_count
+        synthetic_count,
+        confidence
     ) in details:
+
+        confidence_text = (
+            f"{confidence:.1f}%"
+            if confidence is not None
+            else "N/A"
+        )
+
 
         print(
             f"{symbol} | "
             f"{status} | "
             f"{count} metrics | "
+            f"Annual={annual_count} | "
             f"Quarters={quarterly_count} | "
-            f"SyntheticQ4={synthetic_count}",
+            f"SyntheticQ4={synthetic_count} | "
+            f"Confidence={confidence_text}",
             flush=True
         )
 
+
     print(
-        "=" * 72,
+        "=" * 78,
         flush=True
     )
 
@@ -2154,6 +3135,7 @@ def run_reit_metrics():
 # ============================================================
 # START
 # ============================================================
+
 
 if __name__ == "__main__":
 
