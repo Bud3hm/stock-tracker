@@ -1,6 +1,6 @@
 import os
-import re
-import html
+import json
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -9,35 +9,33 @@ from supabase import create_client
 
 
 # ============================================================
-# REIT OFFICIAL FETCHER v1
+# REIT OFFICIAL FETCHER v2
 #
 # READ ONLY
 #
 # الهدف:
-# 1) قراءة جميع REITs من Supabase
-# 2) فتح صفحة كل صندوق في Saudi Exchange
-# 3) اكتشاف روابط التقارير الرسمية
-# 4) تصنيف:
-#       Quarterly Report
-#       Financial Report
-#       Annual Report
-#       Valuation Report
-#       Risk Assessment Report
-# 5) طباعة النتائج فقط
+# 1) فحص كل REIT
+# 2) محاولة الوصول للمصدر الرسمي
+# 3) التعامل الصحيح مع 403 بدون كسر الـ Pipeline
+# 4) دعم Official Source Registry اختياري
+# 5) تحديد حالة كل صندوق:
 #
-# لا توجد أي كتابة في Supabase.
+#    DIRECT_AVAILABLE
+#    REGISTRY_AVAILABLE
+#    OFFICIAL_PAGE_BLOCKED
+#    NO_OFFICIAL_SOURCE
+#
+# لا توجد كتابة في Supabase.
 # ============================================================
 
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY")
 
-
 if not SUPABASE_URL:
     raise RuntimeError(
         "SUPABASE_URL environment variable is missing"
     )
-
 
 if not SUPABASE_SECRET_KEY:
     raise RuntimeError(
@@ -51,18 +49,11 @@ supabase = create_client(
 )
 
 
-ENGINE_NAME = "REIT OFFICIAL FETCHER v1"
-
-
-# ============================================================
-# Saudi Exchange
-# ============================================================
-
+ENGINE_NAME = "REIT OFFICIAL FETCHER v2"
 
 SAUDI_EXCHANGE_BASE = (
     "https://www.saudiexchange.sa"
 )
-
 
 REIT_PROFILE_BASE = (
     "https://www.saudiexchange.sa/"
@@ -71,33 +62,42 @@ REIT_PROFILE_BASE = (
 )
 
 
-# ============================================================
-# HTTP
-# ============================================================
-
-
-USER_AGENT = (
-    "Mozilla/5.0 "
-    "(Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 "
-    "(KHTML, like Gecko) "
-    "Chrome/126.0 Safari/537.36"
-)
-
-
-HTTP_TIMEOUT = 30
+HTTP_TIMEOUT = 25
 
 
 # ============================================================
-# Tools
+# Optional registry
+#
+# لاحقًا نستطيع وضع روابط رسمية معروفة هنا أو تمريرها
+# من GitHub Secret باسم:
+#
+# REIT_OFFICIAL_SOURCE_REGISTRY
+#
+# JSON example:
+#
+# {
+#   "4340.SR": {
+#       "fund_manager_url": "...",
+#       "saudi_exchange_profile": "...",
+#       "reports": [...]
+#   }
+# }
+#
+# ============================================================
+
+
+DEFAULT_SOURCE_REGISTRY = {}
+
+
+# ============================================================
+# General tools
 # ============================================================
 
 
 def print_header(title):
 
     print(
-        "\n"
-        + "=" * 100,
+        "\n" + "=" * 100,
         flush=True
     )
 
@@ -120,90 +120,69 @@ def print_separator():
     )
 
 
-def normalize_space(value):
+def exchange_symbol(symbol):
 
-    if value is None:
-        return ""
-
-    value = html.unescape(
-        str(value)
-    )
-
-    value = re.sub(
-        r"<[^>]+>",
-        " ",
-        value
-    )
-
-    value = re.sub(
-        r"\s+",
-        " ",
-        value
-    )
-
-    return value.strip()
-
-
-def absolute_url(url):
-
-    if not url:
+    if not symbol:
         return None
 
-    url = html.unescape(
-        url
+    symbol = str(
+        symbol
+    ).strip()
+
+    if symbol.upper().endswith(".SR"):
+        symbol = symbol[:-3]
+
+    return symbol
+
+
+def build_profile_url(symbol):
+
+    code = exchange_symbol(
+        symbol
     )
 
-    return urllib.parse.urljoin(
-        SAUDI_EXCHANGE_BASE,
-        url
+    return (
+        f"{REIT_PROFILE_BASE}"
+        f"?companySymbol={code}"
     )
 
 
-def fetch_html(url):
+# ============================================================
+# Source registry
+# ============================================================
 
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent":
-                USER_AGENT,
 
-            "Accept":
-                (
-                    "text/html,"
-                    "application/xhtml+xml,"
-                    "application/xml;q=0.9,*/*;q=0.8"
-                ),
+def load_source_registry():
 
-            "Accept-Language":
-                "en-US,en;q=0.9",
-        }
+    raw = os.environ.get(
+        "REIT_OFFICIAL_SOURCE_REGISTRY"
     )
 
-    with urllib.request.urlopen(
-        request,
-        timeout=HTTP_TIMEOUT
-    ) as response:
+    if not raw:
+        return DEFAULT_SOURCE_REGISTRY
 
-        raw = response.read()
+    try:
 
-        charset = (
-            response.headers.get_content_charset()
-            or "utf-8"
+        data = json.loads(
+            raw
         )
 
-        try:
+        if isinstance(
+            data,
+            dict
+        ):
+            return data
 
-            return raw.decode(
-                charset,
-                errors="replace"
-            )
+    except Exception as error:
 
-        except LookupError:
+        print(
+            "⚠️ Invalid "
+            "REIT_OFFICIAL_SOURCE_REGISTRY | "
+            f"{type(error).__name__}: {error}",
+            flush=True
+        )
 
-            return raw.decode(
-                "utf-8",
-                errors="replace"
-            )
+    return DEFAULT_SOURCE_REGISTRY
 
 
 # ============================================================
@@ -245,539 +224,297 @@ def get_reit_stocks():
 
 
 # ============================================================
-# Symbol handling
+# HTTP
 # ============================================================
 
 
-def exchange_symbol(symbol):
+def fetch_url(url):
 
-    if not symbol:
-        return None
+    headers = {
+        "User-Agent":
+            (
+                "Mozilla/5.0 "
+                "(Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/126.0 Safari/537.36"
+            ),
 
-    symbol = str(
-        symbol
-    ).strip()
+        "Accept":
+            (
+                "text/html,"
+                "application/xhtml+xml,"
+                "application/xml;q=0.9,"
+                "application/pdf;q=0.8,"
+                "*/*;q=0.7"
+            ),
 
-    if symbol.upper().endswith(
-        ".SR"
-    ):
+        "Accept-Language":
+            "en-US,en;q=0.9,ar;q=0.8",
 
-        symbol = symbol[:-3]
+        "Cache-Control":
+            "no-cache",
+    }
 
-    return symbol
-
-
-def build_profile_url(symbol):
-
-    code = exchange_symbol(
-        symbol
+    request = urllib.request.Request(
+        url,
+        headers=headers
     )
 
-    return (
-        f"{REIT_PROFILE_BASE}"
-        f"?companySymbol={code}"
-    )
+    try:
 
+        with urllib.request.urlopen(
+            request,
+            timeout=HTTP_TIMEOUT
+        ) as response:
 
-# ============================================================
-# Report classification
-# ============================================================
+            content = response.read()
 
+            return {
+                "status":
+                    "success",
 
-REPORT_PATTERNS = {
+                "http_status":
+                    getattr(
+                        response,
+                        "status",
+                        200
+                    ),
 
-    "quarterly_report": [
-        r"quarterly report",
-        r"quarterly statement",
-        r"quarterly_statement",
-        r"quarterly-report",
-    ],
+                "content":
+                    content,
 
-    "financial_report": [
-        r"financial reports?",
-        r"financial statements?",
-        r"financial_report",
-        r"financial-report",
-    ],
+                "content_type":
+                    response.headers.get(
+                        "Content-Type"
+                    ),
 
-    "annual_report": [
-        r"annual report",
-        r"annual_report",
-        r"annual-report",
-    ],
+                "final_url":
+                    response.geturl(),
+            }
 
-    "valuation_report": [
-        r"valuation reports?",
-        r"valuation_report",
-        r"valuation-report",
-    ],
+    except urllib.error.HTTPError as error:
 
-    "risk_assessment_report": [
-        r"risk assessment",
-        r"risk_assessment",
-        r"risk-assessment",
-    ],
-}
+        return {
+            "status":
+                "http_error",
 
+            "http_status":
+                error.code,
 
-def classify_report(
-    label,
-    url
-):
+            "error":
+                str(error),
 
-    combined = (
-        f"{label or ''} "
-        f"{url or ''}"
-    ).lower()
+            "content":
+                None,
 
-    for report_type, patterns in (
-        REPORT_PATTERNS.items()
-    ):
-
-        for pattern in patterns:
-
-            if re.search(
-                pattern,
-                combined,
-                flags=re.IGNORECASE
-            ):
-
-                return report_type
-
-    return None
-
-
-# ============================================================
-# Period extraction
-# ============================================================
-
-
-DATE_PATTERNS = [
-
-    r"\b20\d{2}-\d{2}-\d{2}\b",
-
-    r"\b20\d{2}/\d{2}/\d{2}\b",
-
-    r"\b\d{2}/\d{2}/20\d{2}\b",
-]
-
-
-def extract_date(text):
-
-    if not text:
-        return None
-
-    for pattern in DATE_PATTERNS:
-
-        match = re.search(
-            pattern,
-            text
-        )
-
-        if not match:
-            continue
-
-        value = match.group(0)
-
-        if re.match(
-            r"20\d{2}/",
-            value
-        ):
-
-            return value.replace(
-                "/",
-                "-"
-            )
-
-        if re.match(
-            r"\d{2}/\d{2}/20\d{2}",
-            value
-        ):
-
-            try:
-
-                parsed = datetime.strptime(
-                    value,
-                    "%d/%m/%Y"
-                )
-
-                return parsed.strftime(
-                    "%Y-%m-%d"
-                )
-
-            except Exception:
-
-                return value
-
-        return value
-
-    return None
-
-
-def extract_year(text):
-
-    if not text:
-        return None
-
-    match = re.search(
-        r"\b(20\d{2})\b",
-        text
-    )
-
-    if not match:
-        return None
-
-    return int(
-        match.group(1)
-    )
-
-
-def extract_quarter(text):
-
-    if not text:
-        return None
-
-    normalized = text.upper()
-
-    for quarter in [
-        "Q1",
-        "Q2",
-        "Q3",
-        "Q4",
-    ]:
-
-        if re.search(
-            rf"\b{quarter}\b",
-            normalized
-        ):
-
-            return quarter
-
-    return None
-
-
-# ============================================================
-# Link extraction
-# ============================================================
-
-
-ANCHOR_PATTERN = re.compile(
-    r"""
-    <a
-    \s+
-    [^>]*?
-    href\s*=\s*
-    ["']
-    (?P<href>[^"']+)
-    ["']
-    [^>]*?
-    >
-    (?P<label>.*?)
-    </a>
-    """,
-    flags=(
-        re.IGNORECASE
-        |
-        re.DOTALL
-        |
-        re.VERBOSE
-    )
-)
-
-
-def extract_links(page_html):
-
-    links = []
-
-    for match in ANCHOR_PATTERN.finditer(
-        page_html
-    ):
-
-        href = match.group(
-            "href"
-        )
-
-        label = normalize_space(
-            match.group(
-                "label"
-            )
-        )
-
-        full_url = absolute_url(
-            href
-        )
-
-        if not full_url:
-            continue
-
-        links.append({
-            "label":
-                label,
-
-            "url":
-                full_url,
-        })
-
-    return links
-
-
-# ============================================================
-# Additional resource URL extraction
-#
-# بعض صفحات تداول تحتوي PDF links داخل attributes أو scripts
-# وليس anchor واضح.
-# ============================================================
-
-
-RESOURCE_PATTERN = re.compile(
-    r"""
-    (?P<url>
-        https?://
-        [^"'<> \t\r\n]+
-        |
-        /Resources/
-        [^"'<> \t\r\n]+
-    )
-    """,
-    flags=(
-        re.IGNORECASE
-        |
-        re.VERBOSE
-    )
-)
-
-
-def extract_resource_urls(
-    page_html
-):
-
-    results = []
-
-    seen = set()
-
-    for match in RESOURCE_PATTERN.finditer(
-        page_html
-    ):
-
-        url = absolute_url(
-            match.group(
-                "url"
-            )
-        )
-
-        if not url:
-            continue
-
-        url = url.rstrip(
-            ").,;"
-        )
-
-        if url in seen:
-            continue
-
-        seen.add(
-            url
-        )
-
-        results.append(
-            url
-        )
-
-    return results
-
-
-# ============================================================
-# Build candidate report list
-# ============================================================
-
-
-def discover_reports(
-    page_html
-):
-
-    candidates = []
-
-    seen = set()
-
-
-    # ========================================================
-    # Anchors
-    # ========================================================
-
-    for link in extract_links(
-        page_html
-    ):
-
-        label = link[
-            "label"
-        ]
-
-        url = link[
-            "url"
-        ]
-
-        report_type = classify_report(
-            label,
-            url
-        )
-
-
-        # PDF/Resources URLs are worth keeping even when
-        # the anchor label itself is vague.
-        is_resource = (
-            "/Resources/"
-            in url
-            or url.lower().endswith(
-                ".pdf"
-            )
-        )
-
-
-        if (
-            report_type is None
-            and not is_resource
-        ):
-
-            continue
-
-
-        key = (
-            report_type,
-            url
-        )
-
-        if key in seen:
-            continue
-
-        seen.add(
-            key
-        )
-
-
-        candidates.append({
-
-            "report_type":
-                report_type
-                or "resource",
-
-            "label":
-                label,
-
-            "url":
+            "final_url":
                 url,
+        }
+
+    except urllib.error.URLError as error:
+
+        return {
+            "status":
+                "network_error",
+
+            "http_status":
+                None,
+
+            "error":
+                str(error),
+
+            "content":
+                None,
+
+            "final_url":
+                url,
+        }
+
+    except Exception as error:
+
+        return {
+            "status":
+                "error",
+
+            "http_status":
+                None,
+
+            "error":
+                (
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                ),
+
+            "content":
+                None,
+
+            "final_url":
+                url,
+        }
+
+
+# ============================================================
+# Test official Saudi Exchange profile
+# ============================================================
+
+
+def test_saudi_exchange_profile(
+    symbol
+):
+
+    profile_url = build_profile_url(
+        symbol
+    )
+
+    result = fetch_url(
+        profile_url
+    )
+
+    result[
+        "source_type"
+    ] = "saudi_exchange_profile"
+
+    result[
+        "source_url"
+    ] = profile_url
+
+    return result
+
+
+# ============================================================
+# Registry validation
+# ============================================================
+
+
+def inspect_registry_source(
+    symbol,
+    registry
+):
+
+    config = registry.get(
+        symbol
+    )
+
+    if not config:
+        return None
+
+    if not isinstance(
+        config,
+        dict
+    ):
+        return None
+
+    reports = config.get(
+        "reports"
+    )
+
+    if not isinstance(
+        reports,
+        list
+    ):
+        reports = []
+
+    fund_manager_url = config.get(
+        "fund_manager_url"
+    )
+
+    profile_url = config.get(
+        "saudi_exchange_profile"
+    )
+
+    return {
+        "fund_manager_url":
+            fund_manager_url,
+
+        "saudi_exchange_profile":
+            profile_url,
+
+        "reports":
+            reports,
+    }
+
+
+# ============================================================
+# Report record validation
+# ============================================================
+
+
+def validate_report_record(
+    report
+):
+
+    if not isinstance(
+        report,
+        dict
+    ):
+        return False
+
+    url = report.get(
+        "url"
+    )
+
+    report_type = report.get(
+        "report_type"
+    )
+
+    if not url:
+        return False
+
+    if not report_type:
+        return False
+
+    return True
+
+
+# ============================================================
+# Inspect registry reports
+# ============================================================
+
+
+def inspect_registry_reports(
+    config
+):
+
+    if not config:
+        return []
+
+    valid = []
+
+    for report in config.get(
+        "reports",
+        []
+    ):
+
+        if not validate_report_record(
+            report
+        ):
+            continue
+
+        valid.append({
+            "report_type":
+                report.get(
+                    "report_type"
+                ),
 
             "period_end":
-                extract_date(
-                    f"{label} {url}"
+                report.get(
+                    "period_end"
                 ),
-
-            "year":
-                extract_year(
-                    f"{label} {url}"
-                ),
-
-            "quarter":
-                extract_quarter(
-                    f"{label} {url}"
-                ),
-        })
-
-
-    # ========================================================
-    # Raw resource URLs
-    # ========================================================
-
-    for url in extract_resource_urls(
-        page_html
-    ):
-
-        key = (
-            "resource",
-            url
-        )
-
-        if key in seen:
-            continue
-
-        seen.add(
-            key
-        )
-
-
-        candidates.append({
-
-            "report_type":
-                classify_report(
-                    "",
-                    url
-                )
-                or "resource",
-
-            "label":
-                "",
 
             "url":
-                url,
-
-            "period_end":
-                extract_date(
-                    url
+                report.get(
+                    "url"
                 ),
 
-            "year":
-                extract_year(
-                    url
-                ),
-
-            "quarter":
-                extract_quarter(
-                    url
-                ),
+            "source":
+                report.get(
+                    "source"
+                )
+                or "official_registry",
         })
 
-
-    return candidates
-
-
-# ============================================================
-# Page-level category detection
-# ============================================================
-
-
-def detect_page_sections(
-    page_html
-):
-
-    text = normalize_space(
-        page_html
-    ).lower()
-
-    results = {}
-
-
-    for report_type, patterns in (
-        REPORT_PATTERNS.items()
-    ):
-
-        found = False
-
-        for pattern in patterns:
-
-            if re.search(
-                pattern,
-                text,
-                flags=re.IGNORECASE
-            ):
-
-                found = True
-                break
-
-        results[
-            report_type
-        ] = found
-
-
-    return results
+    return valid
 
 
 # ============================================================
@@ -785,7 +522,10 @@ def detect_page_sections(
 # ============================================================
 
 
-def analyze_reit(stock):
+def analyze_reit(
+    stock,
+    registry
+):
 
     symbol = stock[
         "symbol"
@@ -798,52 +538,77 @@ def analyze_reit(stock):
         or symbol
     )
 
-    profile_url = build_profile_url(
-        symbol
+    direct = (
+        test_saudi_exchange_profile(
+            symbol
+        )
     )
 
-
-    page_html = fetch_html(
-        profile_url
+    registry_config = (
+        inspect_registry_source(
+            symbol,
+            registry
+        )
     )
 
-
-    reports = discover_reports(
-        page_html
-    )
-
-
-    sections = detect_page_sections(
-        page_html
+    registry_reports = (
+        inspect_registry_reports(
+            registry_config
+        )
+        if registry_config
+        else []
     )
 
 
     # ========================================================
-    # Group
+    # State
     # ========================================================
 
-    grouped = {}
+    if direct[
+        "status"
+    ] == "success":
 
-    for report in reports:
-
-        grouped.setdefault(
-            report[
-                "report_type"
-            ],
-            []
+        source_state = (
+            "DIRECT_AVAILABLE"
         )
 
-        grouped[
-            report[
-                "report_type"
-            ]
-        ].append(
-            report
+    elif (
+        direct.get(
+            "http_status"
+        )
+        == 403
+        and registry_reports
+    ):
+
+        source_state = (
+            "REGISTRY_AVAILABLE"
+        )
+
+    elif (
+        direct.get(
+            "http_status"
+        )
+        == 403
+    ):
+
+        source_state = (
+            "OFFICIAL_PAGE_BLOCKED"
+        )
+
+    elif registry_reports:
+
+        source_state = (
+            "REGISTRY_AVAILABLE"
+        )
+
+    else:
+
+        source_state = (
+            "NO_OFFICIAL_SOURCE"
         )
 
 
     return {
-
         "status":
             "success",
 
@@ -853,142 +618,105 @@ def analyze_reit(stock):
         "company_name":
             company_name,
 
-        "profile_url":
-            profile_url,
+        "source_state":
+            source_state,
 
-        "page_size":
-            len(
-                page_html
-            ),
+        "direct":
+            direct,
 
-        "sections":
-            sections,
+        "registry":
+            registry_config,
 
-        "reports":
-            reports,
-
-        "grouped":
-            grouped,
+        "registry_reports":
+            registry_reports,
     }
 
 
 # ============================================================
-# Printing
+# Print
 # ============================================================
 
 
-def print_reit_result(result):
+def print_reit_result(
+    result
+):
 
     print_header(
         f"🏢 {result['symbol']} | "
         f"{result['company_name']}"
     )
 
-
     print(
-        f"🌐 Profile: "
-        f"{result['profile_url']}",
+        f"🧭 Source State: "
+        f"{result['source_state']}",
         flush=True
     )
 
-
-    print(
-        f"📄 HTML Size: "
-        f"{result['page_size']}",
-        flush=True
-    )
-
-
-    print_separator()
-
-
-    print(
-        "📚 DETECTED SECTIONS",
-        flush=True
-    )
-
-
-    for (
-        report_type,
-        found
-    ) in result[
-        "sections"
-    ].items():
-
-        icon = (
-            "✅"
-            if found
-            else "❌"
-        )
-
-        print(
-            f"{icon} "
-            f"{report_type}",
-            flush=True
-        )
-
-
-    print_separator()
-
-
-    print(
-        "🔗 DISCOVERED REPORT LINKS",
-        flush=True
-    )
-
-
-    if not result[
-        "reports"
-    ]:
-
-        print(
-            "⚠️ No report links discovered",
-            flush=True
-        )
-
-        return
-
-
-    grouped = result[
-        "grouped"
+    direct = result[
+        "direct"
     ]
 
+    print_separator()
 
-    for report_type in sorted(
-        grouped.keys()
+    print(
+        "🌐 SAUDI EXCHANGE PROFILE",
+        flush=True
+    )
+
+    print(
+        f"URL: "
+        f"{direct['source_url']}",
+        flush=True
+    )
+
+    print(
+        f"Status: "
+        f"{direct['status']}",
+        flush=True
+    )
+
+    print(
+        f"HTTP: "
+        f"{direct.get('http_status')}",
+        flush=True
+    )
+
+    if direct.get(
+        "error"
     ):
 
-        reports = grouped[
-            report_type
-        ]
-
-
         print(
-            f"\n📁 {report_type} "
-            f"({len(reports)})",
+            f"Error: "
+            f"{direct['error']}",
             flush=True
         )
 
 
-        reports = sorted(
-            reports,
-            key=lambda item: (
-                item.get(
-                    "period_end"
-                )
-                or "",
-                item.get(
-                    "year"
-                )
-                or 0,
-                item.get(
-                    "url"
-                )
-                or "",
-            ),
-            reverse=True
+    print_separator()
+
+    print(
+        "📚 OFFICIAL REGISTRY",
+        flush=True
+    )
+
+    reports = result[
+        "registry_reports"
+    ]
+
+    if not reports:
+
+        print(
+            "⚠️ No registry reports",
+            flush=True
         )
 
+    else:
+
+        print(
+            f"Reports: "
+            f"{len(reports)}",
+            flush=True
+        )
 
         for report in reports:
 
@@ -1000,26 +728,14 @@ def print_reit_result(result):
             )
 
             print(
-                f"Label: "
-                f"{report['label'] or 'N/A'}",
-                flush=True
-            )
-
-            print(
                 f"Period: "
                 f"{report['period_end'] or 'N/A'}",
                 flush=True
             )
 
             print(
-                f"Year: "
-                f"{report['year'] or 'N/A'}",
-                flush=True
-            )
-
-            print(
-                f"Quarter: "
-                f"{report['quarter'] or 'N/A'}",
+                f"Source: "
+                f"{report['source']}",
                 flush=True
             )
 
@@ -1035,67 +751,71 @@ def print_reit_result(result):
 # ============================================================
 
 
-def print_summary(results):
+def print_summary(
+    results
+):
 
     print_header(
-        "🏆 REIT OFFICIAL FETCHER SUMMARY v1"
+        "🏆 REIT OFFICIAL FETCHER SUMMARY v2"
     )
 
-
     successful = [
-
         result
-
         for result in results
-
         if result.get(
             "status"
         ) == "success"
     ]
 
-
     errors = [
-
         result
-
         for result in results
-
         if result.get(
             "status"
         ) != "success"
     ]
 
+    state_counts = {}
+
+    for result in successful:
+
+        state = result[
+            "source_state"
+        ]
+
+        state_counts[
+            state
+        ] = (
+            state_counts.get(
+                state,
+                0
+            )
+            + 1
+        )
 
     for index, result in enumerate(
         successful,
         start=1
     ):
 
-        grouped = result[
-            "grouped"
+        direct = result[
+            "direct"
         ]
-
 
         print(
             f"{index:02d}. "
             f"{result['symbol']} | "
             f"{result['company_name']} | "
-            f"Reports="
-            f"{len(result['reports'])} | "
-            f"Quarterly="
-            f"{len(grouped.get('quarterly_report', []))} | "
-            f"Financial="
-            f"{len(grouped.get('financial_report', []))} | "
-            f"Annual="
-            f"{len(grouped.get('annual_report', []))} | "
-            f"Resources="
-            f"{len(grouped.get('resource', []))}",
+            f"State="
+            f"{result['source_state']} | "
+            f"HTTP="
+            f"{direct.get('http_status')} | "
+            f"RegistryReports="
+            f"{len(result['registry_reports'])}",
             flush=True
         )
 
-
     print_separator()
-
 
     print(
         f"🏢 Total REITs: "
@@ -1103,13 +823,11 @@ def print_summary(results):
         flush=True
     )
 
-
     print(
         f"🟢 Success: "
         f"{len(successful)}",
         flush=True
     )
-
 
     print(
         f"🔴 Errors: "
@@ -1117,23 +835,20 @@ def print_summary(results):
         flush=True
     )
 
+    print(
+        "\n📊 SOURCE STATES",
+        flush=True
+    )
 
-    if errors:
+    for state, count in sorted(
+        state_counts.items()
+    ):
 
         print(
-            "\n🔴 ERRORS",
+            f"- {state}: "
+            f"{count}",
             flush=True
         )
-
-
-        for result in errors:
-
-            print(
-                f"- {result.get('symbol')} | "
-                f"{result.get('error')}",
-                flush=True
-            )
-
 
     print(
         "=" * 100,
@@ -1152,12 +867,10 @@ def run_reit_official_fetcher():
         ENGINE_NAME
     )
 
-
     print(
         "🔒 Mode: READ ONLY",
         flush=True
     )
-
 
     print(
         f"🕐 Started: "
@@ -1165,9 +878,19 @@ def run_reit_official_fetcher():
         flush=True
     )
 
+    registry = (
+        load_source_registry()
+    )
 
-    stocks = get_reit_stocks()
+    print(
+        f"📚 Registry Entries: "
+        f"{len(registry)}",
+        flush=True
+    )
 
+    stocks = (
+        get_reit_stocks()
+    )
 
     print(
         f"🏢 Active REITs: "
@@ -1175,9 +898,7 @@ def run_reit_official_fetcher():
         flush=True
     )
 
-
     results = []
-
 
     for index, stock in enumerate(
         stocks,
@@ -1186,24 +907,22 @@ def run_reit_official_fetcher():
 
         print(
             "\n"
-            f"🌐 Official Discovery "
+            f"🔍 Source Check "
             f"{index}/{len(stocks)} | "
             f"{stock['symbol']}",
             flush=True
         )
 
-
         try:
 
             result = analyze_reit(
-                stock
+                stock,
+                registry
             )
-
 
         except Exception as error:
 
             result = {
-
                 "status":
                     "error",
 
@@ -1224,19 +943,9 @@ def run_reit_official_fetcher():
                     ),
             }
 
-
-            print(
-                f"🔴 "
-                f"{stock.get('symbol')} | "
-                f"{result['error']}",
-                flush=True
-            )
-
-
         results.append(
             result
         )
-
 
         if result.get(
             "status"
@@ -1246,6 +955,14 @@ def run_reit_official_fetcher():
                 result
             )
 
+        else:
+
+            print(
+                f"🔴 "
+                f"{result.get('symbol')} | "
+                f"{result.get('error')}",
+                flush=True
+            )
 
     print_summary(
         results
