@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-15T23:23:00+03:00",
+  "updated_at": "2026-08-16T00:00:00+03:00",
   "reits": {
     "4340.SR": {
       "company_name": "الراجحي ريت",
@@ -12,7 +12,7 @@
         },
         {
           "source_type": "fund_manager",
-          "url": "https://www.alrajhi-capital.com/",
+          "url": "https://alrajhi-capital.sa/asset-management/al-rajhi-reit",
           "priority": 2
         }
       ],
