@@ -14,33 +14,45 @@ from supabase import create_client
 
 
 # ============================================================
-# REIT REPORT DISCOVERY ENGINE v1
+# REIT REPORT DISCOVERY ENGINE v2
 #
 # READ ONLY
 #
 # الهدف:
 # 1) العمل على جميع صناديق REIT النشطة
-# 2) قراءة التقارير من reit_official_sources.json
-# 3) تجربة:
-#       - رابط الإعلان
-#       - alternate_url
-#       - attachment_url
-#       - manager URLs
-# 4) اكتشاف روابط PDF والمرفقات الرسمية
-# 5) اكتشاف روابط مدير الصندوق
-# 6) تصنيف أفضل رابط قابل للقراءة
+# 2) اكتشاف التقارير الرسمية/مدير الصندوق
+# 3) منع اعتماد أي PDF عشوائي
+# 4) حساب Document Relevance Score
+# 5) مطابقة:
+#       - رمز الصندوق
+#       - اسم الصندوق
+#       - REIT
+#       - السنة
+#       - الفترة
+#       - نوع التقرير
+# 6) استبعاد:
+#       FATCA
+#       CRS
+#       Privacy
+#       Daily Reports
+#       Tick Size
+#       General NAV reports غير الخاصة بالتقرير
 # 7) عدم الكتابة في Supabase
 #
-# مهم:
-# لا يوجد أي Symbol ثابت داخل الكود.
+# عام لكل صناديق REIT.
 # ============================================================
 
 
-ENGINE_NAME = "REIT REPORT DISCOVERY ENGINE v1"
+ENGINE_NAME = "REIT REPORT DISCOVERY ENGINE v2"
 
 REGISTRY_FILENAME = "reit_official_sources.json"
 
 HTTP_TIMEOUT = 30
+
+MAX_DISCOVERED_URLS = 40
+
+MIN_ACCEPT_SCORE = 55.0
+STRONG_ACCEPT_SCORE = 75.0
 
 
 # ============================================================
@@ -71,7 +83,7 @@ supabase = create_client(
 
 
 # ============================================================
-# HTML parser
+# HTML Parser
 # ============================================================
 
 
@@ -109,7 +121,7 @@ class LinkParser(HTMLParser):
 
 
 # ============================================================
-# أدوات
+# أدوات عامة
 # ============================================================
 
 
@@ -117,7 +129,7 @@ def print_header(title):
 
     print(
         "\n"
-        + "=" * 104,
+        + "=" * 108,
         flush=True
     )
 
@@ -127,7 +139,7 @@ def print_header(title):
     )
 
     print(
-        "=" * 104,
+        "=" * 108,
         flush=True
     )
 
@@ -135,7 +147,7 @@ def print_header(title):
 def print_separator():
 
     print(
-        "-" * 104,
+        "-" * 108,
         flush=True
     )
 
@@ -150,6 +162,24 @@ def normalize_symbol(symbol):
     ).strip().upper()
 
 
+def exchange_code(symbol):
+
+    symbol = normalize_symbol(
+        symbol
+    )
+
+    if not symbol:
+        return None
+
+    if symbol.endswith(
+        ".SR"
+    ):
+
+        return symbol[:-3]
+
+    return symbol
+
+
 def normalize_url(url):
 
     if not url:
@@ -160,6 +190,34 @@ def normalize_url(url):
             url
         ).strip()
     )
+
+
+def normalize_text(value):
+
+    if not value:
+        return ""
+
+    value = html.unescape(
+        str(
+            value
+        )
+    )
+
+    value = value.lower()
+
+    value = re.sub(
+        r"[_\-/%?=&]+",
+        " ",
+        value
+    )
+
+    value = re.sub(
+        r"\s+",
+        " ",
+        value
+    )
+
+    return value.strip()
 
 
 def absolute_url(
@@ -189,8 +247,7 @@ def is_http_url(url):
         value.startswith(
             "https://"
         )
-        or
-        value.startswith(
+        or value.startswith(
             "http://"
         )
     )
@@ -294,7 +351,7 @@ def load_registry():
 
 
 # ============================================================
-# REITs النشطة
+# Active REITs
 # ============================================================
 
 
@@ -490,7 +547,7 @@ def fetch_url(url):
 
 
 # ============================================================
-# Document type
+# Document Type
 # ============================================================
 
 
@@ -576,7 +633,7 @@ def decode_html(content):
 
 
 # ============================================================
-# استخراج الروابط من HTML
+# استخراج روابط HTML
 # ============================================================
 
 
@@ -590,6 +647,7 @@ def extract_links_from_html(
     )
 
     parser = LinkParser()
+
 
     try:
 
@@ -612,17 +670,12 @@ def extract_links_from_html(
             href
         )
 
-        if not full_url:
-            continue
+        if full_url:
 
-        candidates.append(
-            full_url
-        )
+            candidates.append(
+                full_url
+            )
 
-
-    # ========================================================
-    # استخراج URLs الموجودة داخل scripts / text
-    # ========================================================
 
     regex_urls = re.findall(
         r"""https?://[^\s"'<>]+""",
@@ -631,16 +684,10 @@ def extract_links_from_html(
     )
 
 
-    for url in regex_urls:
+    candidates.extend(
+        regex_urls
+    )
 
-        candidates.append(
-            url
-        )
-
-
-    # ========================================================
-    # relative PDF links
-    # ========================================================
 
     relative_pdf = re.findall(
         r"""["']([^"']+\.pdf(?:\?[^"']*)?)["']""",
@@ -658,10 +705,6 @@ def extract_links_from_html(
             )
         )
 
-
-    # ========================================================
-    # إزالة التكرار
-    # ========================================================
 
     unique = []
 
@@ -698,7 +741,581 @@ def extract_links_from_html(
 
 
 # ============================================================
-# تصنيف الرابط
+# Report Metadata
+# ============================================================
+
+
+def get_report_year(
+    period_end
+):
+
+    if not period_end:
+        return None
+
+    match = re.match(
+        r"(\d{4})",
+        str(
+            period_end
+        )
+    )
+
+    if not match:
+        return None
+
+    return match.group(
+        1
+    )
+
+
+def get_period_keywords(
+    report_type,
+    period_end
+):
+
+    report_type = (
+        str(
+            report_type
+        )
+        .strip()
+        .upper()
+    )
+
+    keywords = set()
+
+    if report_type == "Q1":
+
+        keywords.update([
+            "q1",
+            "quarter 1",
+            "quarter1",
+            "first quarter",
+            "3m",
+            "31 march",
+            "31-03",
+            "03-31",
+        ])
+
+    elif report_type == "Q2":
+
+        keywords.update([
+            "q2",
+            "quarter 2",
+            "quarter2",
+            "second quarter",
+            "6m",
+            "30 june",
+            "30-06",
+            "06-30",
+        ])
+
+    elif report_type == "Q3":
+
+        keywords.update([
+            "q3",
+            "quarter 3",
+            "quarter3",
+            "third quarter",
+            "9m",
+            "30 september",
+            "30-09",
+            "09-30",
+        ])
+
+    elif report_type == "Q4":
+
+        keywords.update([
+            "q4",
+            "quarter 4",
+            "quarter4",
+            "fourth quarter",
+            "31 december",
+            "31-12",
+            "12-31",
+        ])
+
+    elif report_type == "H1":
+
+        keywords.update([
+            "h1",
+            "half year",
+            "half-year",
+            "semiannual",
+            "semi annual",
+            "6m",
+            "30 june",
+            "30-06",
+            "06-30",
+        ])
+
+    elif report_type == "FY":
+
+        keywords.update([
+            "fy",
+            "annual",
+            "annual report",
+            "year end",
+            "year-end",
+            "12m",
+            "31 december",
+            "31-12",
+            "12-31",
+        ])
+
+
+    if period_end:
+
+        period_text = str(
+            period_end
+        )
+
+        keywords.add(
+            period_text.lower()
+        )
+
+        keywords.add(
+            period_text.replace(
+                "-",
+                ""
+            ).lower()
+        )
+
+
+    return keywords
+
+
+# ============================================================
+# Positive / Negative vocabulary
+# ============================================================
+
+
+POSITIVE_REIT_KEYWORDS = {
+    "reit",
+    "real estate investment traded",
+    "quarterly statement",
+    "quarterly report",
+    "financial statement",
+    "financial statements",
+    "financial report",
+    "fund report",
+    "rental income",
+    "net asset value",
+    "nav",
+    "distribution",
+    "fund",
+}
+
+
+NEGATIVE_KEYWORDS = {
+    "fatca",
+    "crs",
+    "privacy",
+    "privacy notice",
+    "tick size",
+    "tick-size",
+    "daily report",
+    "daily-report",
+    "daily nav",
+    "research listing",
+    "terms and conditions",
+    "disclaimer",
+    "cookie",
+    "aml",
+    "kyc",
+    "brochure",
+    "application form",
+    "account opening",
+}
+
+
+# ============================================================
+# Name tokenization
+# ============================================================
+
+
+def company_tokens(
+    company_name
+):
+
+    text = normalize_text(
+        company_name
+    )
+
+    tokens = re.findall(
+        r"[\w\u0600-\u06FF]+",
+        text
+    )
+
+    ignored = {
+        "ريت",
+        "reits",
+        "reit",
+        "صندوق",
+        "fund",
+        "the",
+        "and",
+    }
+
+
+    return [
+        token
+        for token in tokens
+        if (
+            len(token) >= 3
+            and token not in ignored
+        )
+    ]
+
+
+# ============================================================
+# Document Relevance Score
+# ============================================================
+
+
+def calculate_document_relevance(
+    symbol,
+    company_name,
+    report_type,
+    period_end,
+    url,
+    origin,
+    document_type,
+    readable
+):
+
+    score = 0.0
+
+    reasons = []
+
+    text = normalize_text(
+        url
+    )
+
+    code = exchange_code(
+        symbol
+    )
+
+    report_year = get_report_year(
+        period_end
+    )
+
+    period_keywords = (
+        get_period_keywords(
+            report_type,
+            period_end
+        )
+    )
+
+
+    # ========================================================
+    # Readability
+    # ========================================================
+
+    if readable:
+
+        score += 10
+
+        reasons.append(
+            "+10 readable"
+        )
+
+    else:
+
+        score -= 25
+
+        reasons.append(
+            "-25 unreadable"
+        )
+
+
+    # ========================================================
+    # Direct PDF
+    # ========================================================
+
+    if (
+        document_type
+        == "PDF"
+    ):
+
+        score += 10
+
+        reasons.append(
+            "+10 pdf"
+        )
+
+
+    # ========================================================
+    # Registry direct link
+    # ========================================================
+
+    if origin in {
+        "url",
+        "alternate_url",
+        "attachment_url",
+        "alternate_urls",
+    }:
+
+        score += 10
+
+        reasons.append(
+            "+10 registry report source"
+        )
+
+
+    # ========================================================
+    # Symbol
+    # ========================================================
+
+    if (
+        code
+        and code.lower()
+        in text
+    ):
+
+        score += 25
+
+        reasons.append(
+            "+25 symbol match"
+        )
+
+
+    # ========================================================
+    # Company name tokens
+    # ========================================================
+
+    tokens = company_tokens(
+        company_name
+    )
+
+    matched_tokens = 0
+
+
+    for token in tokens:
+
+        if token in text:
+
+            matched_tokens += 1
+
+
+    if matched_tokens >= 2:
+
+        score += 25
+
+        reasons.append(
+            "+25 company strong match"
+        )
+
+    elif matched_tokens == 1:
+
+        score += 12
+
+        reasons.append(
+            "+12 company partial match"
+        )
+
+
+    # ========================================================
+    # REIT vocabulary
+    # ========================================================
+
+    positive_hits = 0
+
+
+    for keyword in (
+        POSITIVE_REIT_KEYWORDS
+    ):
+
+        if keyword in text:
+
+            positive_hits += 1
+
+
+    if positive_hits >= 3:
+
+        score += 15
+
+        reasons.append(
+            "+15 REIT report vocabulary"
+        )
+
+    elif positive_hits >= 1:
+
+        score += 7
+
+        reasons.append(
+            "+7 REIT vocabulary"
+        )
+
+
+    # ========================================================
+    # Year
+    # ========================================================
+
+    if (
+        report_year
+        and report_year
+        in text
+    ):
+
+        score += 15
+
+        reasons.append(
+            "+15 year match"
+        )
+
+
+    # ========================================================
+    # Quarter / period
+    # ========================================================
+
+    period_hit = any(
+        normalize_text(
+            keyword
+        ) in text
+        for keyword in period_keywords
+        if keyword
+    )
+
+
+    if period_hit:
+
+        score += 20
+
+        reasons.append(
+            "+20 period match"
+        )
+
+
+    # ========================================================
+    # H1 / FY specific
+    # ========================================================
+
+    rt = str(
+        report_type
+    ).upper()
+
+
+    if rt == "H1":
+
+        if any(
+            keyword in text
+            for keyword in [
+                "semiannual",
+                "semi annual",
+                "half year",
+                "half-year",
+                "6m",
+            ]
+        ):
+
+            score += 12
+
+            reasons.append(
+                "+12 H1 match"
+            )
+
+
+    if rt == "FY":
+
+        if any(
+            keyword in text
+            for keyword in [
+                "annual",
+                "year end",
+                "year-end",
+                "12m",
+            ]
+        ):
+
+            score += 12
+
+            reasons.append(
+                "+12 FY match"
+            )
+
+
+    # ========================================================
+    # Negative keywords
+    # ========================================================
+
+    negative_hits = []
+
+
+    for keyword in (
+        NEGATIVE_KEYWORDS
+    ):
+
+        if keyword in text:
+
+            negative_hits.append(
+                keyword
+            )
+
+
+    if negative_hits:
+
+        penalty = min(
+            80,
+            35
+            + (
+                len(
+                    negative_hits
+                )
+                * 10
+            )
+        )
+
+        score -= penalty
+
+        reasons.append(
+            f"-{penalty} unrelated document"
+        )
+
+
+    # ========================================================
+    # Generic Daily NAV protection
+    # ========================================================
+
+    if (
+        "daily nav"
+        in text
+        or "nav report"
+        in text
+    ):
+
+        if not (
+            code
+            and code.lower()
+            in text
+        ):
+
+            score -= 25
+
+            reasons.append(
+                "-25 generic NAV"
+            )
+
+
+    # ========================================================
+    # Clamp
+    # ========================================================
+
+    score = max(
+        0.0,
+        min(
+            100.0,
+            score
+        )
+    )
+
+
+    return (
+        score,
+        reasons
+    )
+
+
+# ============================================================
+# Candidate classification
 # ============================================================
 
 
@@ -742,69 +1359,18 @@ def classify_candidate_url(url):
 
 
 # ============================================================
-# ترتيب أفضلية الروابط
+# Inspect candidate
 # ============================================================
 
 
-def candidate_priority(
-    candidate
+def inspect_candidate(
+    symbol,
+    company_name,
+    report_type,
+    period_end,
+    url,
+    origin
 ):
-
-    candidate_type = candidate.get(
-        "candidate_type"
-    )
-
-    readable = candidate.get(
-        "readable"
-    )
-
-
-    if (
-        candidate_type
-        == "DIRECT_PDF"
-        and readable
-    ):
-
-        return 100
-
-
-    if (
-        candidate_type
-        == "MANAGER_OR_FINANCIAL"
-        and readable
-    ):
-
-        return 90
-
-
-    if (
-        candidate_type
-        == "SAUDI_EXCHANGE"
-        and readable
-    ):
-
-        return 80
-
-
-    if readable:
-
-        return 70
-
-
-    if candidate_type == "DIRECT_PDF":
-
-        return 50
-
-
-    return 10
-
-
-# ============================================================
-# فحص رابط Candidate
-# ============================================================
-
-
-def inspect_candidate(url):
 
     response = fetch_url(
         url
@@ -828,9 +1394,27 @@ def inspect_candidate(url):
     )
 
 
+    (
+        relevance_score,
+        relevance_reasons
+    ) = calculate_document_relevance(
+        symbol,
+        company_name,
+        report_type,
+        period_end,
+        url,
+        origin,
+        document_type,
+        readable
+    )
+
+
     return {
         "url":
             url,
+
+        "origin":
+            origin,
 
         "candidate_type":
             classify_candidate_url(
@@ -867,11 +1451,17 @@ def inspect_candidate(url):
             response.get(
                 "error"
             ),
+
+        "relevance_score":
+            relevance_score,
+
+        "relevance_reasons":
+            relevance_reasons,
     }
 
 
 # ============================================================
-# Registry report URLs
+# Initial URLs
 # ============================================================
 
 
@@ -882,10 +1472,6 @@ def get_initial_report_urls(
 
     items = []
 
-
-    # ========================================================
-    # روابط التقرير نفسه
-    # ========================================================
 
     for field_name in [
         "url",
@@ -899,15 +1485,13 @@ def get_initial_report_urls(
 
         if url:
 
-            items.append(
-                {
-                    "url":
-                        url,
+            items.append({
+                "url":
+                    url,
 
-                    "origin":
-                        field_name,
-                }
-            )
+                "origin":
+                    field_name,
+            })
 
 
     alternate_urls = report.get(
@@ -924,20 +1508,14 @@ def get_initial_report_urls(
 
             if url:
 
-                items.append(
-                    {
-                        "url":
-                            url,
+                items.append({
+                    "url":
+                        url,
 
-                        "origin":
-                            "alternate_urls",
-                    }
-                )
+                    "origin":
+                        "alternate_urls",
+                })
 
-
-    # ========================================================
-    # مصادر الصندوق
-    # ========================================================
 
     sources = reit_entry.get(
         "sources",
@@ -950,14 +1528,24 @@ def get_initial_report_urls(
         list
     ):
 
-        for source in sources:
+        sorted_sources = sorted(
+            [
+                source
+                for source in sources
+                if isinstance(
+                    source,
+                    dict
+                )
+            ],
+            key=lambda source:
+                source.get(
+                    "priority",
+                    999
+                )
+        )
 
-            if not isinstance(
-                source,
-                dict
-            ):
-                continue
 
+        for source in sorted_sources:
 
             url = source.get(
                 "url"
@@ -966,27 +1554,21 @@ def get_initial_report_urls(
 
             if url:
 
-                items.append(
-                    {
-                        "url":
-                            url,
+                items.append({
+                    "url":
+                        url,
 
-                        "origin":
-                            (
-                                "source:"
-                                + str(
-                                    source.get(
-                                        "source_type"
-                                    )
+                    "origin":
+                        (
+                            "source:"
+                            + str(
+                                source.get(
+                                    "source_type"
                                 )
-                            ),
-                    }
-                )
+                            )
+                        ),
+                })
 
-
-    # ========================================================
-    # إزالة التكرار
-    # ========================================================
 
     unique = []
 
@@ -1027,7 +1609,7 @@ def get_initial_report_urls(
 
 
 # ============================================================
-# Discovery لتقرير واحد
+# Discovery
 # ============================================================
 
 
@@ -1037,6 +1619,15 @@ def discover_report(
     reit_entry,
     report
 ):
+
+    report_type = report.get(
+        "report_type"
+    )
+
+    period_end = report.get(
+        "period_end"
+    )
+
 
     initial_urls = (
         get_initial_report_urls(
@@ -1054,35 +1645,31 @@ def discover_report(
 
 
     # ========================================================
-    # المرحلة الأولى
+    # Initial pages
     # ========================================================
 
     for item in initial_urls:
 
         inspected = (
             inspect_candidate(
+                symbol,
+                company_name,
+                report_type,
+                period_end,
                 item[
                     "url"
+                ],
+                item[
+                    "origin"
                 ]
             )
         )
-
-
-        inspected[
-            "origin"
-        ] = item[
-            "origin"
-        ]
 
 
         attempts.append(
             inspected
         )
 
-
-        # ====================================================
-        # إذا HTML قابل للقراءة نبحث داخله عن روابط أخرى
-        # ====================================================
 
         if (
             inspected[
@@ -1125,55 +1712,89 @@ def discover_report(
 
 
     # ========================================================
-    # فلترة روابط واعدة
+    # Pre-filter URLs
     # ========================================================
 
-    promising_urls = []
+    scored_urls = []
 
 
     for url in discovered_urls:
 
-        lower = url.lower()
+        pre_score, _ = (
+            calculate_document_relevance(
+                symbol,
+                company_name,
+                report_type,
+                period_end,
+                url,
+                "discovered",
+                (
+                    "PDF"
+                    if looks_like_pdf(
+                        url
+                    )
+                    else "UNKNOWN"
+                ),
+                True
+            )
+        )
 
 
-        if (
-            looks_like_pdf(
+        scored_urls.append(
+            (
+                pre_score,
                 url
             )
-            or "report" in lower
-            or "financial" in lower
-            or "reit" in lower
-            or "fund" in lower
-            or "quarter" in lower
-            or "statement" in lower
-        ):
-
-            promising_urls.append(
-                url
-            )
+        )
 
 
-    # لا نريد مئات الطلبات
-    promising_urls = (
-        promising_urls[
-            :30
-        ]
+    scored_urls.sort(
+        key=lambda item:
+            item[
+                0
+            ],
+        reverse=True
     )
 
 
+    promising_urls = [
+        url
+        for _score, url
+        in scored_urls[
+            :MAX_DISCOVERED_URLS
+        ]
+    ]
+
+
     # ========================================================
-    # المرحلة الثانية
+    # Inspect discovered URLs
     # ========================================================
+
+    existing_urls = {
+        attempt[
+            "url"
+        ]
+        for attempt in attempts
+    }
+
 
     for url in promising_urls:
 
-        inspected = inspect_candidate(
-            url
+        if url in existing_urls:
+            continue
+
+
+        inspected = (
+            inspect_candidate(
+                symbol,
+                company_name,
+                report_type,
+                period_end,
+                url,
+                "discovered"
+            )
         )
 
-        inspected[
-            "origin"
-        ] = "discovered"
 
         attempts.append(
             inspected
@@ -1181,7 +1802,7 @@ def discover_report(
 
 
     # ========================================================
-    # اختيار أفضل رابط
+    # Select valid candidates
     # ========================================================
 
     usable = [
@@ -1190,14 +1811,30 @@ def discover_report(
 
         for attempt in attempts
 
-        if attempt[
-            "readable"
-        ]
+        if (
+            attempt[
+                "readable"
+            ]
+            and attempt[
+                "relevance_score"
+            ]
+            >= MIN_ACCEPT_SCORE
+        )
     ]
 
 
     usable.sort(
-        key=candidate_priority,
+        key=lambda attempt: (
+            attempt[
+                "relevance_score"
+            ],
+            1
+            if attempt[
+                "document_type"
+            ]
+            == "PDF"
+            else 0
+        ),
         reverse=True
     )
 
@@ -1212,31 +1849,53 @@ def discover_report(
 
 
     # ========================================================
-    # Status
+    # State
     # ========================================================
 
     if best:
 
         if (
             best[
-                "document_type"
+                "relevance_score"
             ]
-            == "PDF"
+            >= STRONG_ACCEPT_SCORE
         ):
 
-            discovery_state = (
-                "DIRECT_DOCUMENT_FOUND"
-            )
+            if (
+                best[
+                    "document_type"
+                ]
+                == "PDF"
+            ):
+
+                discovery_state = (
+                    "VERIFIED_DOCUMENT_FOUND"
+                )
+
+            else:
+
+                discovery_state = (
+                    "VERIFIED_PAGE_FOUND"
+                )
 
         else:
 
             discovery_state = (
-                "READABLE_PAGE_FOUND"
+                "CANDIDATE_FOUND_REVIEW"
             )
+
 
     else:
 
-        blocked = any(
+        readable_any = any(
+            attempt[
+                "readable"
+            ]
+            for attempt in attempts
+        )
+
+
+        blocked_any = any(
             attempt.get(
                 "http_status"
             )
@@ -1244,10 +1903,17 @@ def discover_report(
             for attempt in attempts
         )
 
-        if blocked:
+
+        if readable_any:
 
             discovery_state = (
-                "BLOCKED_OR_NOT_FOUND"
+                "NO_RELEVANT_DOCUMENT"
+            )
+
+        elif blocked_any:
+
+            discovery_state = (
+                "BLOCKED"
             )
 
         else:
@@ -1255,6 +1921,20 @@ def discover_report(
             discovery_state = (
                 "NOT_FOUND"
             )
+
+
+    # ========================================================
+    # Top candidates for diagnostics
+    # ========================================================
+
+    ranked_attempts = sorted(
+        attempts,
+        key=lambda attempt:
+            attempt[
+                "relevance_score"
+            ],
+        reverse=True
+    )
 
 
     return {
@@ -1265,14 +1945,10 @@ def discover_report(
             company_name,
 
         "report_type":
-            report.get(
-                "report_type"
-            ),
+            report_type,
 
         "period_end":
-            report.get(
-                "period_end"
-            ),
+            period_end,
 
         "discovery_state":
             discovery_state,
@@ -1304,18 +1980,27 @@ def discover_report(
                 else None
             ),
 
+        "best_score":
+            (
+                best[
+                    "relevance_score"
+                ]
+                if best
+                else None
+            ),
+
         "attempt_count":
             len(
                 attempts
             ),
 
         "attempts":
-            attempts,
+            ranked_attempts,
     }
 
 
 # ============================================================
-# طباعة نتيجة تقرير
+# Print
 # ============================================================
 
 
@@ -1345,15 +2030,22 @@ def print_report_result(
 
 
     print(
-        f"🔗 Best URL: "
-        f"{result['best_url'] or 'NONE'}",
+        f"🎯 Best Score: "
+        f"{result['best_score'] if result['best_score'] is not None else 'N/A'}",
         flush=True
     )
 
 
     print(
-        f"📑 Document Type: "
+        f"📑 Best Type: "
         f"{result['best_document_type'] or 'NONE'}",
+        flush=True
+    )
+
+
+    print(
+        f"🔗 Best URL: "
+        f"{result['best_url'] or 'NONE'}",
         flush=True
     )
 
@@ -1368,16 +2060,30 @@ def print_report_result(
     print_separator()
 
 
-    for attempt in result[
-        "attempts"
-    ]:
+    print(
+        "🏅 TOP CANDIDATES",
+        flush=True
+    )
+
+
+    for index, attempt in enumerate(
+        result[
+            "attempts"
+        ][
+            :10
+        ],
+        start=1
+    ):
 
         print(
-            f"- "
+            f"{index:02d}. "
+            f"Score="
+            f"{attempt['relevance_score']:.2f} | "
             f"{attempt['origin']} | "
             f"{attempt['candidate_type']} | "
             f"{attempt['status']} | "
-            f"HTTP={attempt['http_status']} | "
+            f"HTTP="
+            f"{attempt['http_status']} | "
             f"Type="
             f"{attempt['document_type']} | "
             f"{attempt['url']}",
@@ -1395,7 +2101,7 @@ def print_summary(
 ):
 
     print_header(
-        "🏆 REIT REPORT DISCOVERY SUMMARY v1"
+        "🏆 REIT REPORT DISCOVERY SUMMARY v2"
     )
 
 
@@ -1423,6 +2129,15 @@ def print_summary(
         )
 
 
+        score_text = (
+            f"{result['best_score']:.2f}"
+            if result[
+                "best_score"
+            ] is not None
+            else "N/A"
+        )
+
+
         print(
             f"{index:02d}. "
             f"{result['symbol']} | "
@@ -1430,6 +2145,8 @@ def print_summary(
             f"{result['period_end']} | "
             f"State="
             f"{state} | "
+            f"Score="
+            f"{score_text} | "
             f"Type="
             f"{result['best_document_type']} | "
             f"Attempts="
@@ -1466,7 +2183,7 @@ def print_summary(
 
 
     print(
-        "=" * 104,
+        "=" * 108,
         flush=True
     )
 
@@ -1492,6 +2209,20 @@ def run_discovery():
     print(
         f"🕐 Started: "
         f"{datetime.now(timezone.utc).isoformat()}",
+        flush=True
+    )
+
+
+    print(
+        f"🎯 Minimum Accept Score: "
+        f"{MIN_ACCEPT_SCORE}",
+        flush=True
+    )
+
+
+    print(
+        f"🏆 Strong Accept Score: "
+        f"{STRONG_ACCEPT_SCORE}",
         flush=True
     )
 
@@ -1547,7 +2278,6 @@ def run_discovery():
         )
 
 
-        # لا نفحص صندوق غير نشط
         if symbol not in active_map:
             continue
 
@@ -1585,6 +2315,7 @@ def run_discovery():
                 report,
                 dict
             ):
+
                 continue
 
 
