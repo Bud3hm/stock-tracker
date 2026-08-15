@@ -11,6 +11,17 @@ jobs:
       - name: Get code
         uses: actions/checkout@v4
 
+      - name: Show repository files
+        run: |
+          echo "Current directory:"
+          pwd
+          echo ""
+          echo "Repository root files:"
+          ls -la
+          echo ""
+          echo "Search for REIT registry files:"
+          find . -maxdepth 3 -type f -iname "*reit*official*sources*" -print
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
