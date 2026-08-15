@@ -1,5 +1,6 @@
 import os
 import re
+import io
 import json
 import html
 import heapq
@@ -12,44 +13,28 @@ from pathlib import Path
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 
+from pypdf import PdfReader
 from supabase import create_client
 
 
 # ============================================================
-# REIT REPORT DISCOVERY ENGINE v5.4
+# REIT REPORT DISCOVERY ENGINE v5.5
 #
-# STRICT DOCUMENT IDENTITY
-# STRICT YEAR
-# STRICT PERIOD
-# HARD REJECT
-# REIT PATH GUARD
-# HTTP + LINK CACHE
+# PDF CONTENT VERIFICATION
 #
 # READ ONLY
 #
-# أهم تغيير:
+# المراحل:
 #
-# DOCUMENT TYPE يعتمد على:
-#   URL + Anchor Text
-#
-# وليس على Context المحيط.
-#
-# Context يستخدم فقط للمساعدة في:
-#   Year
-#   Period
-#   Ranking
-#
-# مثال:
-#
-# URL:
-# Terms_and_Conditions.pdf
-#
-# Context:
-# Quarterly report June 2026
-#
-# النتيجة:
-# DocTypeOK=False
-# HardReject=True
+# 1) Discovery / Crawl
+# 2) URL + Anchor filtering
+# 3) Hard Reject
+# 4) PDF content extraction
+# 5) Fund verification
+# 6) Year verification
+# 7) Period verification
+# 8) Statement-type verification
+# 9) Final VERIFIED only after content validation
 #
 # عام لكل صناديق REIT.
 # ============================================================
@@ -57,7 +42,7 @@ from supabase import create_client
 
 ENGINE_NAME = (
     "REIT REPORT DISCOVERY ENGINE "
-    "v5.4 STRICT DOCUMENT IDENTITY"
+    "v5.5 PDF CONTENT VERIFICATION"
 )
 
 REGISTRY_FILENAME = "reit_official_sources.json"
@@ -67,20 +52,28 @@ HTTP_TIMEOUT = 8
 MAX_CRAWL_DEPTH = 2
 MAX_PAGES = 10
 MAX_LINKS_PER_PAGE = 140
-MAX_DOCUMENT_CHECKS = 25
 
-MIN_ACCEPT_SCORE = 60.0
-STRONG_ACCEPT_SCORE = 80.0
-EARLY_STOP_SCORE = 90.0
+MAX_DISCOVERY_CANDIDATES = 25
+
+# لا نقرأ محتوى PDF لكل الملفات
+MAX_PDF_CONTENT_CHECKS = 6
+
+# نقرأ فقط أول صفحات كافية للتحقق
+MAX_PDF_PAGES_TO_READ = 8
+
+MIN_ACCEPT_SCORE = 65.0
+STRONG_ACCEPT_SCORE = 85.0
+EARLY_STOP_SCORE = 92.0
 
 
 # ============================================================
-# Runtime caches
+# Runtime cache
 # ============================================================
 
 
 HTTP_CACHE = {}
 LINK_CACHE = {}
+PDF_TEXT_CACHE = {}
 
 
 # ============================================================
@@ -98,14 +91,12 @@ SUPABASE_SECRET_KEY = os.environ.get(
 
 
 if not SUPABASE_URL:
-
     raise RuntimeError(
         "SUPABASE_URL environment variable is missing"
     )
 
 
 if not SUPABASE_SECRET_KEY:
-
     raise RuntimeError(
         "SUPABASE_SECRET_KEY environment variable is missing"
     )
@@ -122,9 +113,7 @@ supabase = create_client(
 # ============================================================
 
 
-class ContextLinkParser(
-    HTMLParser
-):
+class ContextLinkParser(HTMLParser):
 
     def __init__(self):
 
@@ -148,24 +137,18 @@ class ContextLinkParser(
     ):
 
         if tag.lower() != "a":
-
             return
-
 
         attrs = dict(
             attrs
         )
 
-
         href = attrs.get(
             "href"
         )
 
-
         if not href:
-
             return
-
 
         self.current_href = href
         self.current_anchor = []
@@ -184,16 +167,12 @@ class ContextLinkParser(
             data
         ).strip()
 
-
         if not text:
-
             return
-
 
         self.recent_text.append(
             text
         )
-
 
         if self.current_href is not None:
 
@@ -211,25 +190,20 @@ class ContextLinkParser(
             tag.lower() != "a"
             or self.current_href is None
         ):
-
             return
 
+        self.links.append({
+            "href":
+                self.current_href,
 
-        self.links.append(
-            {
-                "href":
-                    self.current_href,
+            "anchor_text":
+                " ".join(
+                    self.current_anchor
+                ),
 
-                "anchor_text":
-                    " ".join(
-                        self.current_anchor
-                    ),
-
-                "context":
-                    self.before_context
-            }
-        )
-
+            "context":
+                self.before_context
+        })
 
         self.current_href = None
         self.current_anchor = []
@@ -241,13 +215,11 @@ class ContextLinkParser(
 # ============================================================
 
 
-def print_header(
-    title
-):
+def print_header(title):
 
     print(
         "\n"
-        + "=" * 122,
+        + "=" * 124,
         flush=True
     )
 
@@ -257,7 +229,7 @@ def print_header(
     )
 
     print(
-        "=" * 122,
+        "=" * 124,
         flush=True
     )
 
@@ -265,7 +237,7 @@ def print_header(
 def print_separator():
 
     print(
-        "-" * 122,
+        "-" * 124,
         flush=True
     )
 
@@ -275,52 +247,20 @@ def print_separator():
 # ============================================================
 
 
-def normalize_symbol(
-    symbol
-):
+def normalize_symbol(symbol):
 
     if not symbol:
-
         return None
-
 
     return str(
         symbol
     ).strip().upper()
 
 
-def exchange_code(
-    symbol
-):
-
-    symbol = normalize_symbol(
-        symbol
-    )
-
-
-    if not symbol:
-
-        return None
-
-
-    if symbol.endswith(
-        ".SR"
-    ):
-
-        return symbol[:-3]
-
-
-    return symbol
-
-
-def normalize_text(
-    value
-):
+def normalize_text(value):
 
     if not value:
-
         return ""
-
 
     value = html.unescape(
         str(
@@ -328,22 +268,18 @@ def normalize_text(
         )
     )
 
-
     value = value.lower()
-
 
     value = value.replace(
         "\xa0",
         " "
     )
 
-
     value = re.sub(
-        r"[_\-/%?=&]+",
+        r"[_\-/%?=&:,;()\[\]{}]+",
         " ",
         value
     )
-
 
     value = re.sub(
         r"\s+",
@@ -351,18 +287,13 @@ def normalize_text(
         value
     )
 
-
     return value.strip()
 
 
-def normalize_url(
-    url
-):
+def normalize_url(url):
 
     if not url:
-
         return None
-
 
     return html.unescape(
         str(
@@ -371,26 +302,20 @@ def normalize_url(
     )
 
 
-def canonical_url(
-    url
-):
+def canonical_url(url):
 
     url = normalize_url(
         url
     )
 
-
     if not url:
-
         return None
-
 
     try:
 
         parsed = urllib.parse.urlsplit(
             url
         )
-
 
         cleaned = urllib.parse.urlunsplit(
             (
@@ -402,45 +327,33 @@ def canonical_url(
             )
         )
 
-
         path = urllib.parse.urlsplit(
             cleaned
         ).path
 
-
         if (
             cleaned.endswith("/")
-            and len(
-                path
-            ) > 1
+            and len(path) > 1
         ):
-
             cleaned = cleaned.rstrip(
                 "/"
             )
 
-
         return cleaned
-
 
     except Exception:
 
         return url
 
 
-def is_http_url(
-    url
-):
+def is_http_url(url):
 
     if not url:
-
         return False
-
 
     value = str(
         url
     ).lower()
-
 
     return (
         value.startswith(
@@ -458,9 +371,7 @@ def absolute_url(
 ):
 
     if not target_url:
-
         return None
-
 
     return urllib.parse.urljoin(
         base_url,
@@ -468,14 +379,10 @@ def absolute_url(
     )
 
 
-def get_domain(
-    url
-):
+def get_domain(url):
 
     if not url:
-
         return None
-
 
     try:
 
@@ -487,12 +394,10 @@ def get_domain(
             .lower()
         )
 
-
         return domain.replace(
             "www.",
             ""
         )
-
 
     except Exception:
 
@@ -512,11 +417,8 @@ def same_domain(
         url_b
     )
 
-
     if not a or not b:
-
         return False
-
 
     return (
         a == b
@@ -529,19 +431,14 @@ def same_domain(
     )
 
 
-def looks_like_pdf(
-    url
-):
+def looks_like_pdf(url):
 
     if not url:
-
         return False
-
 
     value = str(
         url
     ).lower()
-
 
     return (
         ".pdf" in value
@@ -578,13 +475,9 @@ def find_registry_file():
 
     for candidate in candidates:
 
-        candidate = (
-            candidate.resolve()
-        )
-
+        candidate = candidate.resolve()
 
         if candidate.exists():
-
             return candidate
 
 
@@ -612,7 +505,6 @@ def load_registry():
         data,
         dict
     ):
-
         raise RuntimeError(
             "Registry root must be object"
         )
@@ -624,7 +516,6 @@ def load_registry():
         ),
         dict
     ):
-
         raise RuntimeError(
             "Registry reits must be object"
         )
@@ -669,18 +560,15 @@ def get_active_reits():
         .execute()
     )
 
-
     return response.data or []
 
 
 # ============================================================
-# HTTP cache
+# HTTP
 # ============================================================
 
 
-def fetch_url(
-    url
-):
+def fetch_url(url):
 
     url = canonical_url(
         url
@@ -689,11 +577,9 @@ def fetch_url(
 
     if url in HTTP_CACHE:
 
-        result = (
-            HTTP_CACHE[
-                url
-            ].copy()
-        )
+        result = HTTP_CACHE[
+            url
+        ].copy()
 
         result[
             "from_cache"
@@ -858,18 +744,15 @@ def fetch_url(
         url
     ] = result.copy()
 
-
     return result
 
 
 # ============================================================
-# Document type
+# Detect type
 # ============================================================
 
 
-def detect_document_type(
-    response
-):
+def detect_document_type(response):
 
     content = (
         response.get(
@@ -878,14 +761,12 @@ def detect_document_type(
         or b""
     )
 
-
     content_type = (
         response.get(
             "content_type"
         )
         or ""
     ).lower()
-
 
     final_url = (
         response.get(
@@ -905,7 +786,6 @@ def detect_document_type(
             b"%PDF"
         )
     ):
-
         return "PDF"
 
 
@@ -917,7 +797,6 @@ def detect_document_type(
             :2000
         ].lower()
     ):
-
         return "HTML"
 
 
@@ -940,7 +819,6 @@ def extract_links(
 
 
     if base_url in LINK_CACHE:
-
         return LINK_CACHE[
             base_url
         ]
@@ -952,7 +830,6 @@ def extract_links(
             "utf-8",
             errors="replace"
         )
-
 
     except Exception:
 
@@ -968,14 +845,12 @@ def extract_links(
             source
         )
 
-
     except Exception:
 
         pass
 
 
     results = []
-
     seen = set()
 
 
@@ -990,7 +865,6 @@ def extract_links(
             )
         )
 
-
         url = canonical_url(
             raw_url
         )
@@ -1003,7 +877,6 @@ def extract_links(
             )
             or url in seen
         ):
-
             continue
 
 
@@ -1012,32 +885,29 @@ def extract_links(
         )
 
 
-        results.append(
-            {
-                "url":
-                    url,
+        results.append({
+            "url":
+                url,
 
-                "anchor_text":
-                    normalize_text(
-                        item.get(
-                            "anchor_text"
-                        )
-                    ),
-
-                "context":
-                    normalize_text(
-                        item.get(
-                            "context"
-                        )
+            "anchor_text":
+                normalize_text(
+                    item.get(
+                        "anchor_text"
                     )
-            }
-        )
+                ),
+
+            "context":
+                normalize_text(
+                    item.get(
+                        "context"
+                    )
+                )
+        })
 
 
     LINK_CACHE[
         base_url
     ] = results
-
 
     return results
 
@@ -1076,9 +946,7 @@ def company_tokens(
         )
 
         if (
-            len(
-                token
-            ) >= 3
+            len(token) >= 3
             and token not in ignored
         )
     ]
@@ -1089,7 +957,6 @@ def report_year(
 ):
 
     if not period_end:
-
         return None
 
 
@@ -1110,99 +977,8 @@ def report_year(
     )
 
 
-def extract_years(
-    text
-):
-
-    return sorted(
-        set(
-            re.findall(
-                r"\b(20\d{2})\b",
-                normalize_text(
-                    text
-                )
-            )
-        )
-    )
-
-
 # ============================================================
-# Period keywords
-# ============================================================
-
-
-def period_keywords(
-    report_type
-):
-
-    rt = str(
-        report_type
-    ).upper()
-
-
-    mapping = {
-
-        "Q1": [
-            "q1",
-            "first quarter",
-            "quarter 1",
-            "march",
-            "31 march"
-        ],
-
-        "Q2": [
-            "q2",
-            "second quarter",
-            "quarter 2",
-            "june",
-            "30 june"
-        ],
-
-        "Q3": [
-            "q3",
-            "third quarter",
-            "quarter 3",
-            "september",
-            "30 september"
-        ],
-
-        "Q4": [
-            "q4",
-            "fourth quarter",
-            "quarter 4",
-            "december",
-            "31 december"
-        ],
-
-        "H1": [
-            "h1",
-            "semi annual",
-            "semiannual",
-            "half year",
-            "six months",
-            "30 june",
-            "june"
-        ],
-
-        "FY": [
-            "fy",
-            "annual",
-            "annual report",
-            "full year",
-            "year end",
-            "31 december"
-        ]
-    }
-
-
-    return mapping.get(
-        rt,
-        []
-    )
-
-
-# ============================================================
-# Hard Reject
+# Hard reject identity
 # ============================================================
 
 
@@ -1210,13 +986,9 @@ HARD_REJECT_IDENTITY = {
 
     "terms and conditions",
     "terms conditions",
-    "terms condition",
-    "terms",
-    "conditions",
 
     "valuation",
     "valuation report",
-    "valuation reports",
     "property valuation",
     "appraisal",
 
@@ -1238,29 +1010,6 @@ HARD_REJECT_IDENTITY = {
     "privacy",
     "tick size"
 }
-
-
-GENERAL_NAVIGATION_NOISE = {
-
-    "brokerage",
-    "faq",
-    "contact us",
-    "about us",
-    "careers",
-    "research",
-    "awards",
-    "organizational chart",
-    "shariah",
-    "investment banking",
-    "open account",
-    "eservices",
-    "poa request"
-}
-
-
-# ============================================================
-# Strict Identity
-# ============================================================
 
 
 def document_identity_text(
@@ -1305,186 +1054,9 @@ def hard_reject_document(
 
 
     return (
-        bool(
-            matches
-        ),
+        bool(matches),
         matches
     )
-
-
-# ============================================================
-# Strict year
-# ============================================================
-
-
-def strict_year_match(
-    period_end,
-    url,
-    anchor_text,
-    context
-):
-
-    required_year = report_year(
-        period_end
-    )
-
-
-    if not required_year:
-
-        return False
-
-
-    combined = contextual_text(
-        url,
-        anchor_text,
-        context
-    )
-
-
-    years = extract_years(
-        combined
-    )
-
-
-    if not years:
-
-        return False
-
-
-    return (
-        required_year in years
-    )
-
-
-# ============================================================
-# Strict period
-# ============================================================
-
-
-def strict_period_match(
-    report_type,
-    url,
-    anchor_text,
-    context
-):
-
-    combined = contextual_text(
-        url,
-        anchor_text,
-        context
-    )
-
-
-    return any(
-        keyword in combined
-
-        for keyword in period_keywords(
-            report_type
-        )
-    )
-
-
-# ============================================================
-# Strict document identity
-# ============================================================
-
-
-def strict_document_type_match(
-    report_type,
-    url,
-    anchor_text
-):
-
-    # مهم:
-    # لا نستخدم Context هنا.
-
-    identity = document_identity_text(
-        url,
-        anchor_text
-    )
-
-
-    rt = str(
-        report_type
-    ).upper()
-
-
-    # ========================================================
-    # Quarterly
-    # ========================================================
-
-    if rt in {
-        "Q1",
-        "Q2",
-        "Q3",
-        "Q4"
-    }:
-
-        return any(
-            keyword in identity
-
-            for keyword in [
-                "quarterly",
-                "quarterly statement",
-                "quarterly report",
-                "quarterly financial",
-                "quarter statement",
-                "quarter report",
-                "q1",
-                "q2",
-                "q3",
-                "q4"
-            ]
-        )
-
-
-    # ========================================================
-    # H1
-    # ========================================================
-
-    if rt == "H1":
-
-        return any(
-            keyword in identity
-
-            for keyword in [
-                "semi annual",
-                "semiannual",
-                "half year",
-                "half yearly",
-                "six months",
-                "interim financial",
-                "interim financial statement",
-                "interim financial statements",
-                "financial statement",
-                "financial statements"
-            ]
-        )
-
-
-    # ========================================================
-    # FY
-    # ========================================================
-
-    if rt == "FY":
-
-        return any(
-            keyword in identity
-
-            for keyword in [
-                "annual financial",
-                "annual report",
-                "annual financial statement",
-                "annual financial statements",
-                "audited financial",
-                "audited financial statement",
-                "audited financial statements",
-                "full year financial"
-            ]
-        )
-
-
-    return False
 
 
 # ============================================================
@@ -1498,18 +1070,13 @@ def get_reit_base_path(
 
     try:
 
-        parsed = urllib.parse.urlparse(
-            manager_url
+        return (
+            urllib.parse.urlparse(
+                manager_url
+            )
+            .path
+            .rstrip("/")
         )
-
-
-        path = parsed.path.rstrip(
-            "/"
-        )
-
-
-        return path
-
 
     except Exception:
 
@@ -1525,7 +1092,6 @@ def is_allowed_reit_path(
         manager_url,
         candidate_url
     ):
-
         return False
 
 
@@ -1535,7 +1101,6 @@ def is_allowed_reit_path(
 
 
     if not manager_path:
-
         return True
 
 
@@ -1548,26 +1113,16 @@ def is_allowed_reit_path(
     )
 
 
-    manager_path_lower = (
+    manager_path = (
         manager_path.lower()
     )
 
 
-    # ========================================================
-    # Primary:
-    # داخل مسار صفحة الصندوق
-    # ========================================================
-
     if candidate_path.startswith(
-        manager_path_lower
+        manager_path
     ):
-
         return True
 
-
-    # ========================================================
-    # PDFs قد تكون تحت /media/
-    # ========================================================
 
     if (
         "/media/"
@@ -1576,17 +1131,9 @@ def is_allowed_reit_path(
         in candidate_path
         or "/fspdf/"
         in candidate_path
+        or "/data/"
+        in candidate_path
     ):
-
-        return True
-
-
-    # ========================================================
-    # Data paths المستخدمة لبعض المواقع
-    # ========================================================
-
-    if "/data/" in candidate_path:
-
         return True
 
 
@@ -1594,11 +1141,558 @@ def is_allowed_reit_path(
 
 
 # ============================================================
-# Page priority
+# PDF extraction
 # ============================================================
 
 
-def calculate_page_priority(
+def extract_pdf_text(
+    url,
+    content
+):
+
+    url = canonical_url(
+        url
+    )
+
+
+    if url in PDF_TEXT_CACHE:
+
+        return PDF_TEXT_CACHE[
+            url
+        ]
+
+
+    result = {
+        "status":
+            "FAILED",
+
+        "text":
+            "",
+
+        "pages_read":
+            0,
+
+        "total_pages":
+            0,
+
+        "error":
+            None
+    }
+
+
+    try:
+
+        reader = PdfReader(
+            io.BytesIO(
+                content
+            )
+        )
+
+
+        total_pages = len(
+            reader.pages
+        )
+
+
+        texts = []
+
+
+        pages_to_read = min(
+            total_pages,
+            MAX_PDF_PAGES_TO_READ
+        )
+
+
+        for index in range(
+            pages_to_read
+        ):
+
+            try:
+
+                page_text = (
+                    reader.pages[
+                        index
+                    ].extract_text()
+                    or ""
+                )
+
+                texts.append(
+                    page_text
+                )
+
+            except Exception:
+
+                continue
+
+
+        text = "\n".join(
+            texts
+        )
+
+
+        result = {
+            "status":
+                "SUCCESS",
+
+            "text":
+                normalize_text(
+                    text
+                ),
+
+            "pages_read":
+                pages_to_read,
+
+            "total_pages":
+                total_pages,
+
+            "error":
+                None
+        }
+
+
+    except Exception as error:
+
+        result = {
+            "status":
+                "FAILED",
+
+            "text":
+                "",
+
+            "pages_read":
+                0,
+
+            "total_pages":
+                0,
+
+            "error":
+                (
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+        }
+
+
+    PDF_TEXT_CACHE[
+        url
+    ] = result
+
+    return result
+
+
+# ============================================================
+# Content validation
+# ============================================================
+
+
+def content_company_match(
+    company_name,
+    text
+):
+
+    tokens = company_tokens(
+        company_name
+    )
+
+
+    if not tokens:
+        return False
+
+
+    matched = sum(
+        1
+        for token in tokens
+        if token in text
+    )
+
+
+    return matched >= 1
+
+
+def content_year_match(
+    period_end,
+    text
+):
+
+    year = report_year(
+        period_end
+    )
+
+
+    if not year:
+        return False
+
+
+    return year in text
+
+
+def content_period_match(
+    report_type,
+    text
+):
+
+    rt = str(
+        report_type
+    ).upper()
+
+
+    if rt == "Q1":
+
+        return any(
+            item in text
+            for item in [
+                "first quarter",
+                "q1",
+                "31 march",
+                "period ended 31 march"
+            ]
+        )
+
+
+    if rt == "Q2":
+
+        return any(
+            item in text
+            for item in [
+                "second quarter",
+                "q2",
+                "30 june",
+                "period ended 30 june",
+                "quarter ended 30 june"
+            ]
+        )
+
+
+    if rt == "Q3":
+
+        return any(
+            item in text
+            for item in [
+                "third quarter",
+                "q3",
+                "30 september",
+                "period ended 30 september"
+            ]
+        )
+
+
+    if rt == "Q4":
+
+        return any(
+            item in text
+            for item in [
+                "fourth quarter",
+                "q4",
+                "31 december",
+                "period ended 31 december"
+            ]
+        )
+
+
+    if rt == "H1":
+
+        return any(
+            item in text
+            for item in [
+                "30 june",
+                "six months ended",
+                "six month period ended",
+                "period ended 30 june",
+                "half year"
+            ]
+        )
+
+
+    if rt == "FY":
+
+        return any(
+            item in text
+            for item in [
+                "31 december",
+                "year ended",
+                "financial year ended"
+            ]
+        )
+
+
+    return False
+
+
+def content_statement_type_match(
+    report_type,
+    text
+):
+
+    rt = str(
+        report_type
+    ).upper()
+
+
+    if rt in {
+        "Q1",
+        "Q2",
+        "Q3",
+        "Q4"
+    }:
+
+        return any(
+            item in text
+
+            for item in [
+                "quarterly statement",
+                "quarterly report",
+                "quarterly financial",
+                "quarter ended",
+                "quarterly disclosure",
+                "quarterly information"
+            ]
+        )
+
+
+    if rt == "H1":
+
+        return any(
+            item in text
+
+            for item in [
+                "interim financial statements",
+                "interim condensed financial statements",
+                "interim financial report",
+                "semi annual report",
+                "semiannual report",
+                "six months ended",
+                "half year"
+            ]
+        )
+
+
+    if rt == "FY":
+
+        return any(
+            item in text
+
+            for item in [
+                "annual financial statements",
+                "audited financial statements",
+                "annual report",
+                "financial statements for the year ended"
+            ]
+        )
+
+
+    return False
+
+
+def content_hard_reject(
+    text
+):
+
+    reject_terms = [
+        "terms and conditions",
+        "valuation report",
+        "property valuation",
+        "appraisal report",
+        "prospectus",
+        "fact sheet",
+        "factsheet",
+        "portfolio report"
+    ]
+
+
+    matches = [
+        term
+        for term in reject_terms
+        if term in text
+    ]
+
+
+    return (
+        bool(matches),
+        matches
+    )
+
+
+def verify_pdf_content(
+    company_name,
+    report_type,
+    period_end,
+    url,
+    response
+):
+
+    extraction = extract_pdf_text(
+        url,
+        response.get(
+            "content"
+        )
+        or b""
+    )
+
+
+    text = extraction[
+        "text"
+    ]
+
+
+    if (
+        extraction[
+            "status"
+        ] != "SUCCESS"
+        or not text
+    ):
+
+        return {
+            "content_score":
+                0.0,
+
+            "content_company_ok":
+                False,
+
+            "content_year_ok":
+                False,
+
+            "content_period_ok":
+                False,
+
+            "content_statement_ok":
+                False,
+
+            "content_hard_reject":
+                False,
+
+            "content_reject_reasons":
+                [],
+
+            "pages_read":
+                extraction[
+                    "pages_read"
+                ],
+
+            "total_pages":
+                extraction[
+                    "total_pages"
+                ],
+
+            "error":
+                extraction[
+                    "error"
+                ],
+
+            "snippet":
+                ""
+        }
+
+
+    company_ok = content_company_match(
+        company_name,
+        text
+    )
+
+
+    year_ok = content_year_match(
+        period_end,
+        text
+    )
+
+
+    period_ok = content_period_match(
+        report_type,
+        text
+    )
+
+
+    statement_ok = (
+        content_statement_type_match(
+            report_type,
+            text
+        )
+    )
+
+
+    (
+        hard_reject,
+        reject_reasons
+    ) = content_hard_reject(
+        text
+    )
+
+
+    score = 0.0
+
+
+    if company_ok:
+        score += 20
+
+
+    if year_ok:
+        score += 25
+
+
+    if period_ok:
+        score += 25
+
+
+    if statement_ok:
+        score += 30
+
+
+    if hard_reject:
+        score = 0.0
+
+
+    snippet = text[
+        :700
+    ]
+
+
+    return {
+        "content_score":
+            score,
+
+        "content_company_ok":
+            company_ok,
+
+        "content_year_ok":
+            year_ok,
+
+        "content_period_ok":
+            period_ok,
+
+        "content_statement_ok":
+            statement_ok,
+
+        "content_hard_reject":
+            hard_reject,
+
+        "content_reject_reasons":
+            reject_reasons,
+
+        "pages_read":
+            extraction[
+                "pages_read"
+            ],
+
+        "total_pages":
+            extraction[
+                "total_pages"
+            ],
+
+        "error":
+            extraction[
+                "error"
+            ],
+
+        "snippet":
+            snippet
+    }
+
+
+# ============================================================
+# Discovery priority
+# ============================================================
+
+
+def discovery_score(
     company_name,
     report_type,
     period_end,
@@ -1606,6 +1700,11 @@ def calculate_page_priority(
     anchor_text,
     context
 ):
+
+    identity = document_identity_text(
+        url,
+        anchor_text
+    )
 
     combined = contextual_text(
         url,
@@ -1618,27 +1717,27 @@ def calculate_page_priority(
 
 
     if "reit" in combined:
+        score += 20
 
-        score += 30
+
+    for token in company_tokens(
+        company_name
+    ):
+
+        if token in combined:
+            score += 10
+            break
 
 
-    matched_tokens = sum(
-        1
-
-        for token in company_tokens(
-            company_name
-        )
-
-        if token in combined
+    year = report_year(
+        period_end
     )
 
 
-    if matched_tokens >= 2:
-
-        score += 35
-
-    elif matched_tokens == 1:
-
+    if (
+        year
+        and year in combined
+    ):
         score += 20
 
 
@@ -1651,84 +1750,43 @@ def calculate_page_priority(
         "Q"
     ):
 
-        if "announcement" in combined:
-
-            score += 80
-
-
         if "quarter" in combined:
+            score += 30
 
-            score += 70
+        if "announcement" in combined:
+            score += 25
 
 
     elif rt == "H1":
 
         if any(
-            keyword in combined
-
-            for keyword in [
+            item in combined
+            for item in [
                 "semi annual",
                 "semiannual",
-                "financial statement",
-                "financial statements"
+                "interim",
+                "financial statement"
             ]
         ):
-
-            score += 80
+            score += 35
 
 
     elif rt == "FY":
 
         if any(
-            keyword in combined
-
-            for keyword in [
+            item in combined
+            for item in [
                 "annual report",
-                "financial statement",
-                "financial statements"
+                "financial statement"
             ]
         ):
-
-            score += 80
-
-
-    if "financial" in combined:
-
-        score += 30
+            score += 35
 
 
-    if "statement" in combined:
-
-        score += 30
-
-
-    if "report" in combined:
-
-        score += 15
-
-
-    year = report_year(
-        period_end
-    )
-
-
-    if (
-        year
-        and year in combined
+    if looks_like_pdf(
+        url
     ):
-
-        score += 25
-
-
-    if any(
-        keyword in combined
-
-        for keyword in period_keywords(
-            report_type
-        )
-    ):
-
-        score += 25
+        score += 10
 
 
     rejected, _ = hard_reject_document(
@@ -1738,301 +1796,19 @@ def calculate_page_priority(
 
 
     if rejected:
+        score -= 200
 
-        score -= 250
 
-
-    if any(
-        noise in combined
-
-        for noise in GENERAL_NAVIGATION_NOISE
+    if (
+        "brokerage" in combined
+        or "faq" in combined
+        or "contact us" in combined
+        or "about us" in combined
     ):
-
         score -= 100
 
 
     return score
-
-
-# ============================================================
-# Document Score
-# ============================================================
-
-
-def calculate_document_score(
-    company_name,
-    report_type,
-    period_end,
-    url,
-    anchor_text,
-    context,
-    detected_type,
-    readable
-):
-
-    identity = document_identity_text(
-        url,
-        anchor_text
-    )
-
-
-    combined = contextual_text(
-        url,
-        anchor_text,
-        context
-    )
-
-
-    score = 0.0
-    reasons = []
-
-
-    year_ok = strict_year_match(
-        period_end,
-        url,
-        anchor_text,
-        context
-    )
-
-
-    period_ok = strict_period_match(
-        report_type,
-        url,
-        anchor_text,
-        context
-    )
-
-
-    document_type_ok = (
-        strict_document_type_match(
-            report_type,
-            url,
-            anchor_text
-        )
-    )
-
-
-    (
-        hard_reject,
-        reject_reasons
-    ) = hard_reject_document(
-        url,
-        anchor_text
-    )
-
-
-    # ========================================================
-    # Base
-    # ========================================================
-
-    if readable:
-
-        score += 10
-
-        reasons.append(
-            "+10 readable"
-        )
-
-
-    if detected_type == "PDF":
-
-        score += 10
-
-        reasons.append(
-            "+10 PDF"
-        )
-
-
-    if "reit" in identity:
-
-        score += 15
-
-        reasons.append(
-            "+15 REIT"
-        )
-
-
-    matched_tokens = sum(
-        1
-
-        for token in company_tokens(
-            company_name
-        )
-
-        if token in identity
-    )
-
-
-    if matched_tokens >= 2:
-
-        score += 20
-
-        reasons.append(
-            "+20 company"
-        )
-
-    elif matched_tokens == 1:
-
-        score += 10
-
-        reasons.append(
-            "+10 company partial"
-        )
-
-
-    if year_ok:
-
-        score += 25
-
-        reasons.append(
-            "+25 year"
-        )
-
-
-    if period_ok:
-
-        score += 20
-
-        reasons.append(
-            "+20 period"
-        )
-
-
-    if document_type_ok:
-
-        score += 30
-
-        reasons.append(
-            "+30 document identity"
-        )
-
-
-    # ========================================================
-    # Identity bonus
-    # ========================================================
-
-    if "quarterly" in identity:
-
-        score += 10
-
-        reasons.append(
-            "+10 quarterly identity"
-        )
-
-
-    if (
-        "semi annual" in identity
-        or "semiannual" in identity
-    ):
-
-        score += 10
-
-        reasons.append(
-            "+10 semiannual identity"
-        )
-
-
-    if (
-        "financial statement"
-        in identity
-        or "financial statements"
-        in identity
-    ):
-
-        score += 10
-
-        reasons.append(
-            "+10 financial identity"
-        )
-
-
-    # ========================================================
-    # Hard Reject
-    # ========================================================
-
-    if hard_reject:
-
-        score = 0.0
-
-        reasons.append(
-            "HARD_REJECT="
-            + ",".join(
-                reject_reasons
-            )
-        )
-
-
-    # ========================================================
-    # Mandatory gates
-    # ========================================================
-
-    if not year_ok:
-
-        score = min(
-            score,
-            45.0
-        )
-
-        reasons.append(
-            "YEAR_GATE_FAIL"
-        )
-
-
-    if not period_ok:
-
-        score = min(
-            score,
-            50.0
-        )
-
-        reasons.append(
-            "PERIOD_GATE_FAIL"
-        )
-
-
-    if not document_type_ok:
-
-        score = min(
-            score,
-            35.0
-        )
-
-        reasons.append(
-            "DOCUMENT_IDENTITY_GATE_FAIL"
-        )
-
-
-    score = max(
-        0.0,
-        min(
-            100.0,
-            score
-        )
-    )
-
-
-    return {
-        "score":
-            score,
-
-        "reasons":
-            reasons,
-
-        "year_ok":
-            year_ok,
-
-        "period_ok":
-            period_ok,
-
-        "document_type_ok":
-            document_type_ok,
-
-        "hard_reject":
-            hard_reject,
-
-        "hard_reject_reasons":
-            reject_reasons
-    }
 
 
 # ============================================================
@@ -2057,23 +1833,20 @@ def get_manager_starts(
         sources,
         list
     ):
-
         return starts
 
 
     sources = sorted(
         [
-            source
-
-            for source in sources
-
+            item
+            for item in sources
             if isinstance(
-                source,
+                item,
                 dict
             )
         ],
-        key=lambda source:
-            source.get(
+        key=lambda item:
+            item.get(
                 "priority",
                 999
             )
@@ -2085,7 +1858,6 @@ def get_manager_starts(
         if source.get(
             "source_type"
         ) != "fund_manager":
-
             continue
 
 
@@ -2097,7 +1869,6 @@ def get_manager_starts(
 
 
         if url:
-
             starts.append(
                 url
             )
@@ -2121,14 +1892,10 @@ def crawl_manager_site(
     queue = []
 
     sequence = 0
-
     visited = set()
 
     pages = []
-
-    page_candidates = []
-
-    document_candidates = []
+    candidates = []
 
 
     primary_manager_url = (
@@ -2148,7 +1915,6 @@ def crawl_manager_site(
 
 
         if not url:
-
             continue
 
 
@@ -2196,7 +1962,6 @@ def crawl_manager_site(
             not url
             or url in visited
         ):
-
             continue
 
 
@@ -2207,7 +1972,6 @@ def crawl_manager_site(
                 url
             )
         ):
-
             continue
 
 
@@ -2243,7 +2007,6 @@ def crawl_manager_site(
         if response[
             "status"
         ] != "SUCCESS":
-
             continue
 
 
@@ -2252,76 +2015,39 @@ def crawl_manager_site(
         )
 
 
-        if detected != "HTML":
+        if detected == "PDF":
 
-            document_candidates.append(
-                {
-                    "url":
-                        url,
-
-                    "anchor_text":
-                        incoming_anchor,
-
-                    "context":
-                        incoming_context,
-
-                    "origin":
-                        f"crawl_direct_depth_{depth}"
-                }
-            )
-
-            continue
-
-
-        pages.append(
-            {
+            candidates.append({
                 "url":
                     url,
-
-                "depth":
-                    depth,
-
-                "priority":
-                    -negative_priority,
 
                 "anchor_text":
                     incoming_anchor,
 
                 "context":
-                    incoming_context
-            }
-        )
+                    incoming_context,
+
+                "origin":
+                    f"crawl_pdf_depth_{depth}"
+            })
+
+            continue
 
 
-        page_priority = (
-            calculate_page_priority(
-                company_name,
-                report_type,
-                period_end,
+        if detected != "HTML":
+            continue
+
+
+        pages.append({
+            "url":
                 url,
-                incoming_anchor,
-                incoming_context
-            )
-        )
 
+            "depth":
+                depth,
 
-        if page_priority >= 25:
-
-            page_candidates.append(
-                {
-                    "url":
-                        url,
-
-                    "anchor_text":
-                        incoming_anchor,
-
-                    "context":
-                        incoming_context,
-
-                    "origin":
-                        f"page_depth_{depth}"
-                }
-            )
+            "priority":
+                -negative_priority
+        })
 
 
         links = extract_links(
@@ -2348,7 +2074,6 @@ def crawl_manager_site(
 
 
             if not link_url:
-
                 continue
 
 
@@ -2356,7 +2081,6 @@ def crawl_manager_site(
                 url,
                 link_url
             ):
-
                 continue
 
 
@@ -2367,50 +2091,44 @@ def crawl_manager_site(
                     link_url
                 )
             ):
-
                 continue
 
 
             if link_url == url:
-
                 continue
 
 
-            priority = (
-                calculate_page_priority(
-                    company_name,
-                    report_type,
-                    period_end,
+            score = discovery_score(
+                company_name,
+                report_type,
+                period_end,
+                link_url,
+                link[
+                    "anchor_text"
+                ],
+                link[
+                    "context"
+                ]
+            )
+
+
+            ranked_links.append({
+                "url":
                     link_url,
+
+                "anchor_text":
                     link[
                         "anchor_text"
                     ],
+
+                "context":
                     link[
                         "context"
-                    ]
-                )
-            )
+                    ],
 
-
-            ranked_links.append(
-                {
-                    "url":
-                        link_url,
-
-                    "anchor_text":
-                        link[
-                            "anchor_text"
-                        ],
-
-                    "context":
-                        link[
-                            "context"
-                        ],
-
-                    "priority":
-                        priority
-                }
-            )
+                "priority":
+                    score
+            })
 
 
         ranked_links.sort(
@@ -2428,106 +2146,47 @@ def crawl_manager_site(
                 "url"
             ]
 
-            anchor = link[
-                "anchor_text"
-            ]
 
-            context = link[
-                "context"
-            ]
+            if looks_like_pdf(
+                link_url
+            ):
 
+                candidates.append({
+                    "url":
+                        link_url,
 
-            identity = document_identity_text(
-                link_url,
-                anchor
-            )
+                    "anchor_text":
+                        link[
+                            "anchor_text"
+                        ],
 
+                    "context":
+                        link[
+                            "context"
+                        ],
 
-            combined = contextual_text(
-                link_url,
-                anchor,
-                context
-            )
-
-
-            potential_document = (
-                looks_like_pdf(
-                    link_url
-                )
-                or any(
-                    keyword in identity
-
-                    for keyword in [
-                        "quarter",
-                        "quarterly",
-                        "financial",
-                        "statement",
-                        "semi annual",
-                        "semiannual",
-                        "interim",
-                        "annual report",
-                        "announcement",
-                        "report"
-                    ]
-                )
-                or (
-                    "here" in identity
-                    and any(
-                        keyword in combined
-
-                        for keyword in [
-                            "quarter",
-                            "quarterly",
-                            "financial",
-                            "statement",
-                            "semi annual",
-                            "semiannual"
-                        ]
-                    )
-                )
-            )
-
-
-            if potential_document:
-
-                document_candidates.append(
-                    {
-                        "url":
-                            link_url,
-
-                        "anchor_text":
-                            anchor,
-
-                        "context":
-                            context,
-
-                        "origin":
-                            f"link_depth_{depth}"
-                    }
-                )
+                    "origin":
+                        f"link_depth_{depth}"
+                })
 
 
             if depth >= MAX_CRAWL_DEPTH:
-
                 continue
 
 
             if looks_like_pdf(
                 link_url
             ):
-
                 continue
 
 
             if link[
                 "priority"
-            ] < 10:
-
+            ] < 5:
                 continue
 
 
             if link_url in visited:
-
                 continue
 
 
@@ -2540,8 +2199,12 @@ def crawl_manager_site(
                     sequence,
                     depth + 1,
                     link_url,
-                    anchor,
-                    context
+                    link[
+                        "anchor_text"
+                    ],
+                    link[
+                        "context"
+                    ]
                 )
             )
 
@@ -2551,8 +2214,7 @@ def crawl_manager_site(
 
     return (
         pages,
-        page_candidates,
-        document_candidates
+        candidates
     )
 
 
@@ -2562,15 +2224,10 @@ def crawl_manager_site(
 
 
 def dedupe_candidates(
-    candidates,
-    period_end
+    candidates
 ):
 
     unique = {}
-
-    required_year = report_year(
-        period_end
-    )
 
 
     for item in candidates:
@@ -2583,32 +2240,12 @@ def dedupe_candidates(
 
 
         if not url:
-
             continue
 
 
         item[
             "url"
         ] = url
-
-
-        combined = contextual_text(
-            url,
-            item.get(
-                "anchor_text",
-                ""
-            ),
-            item.get(
-                "context",
-                ""
-            )
-        )
-
-
-        item_year_match = (
-            required_year
-            and required_year in combined
-        )
 
 
         existing = unique.get(
@@ -2625,7 +2262,20 @@ def dedupe_candidates(
             continue
 
 
-        old_combined = contextual_text(
+        new_context = contextual_text(
+            url,
+            item.get(
+                "anchor_text",
+                ""
+            ),
+            item.get(
+                "context",
+                ""
+            )
+        )
+
+
+        old_context = contextual_text(
             url,
             existing.get(
                 "anchor_text",
@@ -2638,31 +2288,10 @@ def dedupe_candidates(
         )
 
 
-        old_year_match = (
-            required_year
-            and required_year in old_combined
-        )
-
-
-        if (
-            item_year_match
-            and not old_year_match
-        ):
-
-            unique[
-                url
-            ] = item
-
-
-        elif (
-            item_year_match
-            == old_year_match
-            and len(
-                combined
-            )
-            > len(
-                old_combined
-            )
+        if len(
+            new_context
+        ) > len(
+            old_context
         ):
 
             unique[
@@ -2676,142 +2305,439 @@ def dedupe_candidates(
 
 
 # ============================================================
-# Inspect
+# Candidate pre-score
 # ============================================================
 
 
-def inspect_candidate(
+def prepare_candidates(
     company_name,
     report_type,
     period_end,
-    item
+    candidates
 ):
 
-    response = fetch_url(
-        item[
-            "url"
-        ]
-    )
+    prepared = []
 
 
-    readable = (
-        response[
-            "status"
-        ]
-        == "SUCCESS"
-    )
+    for item in candidates:
 
-
-    detected_type = (
-        detect_document_type(
-            response
-        )
-        if readable
-        else None
-    )
-
-
-    validation = calculate_document_score(
-        company_name,
-        report_type,
-        period_end,
-        item[
-            "url"
-        ],
-        item.get(
-            "anchor_text",
-            ""
-        ),
-        item.get(
-            "context",
-            ""
-        ),
-        detected_type,
-        readable
-    )
-
-
-    return {
-        "url":
+        (
+            hard_reject,
+            reject_reasons
+        ) = hard_reject_document(
             item[
                 "url"
             ],
+            item.get(
+                "anchor_text",
+                ""
+            )
+        )
 
-        "anchor_text":
+
+        score = discovery_score(
+            company_name,
+            report_type,
+            period_end,
+            item[
+                "url"
+            ],
             item.get(
                 "anchor_text",
                 ""
             ),
-
-        "context":
             item.get(
                 "context",
                 ""
-            ),
+            )
+        )
 
-        "origin":
-            item.get(
-                "origin"
-            ),
 
-        "status":
-            response[
-                "status"
-            ],
+        item[
+            "pre_score"
+        ] = score
 
-        "http_status":
-            response.get(
-                "http_status"
-            ),
+        item[
+            "hard_reject"
+        ] = hard_reject
 
-        "document_type":
-            detected_type,
+        item[
+            "hard_reject_reasons"
+        ] = reject_reasons
 
-        "relevance_score":
-            validation[
-                "score"
-            ],
 
-        "year_match":
-            validation[
-                "year_ok"
-            ],
+        prepared.append(
+            item
+        )
 
-        "period_match":
-            validation[
-                "period_ok"
-            ],
 
-        "document_type_match":
-            validation[
-                "document_type_ok"
-            ],
-
-        "hard_reject":
-            validation[
+    prepared.sort(
+        key=lambda item: (
+            not item[
                 "hard_reject"
             ],
-
-        "hard_reject_reasons":
-            validation[
-                "hard_reject_reasons"
-            ],
-
-        "from_cache":
-            response.get(
-                "from_cache",
-                False
-            ),
-
-        "reasons":
-            validation[
-                "reasons"
+            item[
+                "pre_score"
             ]
-    }
+        ),
+        reverse=True
+    )
+
+
+    return prepared[
+        :MAX_DISCOVERY_CANDIDATES
+    ]
 
 
 # ============================================================
-# Discover Report
+# Verify PDFs
+# ============================================================
+
+
+def verify_candidates(
+    company_name,
+    report_type,
+    period_end,
+    candidates
+):
+
+    attempts = []
+
+    pdf_checks = 0
+
+    best = None
+
+
+    for index, item in enumerate(
+        candidates,
+        start=1
+    ):
+
+        if item[
+            "hard_reject"
+        ]:
+
+            attempts.append({
+                "url":
+                    item[
+                        "url"
+                    ],
+
+                "pre_score":
+                    item[
+                        "pre_score"
+                    ],
+
+                "hard_reject":
+                    True,
+
+                "hard_reject_reasons":
+                    item[
+                        "hard_reject_reasons"
+                    ],
+
+                "content_score":
+                    0.0,
+
+                "content_company_ok":
+                    False,
+
+                "content_year_ok":
+                    False,
+
+                "content_period_ok":
+                    False,
+
+                "content_statement_ok":
+                    False,
+
+                "content_hard_reject":
+                    True,
+
+                "content_reject_reasons":
+                    item[
+                        "hard_reject_reasons"
+                    ],
+
+                "pages_read":
+                    0,
+
+                "total_pages":
+                    0,
+
+                "http_status":
+                    None,
+
+                "from_cache":
+                    False,
+
+                "state":
+                    "HARD_REJECT"
+            })
+
+            continue
+
+
+        if pdf_checks >= MAX_PDF_CONTENT_CHECKS:
+            break
+
+
+        pdf_checks += 1
+
+
+        print(
+            f"📄 PDF CONTENT CHECK "
+            f"{pdf_checks}/{MAX_PDF_CONTENT_CHECKS} | "
+            f"PreScore="
+            f"{item['pre_score']:.2f} | "
+            f"{item['url']}",
+            flush=True
+        )
+
+
+        response = fetch_url(
+            item[
+                "url"
+            ]
+        )
+
+
+        if response[
+            "status"
+        ] != "SUCCESS":
+
+            attempts.append({
+                "url":
+                    item[
+                        "url"
+                    ],
+
+                "pre_score":
+                    item[
+                        "pre_score"
+                    ],
+
+                "hard_reject":
+                    False,
+
+                "hard_reject_reasons":
+                    [],
+
+                "content_score":
+                    0.0,
+
+                "content_company_ok":
+                    False,
+
+                "content_year_ok":
+                    False,
+
+                "content_period_ok":
+                    False,
+
+                "content_statement_ok":
+                    False,
+
+                "content_hard_reject":
+                    False,
+
+                "content_reject_reasons":
+                    [],
+
+                "pages_read":
+                    0,
+
+                "total_pages":
+                    0,
+
+                "http_status":
+                    response.get(
+                        "http_status"
+                    ),
+
+                "from_cache":
+                    response.get(
+                        "from_cache",
+                        False
+                    ),
+
+                "state":
+                    "HTTP_FAILED"
+            })
+
+            continue
+
+
+        detected = detect_document_type(
+            response
+        )
+
+
+        if detected != "PDF":
+
+            continue
+
+
+        content_result = verify_pdf_content(
+            company_name,
+            report_type,
+            period_end,
+            item[
+                "url"
+            ],
+            response
+        )
+
+
+        valid = (
+            content_result[
+                "content_company_ok"
+            ]
+            and content_result[
+                "content_year_ok"
+            ]
+            and content_result[
+                "content_period_ok"
+            ]
+            and content_result[
+                "content_statement_ok"
+            ]
+            and not content_result[
+                "content_hard_reject"
+            ]
+        )
+
+
+        state = (
+            "CONTENT_VERIFIED"
+            if valid
+            else "CONTENT_REJECTED"
+        )
+
+
+        attempt = {
+            "url":
+                item[
+                    "url"
+                ],
+
+            "pre_score":
+                item[
+                    "pre_score"
+                ],
+
+            "hard_reject":
+                False,
+
+            "hard_reject_reasons":
+                [],
+
+            "content_score":
+                content_result[
+                    "content_score"
+                ],
+
+            "content_company_ok":
+                content_result[
+                    "content_company_ok"
+                ],
+
+            "content_year_ok":
+                content_result[
+                    "content_year_ok"
+                ],
+
+            "content_period_ok":
+                content_result[
+                    "content_period_ok"
+                ],
+
+            "content_statement_ok":
+                content_result[
+                    "content_statement_ok"
+                ],
+
+            "content_hard_reject":
+                content_result[
+                    "content_hard_reject"
+                ],
+
+            "content_reject_reasons":
+                content_result[
+                    "content_reject_reasons"
+                ],
+
+            "pages_read":
+                content_result[
+                    "pages_read"
+                ],
+
+            "total_pages":
+                content_result[
+                    "total_pages"
+                ],
+
+            "http_status":
+                response.get(
+                    "http_status"
+                ),
+
+            "from_cache":
+                response.get(
+                    "from_cache",
+                    False
+                ),
+
+            "state":
+                state
+        }
+
+
+        attempts.append(
+            attempt
+        )
+
+
+        if valid:
+
+            final_score = (
+                content_result[
+                    "content_score"
+                ]
+            )
+
+
+            if (
+                best is None
+                or final_score
+                > best[
+                    "content_score"
+                ]
+            ):
+
+                best = attempt
+
+
+            if final_score >= EARLY_STOP_SCORE:
+
+                print(
+                    "🚀 CONTENT EARLY STOP | "
+                    f"Score={final_score:.2f} | "
+                    f"{item['url']}",
+                    flush=True
+                )
+
+                break
+
+
+    return (
+        best,
+        attempts
+    )
+
+
+# ============================================================
+# Discover one report
 # ============================================================
 
 
@@ -2826,16 +2752,13 @@ def discover_report(
         "report_type"
     )
 
-
     period_end = report.get(
         "period_end"
     )
 
 
-    manager_starts = (
-        get_manager_starts(
-            entry
-        )
+    manager_starts = get_manager_starts(
+        entry
     )
 
 
@@ -2863,9 +2786,6 @@ def discover_report(
             "best_score":
                 None,
 
-            "best_document_type":
-                None,
-
             "pages_crawled":
                 [],
 
@@ -2876,8 +2796,7 @@ def discover_report(
 
     (
         pages,
-        page_candidates,
-        document_candidates
+        candidates
     ) = crawl_manager_site(
         company_name,
         report_type,
@@ -2887,13 +2806,12 @@ def discover_report(
 
 
     # ========================================================
-    # Registry report URLs
+    # Registry attachment/direct links
     # ========================================================
 
     for field in [
-        "url",
-        "alternate_url",
-        "attachment_url"
+        "attachment_url",
+        "alternate_url"
     ]:
 
         value = report.get(
@@ -2901,13 +2819,14 @@ def discover_report(
         )
 
 
-        if not value:
+        if (
+            value
+            and looks_like_pdf(
+                value
+            )
+        ):
 
-            continue
-
-
-        document_candidates.append(
-            {
+            candidates.append({
                 "url":
                     canonical_url(
                         value
@@ -2921,370 +2840,79 @@ def discover_report(
 
                 "origin":
                     f"registry:{field}"
-            }
-        )
-
-
-    candidates = (
-        page_candidates
-        + document_candidates
-    )
+            })
 
 
     candidates = dedupe_candidates(
-        candidates,
-        period_end
+        candidates
     )
 
 
-    # ========================================================
-    # Pre-rank
-    # ========================================================
-
-    pre_ranked = []
-
-
-    for item in candidates:
-
-        probable_type = (
-            "PDF"
-            if looks_like_pdf(
-                item[
-                    "url"
-                ]
-            )
-            else "HTML"
-        )
-
-
-        validation = calculate_document_score(
-            company_name,
-            report_type,
-            period_end,
-            item[
-                "url"
-            ],
-            item.get(
-                "anchor_text",
-                ""
-            ),
-            item.get(
-                "context",
-                ""
-            ),
-            probable_type,
-            True
-        )
-
-
-        item[
-            "pre_score"
-        ] = validation[
-            "score"
-        ]
-
-
-        item[
-            "pre_year_ok"
-        ] = validation[
-            "year_ok"
-        ]
-
-
-        item[
-            "pre_period_ok"
-        ] = validation[
-            "period_ok"
-        ]
-
-
-        item[
-            "pre_doc_type_ok"
-        ] = validation[
-            "document_type_ok"
-        ]
-
-
-        item[
-            "pre_hard_reject"
-        ] = validation[
-            "hard_reject"
-        ]
-
-
-        pre_ranked.append(
-            item
-        )
-
-
-    pre_ranked.sort(
-        key=lambda item: (
-            not item[
-                "pre_hard_reject"
-            ],
-            item[
-                "pre_year_ok"
-            ],
-            item[
-                "pre_period_ok"
-            ],
-            item[
-                "pre_doc_type_ok"
-            ],
-            item[
-                "pre_score"
-            ]
-        ),
-        reverse=True
+    candidates = prepare_candidates(
+        company_name,
+        report_type,
+        period_end,
+        candidates
     )
 
 
-    pre_ranked = pre_ranked[
-        :MAX_DOCUMENT_CHECKS
-    ]
-
-
-    # ========================================================
-    # Verify
-    # ========================================================
-
-    attempts = []
-
-    early_best = None
-
-
-    for index, item in enumerate(
-        pre_ranked,
-        start=1
-    ):
-
-        print(
-            f"📄 Verify "
-            f"{index}/{len(pre_ranked)} | "
-            f"PreScore="
-            f"{item['pre_score']:.2f} | "
-            f"Year="
-            f"{item['pre_year_ok']} | "
-            f"Period="
-            f"{item['pre_period_ok']} | "
-            f"Identity="
-            f"{item['pre_doc_type_ok']} | "
-            f"Reject="
-            f"{item['pre_hard_reject']} | "
-            f"{item['url']}",
-            flush=True
-        )
-
-
-        result = inspect_candidate(
-            company_name,
-            report_type,
-            period_end,
-            item
-        )
-
-
-        attempts.append(
-            result
-        )
-
-
-        if (
-            result[
-                "status"
-            ]
-            == "SUCCESS"
-            and result[
-                "year_match"
-            ]
-            and result[
-                "period_match"
-            ]
-            and result[
-                "document_type_match"
-            ]
-            and not result[
-                "hard_reject"
-            ]
-            and result[
-                "relevance_score"
-            ]
-            >= EARLY_STOP_SCORE
-        ):
-
-            early_best = result
-
-
-            print(
-                "🚀 EARLY STOP | "
-                "STRICT IDENTITY VERIFIED | "
-                f"Score="
-                f"{result['relevance_score']:.2f}",
-                flush=True
-            )
-
-
-            break
-
-
-    attempts.sort(
-        key=lambda item: (
-            not item[
-                "hard_reject"
-            ],
-            item[
-                "year_match"
-            ],
-            item[
-                "period_match"
-            ],
-            item[
-                "document_type_match"
-            ],
-            item[
-                "relevance_score"
-            ]
-        ),
-        reverse=True
+    (
+        best,
+        attempts
+    ) = verify_candidates(
+        company_name,
+        report_type,
+        period_end,
+        candidates
     )
 
-
-    usable = [
-        item
-
-        for item in attempts
-
-        if (
-            item[
-                "status"
-            ]
-            == "SUCCESS"
-
-            and item[
-                "year_match"
-            ]
-
-            and item[
-                "period_match"
-            ]
-
-            and item[
-                "document_type_match"
-            ]
-
-            and not item[
-                "hard_reject"
-            ]
-
-            and item[
-                "relevance_score"
-            ]
-            >= MIN_ACCEPT_SCORE
-        )
-    ]
-
-
-    if early_best is not None:
-
-        best = early_best
-
-    else:
-
-        best = (
-            usable[
-                0
-            ]
-            if usable
-            else None
-        )
-
-
-    # ========================================================
-    # State
-    # ========================================================
 
     if best:
 
         if (
             best[
-                "relevance_score"
+                "content_score"
             ]
             >= STRONG_ACCEPT_SCORE
         ):
 
-            if (
-                best[
-                    "document_type"
-                ]
-                == "PDF"
-            ):
-
-                state = (
-                    "VERIFIED_DOCUMENT_FOUND"
-                )
-
-            else:
-
-                state = (
-                    "VERIFIED_PAGE_FOUND"
-                )
+            state = (
+                "VERIFIED_DOCUMENT_FOUND"
+            )
 
         else:
 
             state = (
-                "CANDIDATE_FOUND_REVIEW"
+                "CONTENT_VERIFIED_REVIEW"
             )
 
 
     elif attempts:
 
-        if all(
+        if any(
             item[
-                "hard_reject"
+                "state"
             ]
+            == "CONTENT_REJECTED"
+
             for item in attempts
         ):
 
             state = (
-                "ONLY_HARD_REJECTED_DOCUMENTS"
+                "NO_CONTENT_VERIFIED_REPORT"
             )
-
-
-        elif all(
-            not item[
-                "year_match"
-            ]
-            for item in attempts
-        ):
-
-            state = (
-                "ONLY_OLD_OR_WRONG_YEAR_DOCUMENTS"
-            )
-
-
-        elif all(
-            not item[
-                "document_type_match"
-            ]
-            for item in attempts
-        ):
-
-            state = (
-                "NO_VALID_DOCUMENT_IDENTITY"
-            )
-
 
         else:
 
             state = (
-                "REIT_PAGE_FOUND_NO_VALID_REPORT"
+                "NO_VALID_PDF_CANDIDATE"
             )
 
 
     elif pages:
 
         state = (
-            "REIT_PAGE_FOUND_NO_REPORT"
+            "REIT_PAGE_FOUND_NO_PDF"
         )
 
 
@@ -3293,16 +2921,6 @@ def discover_report(
         state = (
             "NOT_FOUND"
         )
-
-
-    pages = sorted(
-        pages,
-        key=lambda item:
-            item[
-                "priority"
-            ],
-        reverse=True
-    )
 
 
     return {
@@ -3333,16 +2951,7 @@ def discover_report(
         "best_score":
             (
                 best[
-                    "relevance_score"
-                ]
-                if best
-                else None
-            ),
-
-        "best_document_type":
-            (
-                best[
-                    "document_type"
+                    "content_score"
                 ]
                 if best
                 else None
@@ -3357,7 +2966,7 @@ def discover_report(
 
 
 # ============================================================
-# Print result
+# Print
 # ============================================================
 
 
@@ -3381,35 +2990,28 @@ def print_result(
 
 
     print(
-        f"🎯 Score: "
+        f"🎯 Content Score: "
         f"{result['best_score'] if result['best_score'] is not None else 'N/A'}",
         flush=True
     )
 
 
     print(
-        f"📑 Type: "
-        f"{result['best_document_type'] or 'NONE'}",
-        flush=True
-    )
-
-
-    print(
-        f"🔗 URL: "
+        f"🔗 Best URL: "
         f"{result['best_url'] or 'NONE'}",
         flush=True
     )
 
 
     print(
-        f"🌐 Pages: "
+        f"🌐 Pages Crawled: "
         f"{len(result['pages_crawled'])}",
         flush=True
     )
 
 
     print(
-        f"📄 Checked: "
+        f"📄 PDF Attempts: "
         f"{len(result['attempts'])}",
         flush=True
     )
@@ -3419,7 +3021,7 @@ def print_result(
 
 
     print(
-        "🏅 TOP DOCUMENT CANDIDATES",
+        "🏅 PDF CONTENT RESULTS",
         flush=True
     )
 
@@ -3435,36 +3037,41 @@ def print_result(
 
         print(
             f"{index:02d}. "
-            f"Score="
-            f"{item['relevance_score']:.2f} | "
+            f"State="
+            f"{item['state']} | "
+            f"ContentScore="
+            f"{item['content_score']:.2f} | "
+            f"FundOK="
+            f"{item['content_company_ok']} | "
             f"YearOK="
-            f"{item['year_match']} | "
+            f"{item['content_year_ok']} | "
             f"PeriodOK="
-            f"{item['period_match']} | "
-            f"IdentityOK="
-            f"{item['document_type_match']} | "
-            f"HardReject="
-            f"{item['hard_reject']} | "
-            f"Cache="
-            f"{item['from_cache']} | "
-            f"HTTP="
-            f"{item['http_status']} | "
-            f"Type="
-            f"{item['document_type']} | "
+            f"{item['content_period_ok']} | "
+            f"StatementOK="
+            f"{item['content_statement_ok']} | "
+            f"Reject="
+            f"{item['content_hard_reject']} | "
+            f"Pages="
+            f"{item['pages_read']}/"
+            f"{item['total_pages']} | "
             f"{item['url']}",
             flush=True
         )
 
 
-        print(
-            "    Reasons: "
-            + ", ".join(
-                item[
-                    "reasons"
-                ]
-            ),
-            flush=True
-        )
+        if item[
+            "content_reject_reasons"
+        ]:
+
+            print(
+                "    Reject Reasons: "
+                + ", ".join(
+                    item[
+                        "content_reject_reasons"
+                    ]
+                ),
+                flush=True
+            )
 
 
 # ============================================================
@@ -3477,7 +3084,7 @@ def print_summary(
 ):
 
     print_header(
-        "🏆 REIT REPORT DISCOVERY SUMMARY v5.4"
+        "🏆 REIT REPORT DISCOVERY SUMMARY v5.5"
     )
 
 
@@ -3523,11 +3130,9 @@ def print_summary(
             f"{state} | "
             f"Score="
             f"{score} | "
-            f"Type="
-            f"{result['best_document_type']} | "
             f"Pages="
             f"{len(result['pages_crawled'])} | "
-            f"Checked="
+            f"PDFChecks="
             f"{len(result['attempts'])}",
             flush=True
         )
@@ -3558,6 +3163,13 @@ def print_summary(
 
 
     print(
+        f"📚 PDF Text Cache: "
+        f"{len(PDF_TEXT_CACHE)}",
+        flush=True
+    )
+
+
+    print(
         "\n📊 STATES",
         flush=True
     )
@@ -3575,7 +3187,7 @@ def print_summary(
 
 
     print(
-        "=" * 122,
+        "=" * 124,
         flush=True
     )
 
@@ -3606,31 +3218,27 @@ def run_discovery():
 
 
     print(
-        "🔐 Strict Year Gate: ON",
+        "📖 PDF Content Verification: ON",
         flush=True
     )
 
 
     print(
-        "🔐 Strict Period Gate: ON",
+        f"📄 Max PDF Checks / Report: "
+        f"{MAX_PDF_CONTENT_CHECKS}",
         flush=True
     )
 
 
     print(
-        "🔐 Strict Document Identity: ON",
+        f"📑 Max PDF Pages Read: "
+        f"{MAX_PDF_PAGES_TO_READ}",
         flush=True
     )
 
 
     print(
         "🚫 Terms / Valuation / Factsheet / NAV Reject: ON",
-        flush=True
-    )
-
-
-    print(
-        "🛡 REIT Path Guard: ON",
         flush=True
     )
 
@@ -3647,9 +3255,7 @@ def run_discovery():
     )
 
 
-    active_reits = (
-        get_active_reits()
-    )
+    active_reits = get_active_reits()
 
 
     active_map = {
@@ -3687,7 +3293,6 @@ def run_discovery():
 
 
         if symbol not in active_map:
-
             continue
 
 
@@ -3714,7 +3319,6 @@ def run_discovery():
             reports,
             list
         ):
-
             continue
 
 
@@ -3724,7 +3328,6 @@ def run_discovery():
                 report,
                 dict
             ):
-
                 continue
 
 
