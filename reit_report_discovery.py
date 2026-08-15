@@ -2,6 +2,7 @@ import os
 import re
 import json
 import html
+import heapq
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,34 +16,51 @@ from supabase import create_client
 
 
 # ============================================================
-# REIT REPORT DISCOVERY ENGINE v4
+# REIT REPORT DISCOVERY ENGINE v5
 #
 # READ ONLY
 #
-# التحسين الرئيسي:
-# - Deep crawl متعدد المستويات داخل صفحة الصندوق
-# - قراءة السياق المحيط بالروابط مثل:
+# أهداف v5:
 #
-#   "Quarterly statement ... 2026-06-30"
-#                 ↓
-#               [here]
+# 1) دمج نجاح v3 في التعرف على:
+#       - Semi Annual Report
+#       - Financial Statements
+#       - REIT Announcements
 #
-# حتى لو اسم الرابط نفسه لا يحتوي Q2 أو التاريخ.
+# 2) الاحتفاظ بقدرة v4 على:
+#       - Deep Crawl
+#       - قراءة السياق المحيط بالروابط
 #
-# عام لجميع صناديق REIT.
+# 3) إصلاح مشكلة هدر MAX_PAGES على:
+#       - #fragments
+#       - روابط القوائم العامة
+#       - روابط غير مرتبطة بالصندوق
+#
+# 4) Priority Crawl:
+#       الصفحات الأكثر صلة بالتقرير تُفحص أولاً
+#
+# 5) Canonical URLs:
+#       إزالة fragments والتكرار
+#
+# 6) صفحة HTML نفسها قد تكون التقرير الصحيح،
+#    وليست الـPDF فقط.
+#
+# 7) عام لجميع صناديق REIT.
+#
+# لا توجد كتابة في Supabase.
 # ============================================================
 
 
-ENGINE_NAME = "REIT REPORT DISCOVERY ENGINE v4"
+ENGINE_NAME = "REIT REPORT DISCOVERY ENGINE v5"
 
 REGISTRY_FILENAME = "reit_official_sources.json"
 
 HTTP_TIMEOUT = 30
 
-MAX_CRAWL_DEPTH = 2
-MAX_PAGES = 20
-MAX_LINKS_PER_PAGE = 250
-MAX_DOCUMENT_CHECKS = 60
+MAX_CRAWL_DEPTH = 3
+MAX_PAGES = 30
+MAX_LINKS_PER_PAGE = 300
+MAX_DOCUMENT_CHECKS = 80
 
 MIN_ACCEPT_SCORE = 60.0
 STRONG_ACCEPT_SCORE = 80.0
@@ -76,7 +94,7 @@ supabase = create_client(
 
 
 # ============================================================
-# HTML PARSER WITH CONTEXT
+# HTML PARSER WITH LINK CONTEXT
 # ============================================================
 
 
@@ -89,7 +107,7 @@ class ContextLinkParser(HTMLParser):
         self.links = []
 
         self.recent_text = deque(
-            maxlen=20
+            maxlen=16
         )
 
         self.current_href = None
@@ -174,14 +192,12 @@ class ContextLinkParser(HTMLParser):
         })
 
         self.current_href = None
-
         self.current_anchor = []
-
         self.before_context = ""
 
 
 # ============================================================
-# General
+# أدوات عامة
 # ============================================================
 
 
@@ -189,7 +205,7 @@ def print_header(title):
 
     print(
         "\n"
-        + "=" * 114,
+        + "=" * 116,
         flush=True
     )
 
@@ -199,7 +215,7 @@ def print_header(title):
     )
 
     print(
-        "=" * 114,
+        "=" * 116,
         flush=True
     )
 
@@ -207,7 +223,7 @@ def print_header(title):
 def print_separator():
 
     print(
-        "-" * 114,
+        "-" * 116,
         flush=True
     )
 
@@ -234,6 +250,7 @@ def exchange_code(symbol):
     if symbol.endswith(
         ".SR"
     ):
+
         return symbol[:-3]
 
     return symbol
@@ -284,21 +301,73 @@ def normalize_url(url):
     )
 
 
+def canonical_url(url):
+
+    url = normalize_url(
+        url
+    )
+
+    if not url:
+        return None
+
+    try:
+
+        parsed = urllib.parse.urlsplit(
+            url
+        )
+
+        # حذف fragment بالكامل
+        # حتى لا نستهلك صفحات مثل:
+        # page#menu1
+        # page#menu2
+        # page#menu3
+
+        cleaned = urllib.parse.urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.query,
+                ""
+            )
+        )
+
+        # إزالة slash إضافي في النهاية إلا الجذر
+        if (
+            cleaned.endswith("/")
+            and len(
+                urllib.parse.urlsplit(
+                    cleaned
+                ).path
+            ) > 1
+        ):
+
+            cleaned = cleaned.rstrip(
+                "/"
+            )
+
+        return cleaned
+
+    except Exception:
+
+        return url
+
+
 def is_http_url(url):
 
     if not url:
         return False
 
-    url = str(
+    value = str(
         url
     ).lower()
 
     return (
-        url.startswith(
+        value.startswith(
             "https://"
         )
         or
-        url.startswith(
+        value.startswith(
             "http://"
         )
     )
@@ -381,9 +450,9 @@ def looks_like_pdf(url):
 
     return (
         ".pdf" in value
-        or "/media/" in value
-        or "/resources/" in value
         or "/fspdf/" in value
+        or "/resources/" in value
+        or "/media/" in value
     )
 
 
@@ -523,11 +592,15 @@ def fetch_url(url):
                     "text/html,"
                     "application/xhtml+xml,"
                     "application/pdf,"
+                    "application/octet-stream,"
                     "*/*;q=0.8"
                 ),
 
             "Accept-Language":
-                "ar,en-US;q=0.9,en;q=0.8"
+                "ar,en-US;q=0.9,en;q=0.8",
+
+            "Cache-Control":
+                "no-cache"
         }
     )
 
@@ -577,6 +650,31 @@ def fetch_url(url):
 
             "http_status":
                 error.code,
+
+            "content":
+                None,
+
+            "content_type":
+                "",
+
+            "final_url":
+                url,
+
+            "error":
+                str(
+                    error
+                )
+        }
+
+
+    except urllib.error.URLError as error:
+
+        return {
+            "status":
+                "NETWORK_ERROR",
+
+            "http_status":
+                None,
 
             "content":
                 None,
@@ -681,7 +779,7 @@ def detect_document_type(
 
 
 # ============================================================
-# HTML links + surrounding context
+# HTML links
 # ============================================================
 
 
@@ -725,15 +823,15 @@ def extract_links(
         :MAX_LINKS_PER_PAGE
     ]:
 
-        url = absolute_url(
+        raw_url = absolute_url(
             base_url,
             item.get(
                 "href"
             )
         )
 
-        url = normalize_url(
-            url
+        url = canonical_url(
+            raw_url
         )
 
 
@@ -789,9 +887,11 @@ def company_tokens(
         company_name
     )
 
+
     ignored = {
         "ريت",
         "reit",
+        "reits",
         "fund",
         "صندوق",
         "the",
@@ -849,6 +949,7 @@ def period_keywords(
         "Q1": [
             "q1",
             "first quarter",
+            "quarter 1",
             "march",
             "31 march",
             "03 31",
@@ -858,6 +959,7 @@ def period_keywords(
         "Q2": [
             "q2",
             "second quarter",
+            "quarter 2",
             "june",
             "30 june",
             "06 30",
@@ -867,22 +969,30 @@ def period_keywords(
         "Q3": [
             "q3",
             "third quarter",
+            "quarter 3",
             "september",
-            "30 september"
+            "30 september",
+            "09 30",
+            "30 09"
         ],
 
         "Q4": [
             "q4",
             "fourth quarter",
+            "quarter 4",
             "december",
-            "31 december"
+            "31 december",
+            "12 31",
+            "31 12"
         ],
 
         "H1": [
             "h1",
             "semi annual",
             "semiannual",
+            "semi annual report",
             "half year",
+            "half yearly",
             "six months",
             "6m",
             "june"
@@ -891,9 +1001,11 @@ def period_keywords(
         "FY": [
             "fy",
             "annual",
+            "annual report",
             "full year",
             "year end",
-            "12m"
+            "12m",
+            "december"
         ]
     }
 
@@ -905,25 +1017,8 @@ def period_keywords(
 
 
 # ============================================================
-# Relevant navigation pages
+# Vocabulary
 # ============================================================
-
-
-NAVIGATION_KEYWORDS = {
-
-    "reit",
-    "announcement",
-    "announcements",
-    "quarterly",
-    "factsheet",
-    "fact sheet",
-    "financial",
-    "statement",
-    "semi annual",
-    "semiannual",
-    "annual report",
-    "reports"
-}
 
 
 NEGATIVE_KEYWORDS = {
@@ -931,22 +1026,245 @@ NEGATIVE_KEYWORDS = {
     "fatca",
     "crs",
     "privacy",
+    "privacy notice",
     "prospectus",
     "sukuk",
     "tick size",
     "daily report",
+    "daily nav",
     "ipo",
     "offering",
-    "application form"
+    "application form",
+    "account opening",
+    "cookie",
+    "kyc"
+}
+
+
+GENERAL_NAVIGATION_NOISE = {
+
+    "brokerage",
+    "faq",
+    "contact us",
+    "about us",
+    "careers",
+    "research",
+    "awards",
+    "organizational chart",
+    "shariah",
+    "investment banking",
+    "open account",
+    "eservices",
+    "e services"
 }
 
 
 # ============================================================
-# Relevance Score
+# Page priority
 # ============================================================
 
 
-def calculate_score(
+def calculate_page_priority(
+    symbol,
+    company_name,
+    report_type,
+    period_end,
+    url,
+    anchor_text,
+    context
+):
+
+    combined = normalize_text(
+        f"{url} {anchor_text} {context}"
+    )
+
+
+    score = 0.0
+
+
+    # ========================================================
+    # REIT identity
+    # ========================================================
+
+    if "reit" in combined:
+
+        score += 30
+
+
+    code = exchange_code(
+        symbol
+    )
+
+
+    if (
+        code
+        and code.lower()
+        in combined
+    ):
+
+        score += 30
+
+
+    matched_tokens = sum(
+        1
+        for token in company_tokens(
+            company_name
+        )
+        if token in combined
+    )
+
+
+    if matched_tokens >= 2:
+
+        score += 35
+
+    elif matched_tokens == 1:
+
+        score += 20
+
+
+    # ========================================================
+    # Report-specific navigation
+    # ========================================================
+
+    rt = str(
+        report_type
+    ).upper()
+
+
+    if rt.startswith(
+        "Q"
+    ):
+
+        if any(
+            keyword in combined
+            for keyword in [
+                "announcement",
+                "announcements",
+                "quarter",
+                "quarterly"
+            ]
+        ):
+
+            score += 60
+
+
+    elif rt == "H1":
+
+        if any(
+            keyword in combined
+            for keyword in [
+                "semi annual",
+                "semiannual",
+                "half year",
+                "financial statement",
+                "financial statements"
+            ]
+        ):
+
+            score += 65
+
+
+    elif rt == "FY":
+
+        if any(
+            keyword in combined
+            for keyword in [
+                "annual",
+                "annual report",
+                "financial statement",
+                "financial statements"
+            ]
+        ):
+
+            score += 65
+
+
+    # ========================================================
+    # Generic useful pages
+    # ========================================================
+
+    if "announcement" in combined:
+
+        score += 35
+
+
+    if "financial" in combined:
+
+        score += 30
+
+
+    if "statement" in combined:
+
+        score += 25
+
+
+    if "report" in combined:
+
+        score += 20
+
+
+    if "factsheet" in combined:
+
+        score += 10
+
+
+    # ========================================================
+    # Year / period
+    # ========================================================
+
+    year = report_year(
+        period_end
+    )
+
+
+    if (
+        year
+        and year in combined
+    ):
+
+        score += 20
+
+
+    if any(
+        keyword in combined
+        for keyword in period_keywords(
+            report_type
+        )
+    ):
+
+        score += 25
+
+
+    # ========================================================
+    # Noise penalty
+    # ========================================================
+
+    if any(
+        noise in combined
+        for noise in GENERAL_NAVIGATION_NOISE
+    ):
+
+        score -= 60
+
+
+    if any(
+        bad in combined
+        for bad in NEGATIVE_KEYWORDS
+    ):
+
+        score -= 100
+
+
+    return score
+
+
+# ============================================================
+# Document relevance
+# ============================================================
+
+
+def calculate_document_score(
     symbol,
     company_name,
     report_type,
@@ -973,7 +1291,15 @@ def calculate_score(
         score += 10
 
         reasons.append(
-            "readable"
+            "+10 readable"
+        )
+
+    else:
+
+        score -= 30
+
+        reasons.append(
+            "-30 unreadable"
         )
 
 
@@ -982,9 +1308,13 @@ def calculate_score(
         score += 10
 
         reasons.append(
-            "pdf"
+            "+10 PDF"
         )
 
+
+    # ========================================================
+    # Identity
+    # ========================================================
 
     code = exchange_code(
         symbol
@@ -1000,36 +1330,33 @@ def calculate_score(
         score += 20
 
         reasons.append(
-            "symbol"
+            "+20 symbol"
         )
 
 
-    tokens = company_tokens(
-        company_name
-    )
-
-
-    matched = sum(
+    matched_tokens = sum(
         1
-        for token in tokens
+        for token in company_tokens(
+            company_name
+        )
         if token in combined
     )
 
 
-    if matched >= 2:
+    if matched_tokens >= 2:
 
         score += 25
 
         reasons.append(
-            "company"
+            "+25 company"
         )
 
-    elif matched == 1:
+    elif matched_tokens == 1:
 
         score += 15
 
         reasons.append(
-            "company-partial"
+            "+15 company partial"
         )
 
 
@@ -1038,9 +1365,13 @@ def calculate_score(
         score += 15
 
         reasons.append(
-            "reit"
+            "+15 REIT"
         )
 
+
+    # ========================================================
+    # Year
+    # ========================================================
 
     year = report_year(
         period_end
@@ -1055,9 +1386,13 @@ def calculate_score(
         score += 20
 
         reasons.append(
-            "year"
+            "+20 year"
         )
 
+
+    # ========================================================
+    # Period
+    # ========================================================
 
     if any(
         keyword in combined
@@ -1069,51 +1404,133 @@ def calculate_score(
         score += 25
 
         reasons.append(
-            "period"
+            "+25 period"
         )
 
+
+    # ========================================================
+    # Type-specific matching
+    # ========================================================
 
     rt = str(
         report_type
     ).upper()
 
 
-    if (
-        rt.startswith(
-            "Q"
-        )
-        and (
-            "quarterly" in combined
-            or "quarter" in combined
-        )
+    if rt.startswith(
+        "Q"
     ):
 
-        score += 15
+        if any(
+            keyword in combined
+            for keyword in [
+                "quarterly",
+                "quarterly statement",
+                "quarterly report",
+                "quarter"
+            ]
+        ):
 
-        reasons.append(
-            "quarterly"
-        )
+            score += 20
+
+            reasons.append(
+                "+20 quarterly"
+            )
 
 
-    if (
-        rt == "H1"
-        and any(
-            item in combined
-            for item in [
+        # Announcement page مهم جدًا للربع
+        if "announcement" in combined:
+
+            score += 15
+
+            reasons.append(
+                "+15 announcement"
+            )
+
+
+    elif rt == "H1":
+
+        if any(
+            keyword in combined
+            for keyword in [
                 "semi annual",
                 "semiannual",
-                "interim financial",
-                "six months"
+                "half year",
+                "six months",
+                "interim financial"
             ]
-        )
+        ):
+
+            score += 25
+
+            reasons.append(
+                "+25 H1"
+            )
+
+
+        if (
+            "financial statement"
+            in combined
+            or "financial statements"
+            in combined
+        ):
+
+            score += 15
+
+            reasons.append(
+                "+15 financial"
+            )
+
+
+    elif rt == "FY":
+
+        if any(
+            keyword in combined
+            for keyword in [
+                "annual",
+                "annual report",
+                "full year",
+                "year end"
+            ]
+        ):
+
+            score += 25
+
+            reasons.append(
+                "+25 FY"
+            )
+
+
+    # ========================================================
+    # Generic financial language
+    # ========================================================
+
+    if (
+        "financial statement"
+        in combined
+        or "financial statements"
+        in combined
     ):
 
-        score += 15
+        score += 10
 
         reasons.append(
-            "h1"
+            "+10 statement"
         )
 
+
+    if "report" in combined:
+
+        score += 5
+
+        reasons.append(
+            "+5 report"
+        )
+
+
+    # ========================================================
+    # Hard penalties
+    # ========================================================
 
     negative_hits = [
         item
@@ -1124,16 +1541,33 @@ def calculate_score(
 
     if negative_hits:
 
-        score -= min(
+        penalty = min(
             100,
-            50
+            60
             + 10 * len(
                 negative_hits
             )
         )
 
+        score -= penalty
+
         reasons.append(
-            "negative"
+            f"-{penalty} unrelated"
+        )
+
+
+    if (
+        "prospectus" in combined
+        or "sukuk" in combined
+    ):
+
+        score = min(
+            score,
+            20
+        )
+
+        reasons.append(
+            "hard-cap prospectus/sukuk"
         )
 
 
@@ -1165,24 +1599,55 @@ def crawl_manager_site(
     start_urls
 ):
 
-    queue = deque()
+    # Priority heap:
+    # Python heap أصغر رقم أولاً،
+    # لذلك نخزن -priority.
+
+    queue = []
+
+    sequence = 0
 
     visited = set()
 
-    documents = []
-
     pages = []
 
+    page_candidates = []
+
+    document_candidates = []
+
+
+    # ========================================================
+    # Seed
+    # ========================================================
 
     for url in start_urls:
 
-        queue.append(
+        url = canonical_url(
+            url
+        )
+
+        if not url:
+            continue
+
+
+        heapq.heappush(
+            queue,
             (
+                -1000.0,
+                sequence,
+                0,
                 url,
-                0
+                "",
+                ""
             )
         )
 
+        sequence += 1
+
+
+    # ========================================================
+    # Crawl
+    # ========================================================
 
     while (
         queue
@@ -1191,10 +1656,27 @@ def crawl_manager_site(
         ) < MAX_PAGES
     ):
 
-        url, depth = queue.popleft()
+        (
+            negative_priority,
+            _sequence,
+            depth,
+            url,
+            incoming_anchor,
+            incoming_context
+        ) = heapq.heappop(
+            queue
+        )
 
 
-        if url in visited:
+        url = canonical_url(
+            url
+        )
+
+
+        if (
+            not url
+            or url in visited
+        ):
 
             continue
 
@@ -1223,14 +1705,80 @@ def crawl_manager_site(
         )
 
 
+        # ====================================================
+        # Direct document reached
+        # ====================================================
+
         if document_type != "HTML":
+
+            document_candidates.append({
+                "url":
+                    url,
+
+                "anchor_text":
+                    incoming_anchor,
+
+                "context":
+                    incoming_context,
+
+                "origin":
+                    f"crawl_direct_depth_{depth}"
+            })
 
             continue
 
 
-        pages.append(
-            url
+        # ====================================================
+        # HTML page reached
+        # ====================================================
+
+        pages.append({
+            "url":
+                url,
+
+            "depth":
+                depth,
+
+            "priority":
+                -negative_priority,
+
+            "anchor_text":
+                incoming_anchor,
+
+            "context":
+                incoming_context
+        })
+
+
+        # الصفحة نفسها قد تكون التقرير الصحيح
+        page_score = (
+            calculate_page_priority(
+                symbol,
+                company_name,
+                report_type,
+                period_end,
+                url,
+                incoming_anchor,
+                incoming_context
+            )
         )
+
+
+        if page_score >= 25:
+
+            page_candidates.append({
+                "url":
+                    url,
+
+                "anchor_text":
+                    incoming_anchor,
+
+                "context":
+                    incoming_context,
+
+                "origin":
+                    f"page_depth_{depth}"
+            })
 
 
         links = extract_links(
@@ -1244,7 +1792,87 @@ def crawl_manager_site(
         )
 
 
+        # ====================================================
+        # Rank links on page
+        # ====================================================
+
+        ranked_links = []
+
+
         for link in links:
+
+            link_url = canonical_url(
+                link[
+                    "url"
+                ]
+            )
+
+            if not link_url:
+                continue
+
+
+            if not same_domain(
+                url,
+                link_url
+            ):
+
+                continue
+
+
+            if link_url == url:
+                continue
+
+
+            priority = (
+                calculate_page_priority(
+                    symbol,
+                    company_name,
+                    report_type,
+                    period_end,
+                    link_url,
+                    link[
+                        "anchor_text"
+                    ],
+                    link[
+                        "context"
+                    ]
+                )
+            )
+
+
+            ranked_links.append({
+                "url":
+                    link_url,
+
+                "anchor_text":
+                    link[
+                        "anchor_text"
+                    ],
+
+                "context":
+                    link[
+                        "context"
+                    ],
+
+                "priority":
+                    priority
+            })
+
+
+        ranked_links.sort(
+            key=lambda item:
+                item[
+                    "priority"
+                ],
+            reverse=True
+        )
+
+
+        # ====================================================
+        # Process links
+        # ====================================================
+
+        for link in ranked_links:
 
             link_url = link[
                 "url"
@@ -1258,19 +1886,14 @@ def crawl_manager_site(
                 "context"
             ]
 
-
-            if not same_domain(
-                url,
-                link_url
-            ):
-
-                continue
-
-
             combined = normalize_text(
                 f"{link_url} {anchor} {context}"
             )
 
+
+            # ------------------------------------------------
+            # Potential report/document
+            # ------------------------------------------------
 
             potential_document = (
                 looks_like_pdf(
@@ -1280,11 +1903,15 @@ def crawl_manager_site(
                     keyword in combined
                     for keyword in [
                         "quarter",
+                        "quarterly",
                         "financial",
                         "statement",
                         "report",
                         "semi annual",
                         "semiannual",
+                        "annual",
+                        "announcement",
+                        "announcements",
                         "factsheet",
                         "fact sheet",
                         "here"
@@ -1295,7 +1922,7 @@ def crawl_manager_site(
 
             if potential_document:
 
-                documents.append({
+                document_candidates.append({
                     "url":
                         link_url,
 
@@ -1306,38 +1933,60 @@ def crawl_manager_site(
                         context,
 
                     "origin":
-                        f"crawl_depth_{depth}"
+                        f"link_depth_{depth}"
                 })
 
+
+            # ------------------------------------------------
+            # Crawl deeper
+            # ------------------------------------------------
 
             if depth >= MAX_CRAWL_DEPTH:
 
                 continue
 
 
-            navigation_candidate = any(
-                keyword in combined
-                for keyword in NAVIGATION_KEYWORDS
+            if looks_like_pdf(
+                link_url
+            ):
+
+                continue
+
+
+            # لا ندخل روابط ضعيفة جدًا
+            if link[
+                "priority"
+            ] < 10:
+
+                continue
+
+
+            if link_url in visited:
+
+                continue
+
+
+            heapq.heappush(
+                queue,
+                (
+                    -link[
+                        "priority"
+                    ],
+                    sequence,
+                    depth + 1,
+                    link_url,
+                    anchor,
+                    context
+                )
             )
 
-
-            if navigation_candidate:
-
-                if not looks_like_pdf(
-                    link_url
-                ):
-
-                    queue.append(
-                        (
-                            link_url,
-                            depth + 1
-                        )
-                    )
+            sequence += 1
 
 
     return (
         pages,
-        documents
+        page_candidates,
+        document_candidates
     )
 
 
@@ -1371,6 +2020,25 @@ def get_initial_urls(
             )
 
 
+    alternate_urls = report.get(
+        "alternate_urls"
+    )
+
+
+    if isinstance(
+        alternate_urls,
+        list
+    ):
+
+        for value in alternate_urls:
+
+            if value:
+
+                items.append(
+                    value
+                )
+
+
     for source in entry.get(
         "sources",
         []
@@ -1380,11 +2048,14 @@ def get_initial_urls(
             source,
             dict
         ):
+
             continue
+
 
         url = source.get(
             "url"
         )
+
 
         if url:
 
@@ -1400,7 +2071,7 @@ def get_initial_urls(
 
     for url in items:
 
-        url = normalize_url(
+        url = canonical_url(
             url
         )
 
@@ -1420,6 +2091,259 @@ def get_initial_urls(
 
 
     return unique
+
+
+# ============================================================
+# Manager start URLs
+# ============================================================
+
+
+def get_manager_starts(
+    entry
+):
+
+    starts = []
+
+
+    sources = entry.get(
+        "sources",
+        []
+    )
+
+
+    if not isinstance(
+        sources,
+        list
+    ):
+
+        return starts
+
+
+    sorted_sources = sorted(
+        [
+            item
+            for item in sources
+            if isinstance(
+                item,
+                dict
+            )
+        ],
+        key=lambda item:
+            item.get(
+                "priority",
+                999
+            )
+    )
+
+
+    for source in sorted_sources:
+
+        if source.get(
+            "source_type"
+        ) != "fund_manager":
+
+            continue
+
+
+        url = canonical_url(
+            source.get(
+                "url"
+            )
+        )
+
+
+        if url:
+
+            starts.append(
+                url
+            )
+
+
+    return starts
+
+
+# ============================================================
+# Dedupe candidates
+# ============================================================
+
+
+def dedupe_candidates(
+    candidates
+):
+
+    unique = {}
+
+
+    for item in candidates:
+
+        url = canonical_url(
+            item.get(
+                "url"
+            )
+        )
+
+
+        if not url:
+
+            continue
+
+
+        item[
+            "url"
+        ] = url
+
+
+        existing = unique.get(
+            url
+        )
+
+
+        if existing is None:
+
+            unique[
+                url
+            ] = item
+
+            continue
+
+
+        # نحتفظ بالنسخة ذات السياق الأكثر فائدة
+
+        current_text = normalize_text(
+            f"{item.get('anchor_text', '')} "
+            f"{item.get('context', '')}"
+        )
+
+        old_text = normalize_text(
+            f"{existing.get('anchor_text', '')} "
+            f"{existing.get('context', '')}"
+        )
+
+
+        if len(
+            current_text
+        ) > len(
+            old_text
+        ):
+
+            unique[
+                url
+            ] = item
+
+
+    return list(
+        unique.values()
+    )
+
+
+# ============================================================
+# Inspect candidate
+# ============================================================
+
+
+def inspect_candidate(
+    symbol,
+    company_name,
+    report_type,
+    period_end,
+    item
+):
+
+    response = fetch_url(
+        item[
+            "url"
+        ]
+    )
+
+
+    readable = (
+        response[
+            "status"
+        ]
+        == "SUCCESS"
+    )
+
+
+    document_type = (
+        detect_document_type(
+            response
+        )
+        if readable
+        else None
+    )
+
+
+    (
+        score,
+        reasons
+    ) = calculate_document_score(
+        symbol,
+        company_name,
+        report_type,
+        period_end,
+        item[
+            "url"
+        ],
+        item.get(
+            "anchor_text",
+            ""
+        ),
+        item.get(
+            "context",
+            ""
+        ),
+        document_type,
+        readable
+    )
+
+
+    return {
+        "url":
+            item[
+                "url"
+            ],
+
+        "anchor_text":
+            item.get(
+                "anchor_text",
+                ""
+            ),
+
+        "context":
+            item.get(
+                "context",
+                ""
+            ),
+
+        "origin":
+            item.get(
+                "origin"
+            ),
+
+        "status":
+            response[
+                "status"
+            ],
+
+        "http_status":
+            response.get(
+                "http_status"
+            ),
+
+        "document_type":
+            document_type,
+
+        "relevance_score":
+            score,
+
+        "reasons":
+            reasons,
+
+        "error":
+            response.get(
+                "error"
+            )
+    }
 
 
 # ============================================================
@@ -1451,113 +2375,113 @@ def discover_report(
     )
 
 
-    # Saudi Exchange URLs قد تكون 403
-    # لكن manager URL يكمل الزحف
-    manager_starts = []
-
-
-    for source in entry.get(
-        "sources",
-        []
-    ):
-
-        if not isinstance(
-            source,
-            dict
-        ):
-            continue
-
-
-        if source.get(
-            "source_type"
-        ) == "fund_manager":
-
-            url = source.get(
-                "url"
-            )
-
-            if url:
-
-                manager_starts.append(
-                    url
-                )
+    manager_starts = (
+        get_manager_starts(
+            entry
+        )
+    )
 
 
     if not manager_starts:
 
-        manager_starts = initial_urls
+        manager_starts = (
+            initial_urls
+        )
 
 
-    pages, document_links = (
-        crawl_manager_site(
-            symbol,
-            company_name,
-            report_type,
-            period_end,
-            manager_starts
+    # ========================================================
+    # Crawl manager
+    # ========================================================
+
+    (
+        pages,
+        page_candidates,
+        document_candidates
+    ) = crawl_manager_site(
+        symbol,
+        company_name,
+        report_type,
+        period_end,
+        manager_starts
+    )
+
+
+    # ========================================================
+    # Add direct report URLs from registry
+    # ========================================================
+
+    for field in [
+        "url",
+        "alternate_url",
+        "attachment_url"
+    ]:
+
+        value = report.get(
+            field
+        )
+
+
+        if not value:
+
+            continue
+
+
+        document_candidates.append({
+            "url":
+                canonical_url(
+                    value
+                ),
+
+            "anchor_text":
+                "",
+
+            "context":
+                "",
+
+            "origin":
+                f"registry:{field}"
+        })
+
+
+    # ========================================================
+    # Merge HTML report pages + discovered docs
+    # ========================================================
+
+    all_candidates = (
+        page_candidates
+        + document_candidates
+    )
+
+
+    all_candidates = (
+        dedupe_candidates(
+            all_candidates
         )
     )
 
 
     # ========================================================
-    # Remove duplicate documents
-    # ========================================================
-
-    unique_documents = {}
-
-    for item in document_links:
-
-        url = item[
-            "url"
-        ]
-
-        existing = unique_documents.get(
-            url
-        )
-
-
-        if existing is None:
-
-            unique_documents[
-                url
-            ] = item
-
-        else:
-
-            # نحتفظ بالسياق الأطول
-            if len(
-                item.get(
-                    "context",
-                    ""
-                )
-            ) > len(
-                existing.get(
-                    "context",
-                    ""
-                )
-            ):
-
-                unique_documents[
-                    url
-                ] = item
-
-
-    document_links = list(
-        unique_documents.values()
-    )
-
-
-    # ========================================================
-    # Pre-score before fetching
+    # Pre-rank
     # ========================================================
 
     pre_ranked = []
 
 
-    for item in document_links:
+    for item in all_candidates:
+
+        probable_type = (
+            "PDF"
+            if looks_like_pdf(
+                item[
+                    "url"
+                ]
+            )
+            else "HTML"
+        )
+
 
         pre_score, _ = (
-            calculate_score(
+            calculate_document_score(
                 symbol,
                 company_name,
                 report_type,
@@ -1565,21 +2489,15 @@ def discover_report(
                 item[
                     "url"
                 ],
-                item[
-                    "anchor_text"
-                ],
-                item[
-                    "context"
-                ],
-                (
-                    "PDF"
-                    if looks_like_pdf(
-                        item[
-                            "url"
-                        ]
-                    )
-                    else "UNKNOWN"
+                item.get(
+                    "anchor_text",
+                    ""
                 ),
+                item.get(
+                    "context",
+                    ""
+                ),
+                probable_type,
                 True
             )
         )
@@ -1609,7 +2527,7 @@ def discover_report(
 
 
     # ========================================================
-    # Fetch & verify
+    # Fetch and verify
     # ========================================================
 
     attempts = []
@@ -1617,86 +2535,15 @@ def discover_report(
 
     for item in pre_ranked:
 
-        response = fetch_url(
-            item[
-                "url"
-            ]
-        )
-
-
-        readable = (
-            response[
-                "status"
-            ]
-            == "SUCCESS"
-        )
-
-
-        doc_type = (
-            detect_document_type(
-                response
-            )
-            if readable
-            else None
-        )
-
-
-        score, reasons = (
-            calculate_score(
+        attempts.append(
+            inspect_candidate(
                 symbol,
                 company_name,
                 report_type,
                 period_end,
-                item[
-                    "url"
-                ],
-                item[
-                    "anchor_text"
-                ],
-                item[
-                    "context"
-                ],
-                doc_type,
-                readable
+                item
             )
         )
-
-
-        attempts.append({
-            "url":
-                item[
-                    "url"
-                ],
-
-            "anchor_text":
-                item[
-                    "anchor_text"
-                ],
-
-            "context":
-                item[
-                    "context"
-                ],
-
-            "status":
-                response[
-                    "status"
-                ],
-
-            "http_status":
-                response.get(
-                    "http_status"
-                ),
-
-            "document_type":
-                doc_type,
-
-            "relevance_score":
-                score,
-
-            "reasons":
-                reasons
-        })
 
 
     attempts.sort(
@@ -1742,6 +2589,10 @@ def discover_report(
     )
 
 
+    # ========================================================
+    # Final state
+    # ========================================================
+
     if best:
 
         if (
@@ -1774,17 +2625,33 @@ def discover_report(
                 "CANDIDATE_FOUND_REVIEW"
             )
 
+
     elif pages:
 
         state = (
             "REIT_PAGE_FOUND_NO_REPORT"
         )
 
+
     else:
 
         state = (
             "NOT_FOUND"
         )
+
+
+    # ========================================================
+    # Top crawled pages
+    # ========================================================
+
+    ranked_pages = sorted(
+        pages,
+        key=lambda item:
+            item[
+                "priority"
+            ],
+        reverse=True
+    )
 
 
     return {
@@ -1830,6 +2697,15 @@ def discover_report(
                 else None
             ),
 
+        "best_anchor_text":
+            (
+                best[
+                    "anchor_text"
+                ]
+                if best
+                else None
+            ),
+
         "best_context":
             (
                 best[
@@ -1840,7 +2716,7 @@ def discover_report(
             ),
 
         "pages_crawled":
-            pages,
+            ranked_pages,
 
         "attempts":
             attempts
@@ -1864,15 +2740,31 @@ def print_result(
 
 
     print(
+        f"🏢 Company: "
+        f"{result['company_name']}",
+        flush=True
+    )
+
+
+    print(
         f"🧭 Discovery State: "
         f"{result['discovery_state']}",
         flush=True
     )
 
 
+    score_text = (
+        f"{result['best_score']:.2f}"
+        if result[
+            "best_score"
+        ] is not None
+        else "N/A"
+    )
+
+
     print(
         f"🎯 Best Score: "
-        f"{result['best_score'] if result['best_score'] is not None else 'N/A'}",
+        f"{score_text}",
         flush=True
     )
 
@@ -1891,6 +2783,17 @@ def print_result(
     )
 
 
+    if result[
+        "best_anchor_text"
+    ]:
+
+        print(
+            f"🏷 Best Anchor: "
+            f"{result['best_anchor_text']}",
+            flush=True
+        )
+
+
     print(
         f"🌐 Pages Crawled: "
         f"{len(result['pages_crawled'])}",
@@ -1902,40 +2805,82 @@ def print_result(
 
 
     print(
-        "🏅 TOP DOCUMENT CANDIDATES",
+        "🌐 TOP CRAWLED PAGES",
         flush=True
     )
 
 
-    for index, item in enumerate(
+    for index, page in enumerate(
         result[
-            "attempts"
+            "pages_crawled"
         ][
             :12
         ],
         start=1
     ):
 
-        context = item[
-            "context"
-        ]
+        print(
+            f"{index:02d}. "
+            f"Priority="
+            f"{page['priority']:.2f} | "
+            f"Depth="
+            f"{page['depth']} | "
+            f"Anchor="
+            f"{page['anchor_text'] or 'N/A'} | "
+            f"{page['url']}",
+            flush=True
+        )
+
+
+    print_separator()
+
+
+    print(
+        "🏅 TOP DOCUMENT CANDIDATES",
+        flush=True
+    )
+
+
+    if not result[
+        "attempts"
+    ]:
+
+        print(
+            "⚠️ No document candidates",
+            flush=True
+        )
+
+
+    for index, item in enumerate(
+        result[
+            "attempts"
+        ][
+            :15
+        ],
+        start=1
+    ):
+
+        context = item.get(
+            "context",
+            ""
+        )
 
 
         if len(
             context
-        ) > 180:
+        ) > 220:
 
-            context = (
-                context[
-                    -180:
-                ]
-            )
+            context = context[
+                -220:
+            ]
 
 
         print(
             f"{index:02d}. "
             f"Score="
             f"{item['relevance_score']:.2f} | "
+            f"Origin="
+            f"{item['origin']} | "
             f"HTTP="
             f"{item['http_status']} | "
             f"Type="
@@ -1956,6 +2901,21 @@ def print_result(
             )
 
 
+        if item[
+            "reasons"
+        ]:
+
+            print(
+                "    Reasons: "
+                + ", ".join(
+                    item[
+                        "reasons"
+                    ]
+                ),
+                flush=True
+            )
+
+
 # ============================================================
 # Summary
 # ============================================================
@@ -1966,7 +2926,7 @@ def print_summary(
 ):
 
     print_header(
-        "🏆 REIT REPORT DISCOVERY SUMMARY v4"
+        "🏆 REIT REPORT DISCOVERY SUMMARY v5"
     )
 
 
@@ -2015,7 +2975,9 @@ def print_summary(
             f"Type="
             f"{result['best_document_type']} | "
             f"Pages="
-            f"{len(result['pages_crawled'])}",
+            f"{len(result['pages_crawled'])} | "
+            f"Candidates="
+            f"{len(result['attempts'])}",
             flush=True
         )
 
@@ -2047,6 +3009,12 @@ def print_summary(
         )
 
 
+    print(
+        "=" * 116,
+        flush=True
+    )
+
+
 # ============================================================
 # Main
 # ============================================================
@@ -2068,6 +3036,20 @@ def run_discovery():
     print(
         f"🕐 Started: "
         f"{datetime.now(timezone.utc).isoformat()}",
+        flush=True
+    )
+
+
+    print(
+        f"🎯 Minimum Accept Score: "
+        f"{MIN_ACCEPT_SCORE}",
+        flush=True
+    )
+
+
+    print(
+        f"🏆 Strong Accept Score: "
+        f"{STRONG_ACCEPT_SCORE}",
         flush=True
     )
 
@@ -2096,6 +3078,7 @@ def run_discovery():
             ]
         ):
             stock
+
         for stock in active_reits
     }
 
