@@ -16,54 +16,41 @@ from supabase import create_client
 
 
 # ============================================================
-# REIT REPORT DISCOVERY ENGINE v5
+# REIT REPORT DISCOVERY ENGINE v5.1 FAST
 #
 # READ ONLY
 #
-# أهداف v5:
-#
-# 1) دمج نجاح v3 في التعرف على:
-#       - Semi Annual Report
-#       - Financial Statements
-#       - REIT Announcements
-#
-# 2) الاحتفاظ بقدرة v4 على:
-#       - Deep Crawl
-#       - قراءة السياق المحيط بالروابط
-#
-# 3) إصلاح مشكلة هدر MAX_PAGES على:
-#       - #fragments
-#       - روابط القوائم العامة
-#       - روابط غير مرتبطة بالصندوق
-#
-# 4) Priority Crawl:
-#       الصفحات الأكثر صلة بالتقرير تُفحص أولاً
-#
-# 5) Canonical URLs:
-#       إزالة fragments والتكرار
-#
-# 6) صفحة HTML نفسها قد تكون التقرير الصحيح،
-#    وليست الـPDF فقط.
-#
-# 7) عام لجميع صناديق REIT.
+# التحسينات:
+# 1) Priority Crawl
+# 2) إزالة fragments والتكرار
+# 3) قراءة Anchor + Context
+# 4) دعم صفحات HTML كتقرير صحيح
+# 5) تقليل عدد الصفحات والطلبات
+# 6) Timeout أقصر
+# 7) Early Stop عند العثور على مستند قوي
+# 8) عام لكل صناديق REIT
 #
 # لا توجد كتابة في Supabase.
 # ============================================================
 
 
-ENGINE_NAME = "REIT REPORT DISCOVERY ENGINE v5"
+ENGINE_NAME = "REIT REPORT DISCOVERY ENGINE v5.1 FAST"
 
 REGISTRY_FILENAME = "reit_official_sources.json"
 
-HTTP_TIMEOUT = 30
+HTTP_TIMEOUT = 10
 
-MAX_CRAWL_DEPTH = 3
-MAX_PAGES = 30
-MAX_LINKS_PER_PAGE = 300
-MAX_DOCUMENT_CHECKS = 80
+MAX_CRAWL_DEPTH = 2
+MAX_PAGES = 10
+MAX_LINKS_PER_PAGE = 120
+MAX_DOCUMENT_CHECKS = 20
 
 MIN_ACCEPT_SCORE = 60.0
 STRONG_ACCEPT_SCORE = 80.0
+
+# إذا وجدنا مستند بهذه الدرجة أو أعلى
+# نوقف التحقق من بقية المرشحين
+EARLY_STOP_SCORE = 90.0
 
 
 # ============================================================
@@ -136,7 +123,6 @@ class ContextLinkParser(HTMLParser):
             return
 
         self.current_href = href
-
         self.current_anchor = []
 
         self.before_context = " ".join(
@@ -176,6 +162,7 @@ class ContextLinkParser(HTMLParser):
             tag.lower() != "a"
             or self.current_href is None
         ):
+
             return
 
         self.links.append({
@@ -316,12 +303,6 @@ def canonical_url(url):
             url
         )
 
-        # حذف fragment بالكامل
-        # حتى لا نستهلك صفحات مثل:
-        # page#menu1
-        # page#menu2
-        # page#menu3
-
         cleaned = urllib.parse.urlunsplit(
             (
                 parsed.scheme,
@@ -332,14 +313,13 @@ def canonical_url(url):
             )
         )
 
-        # إزالة slash إضافي في النهاية إلا الجذر
+        path = urllib.parse.urlsplit(
+            cleaned
+        ).path
+
         if (
             cleaned.endswith("/")
-            and len(
-                urllib.parse.urlsplit(
-                    cleaned
-                ).path
-            ) > 1
+            and len(path) > 1
         ):
 
             cleaned = cleaned.rstrip(
@@ -366,8 +346,7 @@ def is_http_url(url):
         value.startswith(
             "https://"
         )
-        or
-        value.startswith(
+        or value.startswith(
             "http://"
         )
     )
@@ -1082,10 +1061,6 @@ def calculate_page_priority(
     score = 0.0
 
 
-    # ========================================================
-    # REIT identity
-    # ========================================================
-
     if "reit" in combined:
 
         score += 30
@@ -1122,10 +1097,6 @@ def calculate_page_priority(
 
         score += 20
 
-
-    # ========================================================
-    # Report-specific navigation
-    # ========================================================
 
     rt = str(
         report_type
@@ -1180,10 +1151,6 @@ def calculate_page_priority(
             score += 65
 
 
-    # ========================================================
-    # Generic useful pages
-    # ========================================================
-
     if "announcement" in combined:
 
         score += 35
@@ -1209,10 +1176,6 @@ def calculate_page_priority(
         score += 10
 
 
-    # ========================================================
-    # Year / period
-    # ========================================================
-
     year = report_year(
         period_end
     )
@@ -1235,10 +1198,6 @@ def calculate_page_priority(
 
         score += 25
 
-
-    # ========================================================
-    # Noise penalty
-    # ========================================================
 
     if any(
         noise in combined
@@ -1312,10 +1271,6 @@ def calculate_document_score(
         )
 
 
-    # ========================================================
-    # Identity
-    # ========================================================
-
     code = exchange_code(
         symbol
     )
@@ -1369,10 +1324,6 @@ def calculate_document_score(
         )
 
 
-    # ========================================================
-    # Year
-    # ========================================================
-
     year = report_year(
         period_end
     )
@@ -1390,10 +1341,6 @@ def calculate_document_score(
         )
 
 
-    # ========================================================
-    # Period
-    # ========================================================
-
     if any(
         keyword in combined
         for keyword in period_keywords(
@@ -1407,10 +1354,6 @@ def calculate_document_score(
             "+25 period"
         )
 
-
-    # ========================================================
-    # Type-specific matching
-    # ========================================================
 
     rt = str(
         report_type
@@ -1438,7 +1381,6 @@ def calculate_document_score(
             )
 
 
-        # Announcement page مهم جدًا للربع
         if "announcement" in combined:
 
             score += 15
@@ -1501,10 +1443,6 @@ def calculate_document_score(
             )
 
 
-    # ========================================================
-    # Generic financial language
-    # ========================================================
-
     if (
         "financial statement"
         in combined
@@ -1527,10 +1465,6 @@ def calculate_document_score(
             "+5 report"
         )
 
-
-    # ========================================================
-    # Hard penalties
-    # ========================================================
 
     negative_hits = [
         item
@@ -1599,10 +1533,6 @@ def crawl_manager_site(
     start_urls
 ):
 
-    # Priority heap:
-    # Python heap أصغر رقم أولاً،
-    # لذلك نخزن -priority.
-
     queue = []
 
     sequence = 0
@@ -1615,10 +1545,6 @@ def crawl_manager_site(
 
     document_candidates = []
 
-
-    # ========================================================
-    # Seed
-    # ========================================================
 
     for url in start_urls:
 
@@ -1644,10 +1570,6 @@ def crawl_manager_site(
 
         sequence += 1
 
-
-    # ========================================================
-    # Crawl
-    # ========================================================
 
     while (
         queue
@@ -1686,6 +1608,15 @@ def crawl_manager_site(
         )
 
 
+        print(
+            f"🌐 Crawl "
+            f"{len(visited)}/{MAX_PAGES} | "
+            f"Depth={depth} | "
+            f"{url}",
+            flush=True
+        )
+
+
         response = fetch_url(
             url
         )
@@ -1704,10 +1635,6 @@ def crawl_manager_site(
             )
         )
 
-
-        # ====================================================
-        # Direct document reached
-        # ====================================================
 
         if document_type != "HTML":
 
@@ -1728,10 +1655,6 @@ def crawl_manager_site(
             continue
 
 
-        # ====================================================
-        # HTML page reached
-        # ====================================================
-
         pages.append({
             "url":
                 url,
@@ -1750,7 +1673,6 @@ def crawl_manager_site(
         })
 
 
-        # الصفحة نفسها قد تكون التقرير الصحيح
         page_score = (
             calculate_page_priority(
                 symbol,
@@ -1792,10 +1714,6 @@ def crawl_manager_site(
         )
 
 
-        # ====================================================
-        # Rank links on page
-        # ====================================================
-
         ranked_links = []
 
 
@@ -1806,6 +1724,7 @@ def crawl_manager_site(
                     "url"
                 ]
             )
+
 
             if not link_url:
                 continue
@@ -1868,10 +1787,6 @@ def crawl_manager_site(
         )
 
 
-        # ====================================================
-        # Process links
-        # ====================================================
-
         for link in ranked_links:
 
             link_url = link[
@@ -1890,10 +1805,6 @@ def crawl_manager_site(
                 f"{link_url} {anchor} {context}"
             )
 
-
-            # ------------------------------------------------
-            # Potential report/document
-            # ------------------------------------------------
 
             potential_document = (
                 looks_like_pdf(
@@ -1937,10 +1848,6 @@ def crawl_manager_site(
                 })
 
 
-            # ------------------------------------------------
-            # Crawl deeper
-            # ------------------------------------------------
-
             if depth >= MAX_CRAWL_DEPTH:
 
                 continue
@@ -1953,7 +1860,6 @@ def crawl_manager_site(
                 continue
 
 
-            # لا ندخل روابط ضعيفة جدًا
             if link[
                 "priority"
             ] < 10:
@@ -1991,110 +1897,7 @@ def crawl_manager_site(
 
 
 # ============================================================
-# Initial URLs
-# ============================================================
-
-
-def get_initial_urls(
-    report,
-    entry
-):
-
-    items = []
-
-
-    for field in [
-        "url",
-        "alternate_url",
-        "attachment_url"
-    ]:
-
-        value = report.get(
-            field
-        )
-
-        if value:
-
-            items.append(
-                value
-            )
-
-
-    alternate_urls = report.get(
-        "alternate_urls"
-    )
-
-
-    if isinstance(
-        alternate_urls,
-        list
-    ):
-
-        for value in alternate_urls:
-
-            if value:
-
-                items.append(
-                    value
-                )
-
-
-    for source in entry.get(
-        "sources",
-        []
-    ):
-
-        if not isinstance(
-            source,
-            dict
-        ):
-
-            continue
-
-
-        url = source.get(
-            "url"
-        )
-
-
-        if url:
-
-            items.append(
-                url
-            )
-
-
-    unique = []
-
-    seen = set()
-
-
-    for url in items:
-
-        url = canonical_url(
-            url
-        )
-
-
-        if (
-            url
-            and url not in seen
-        ):
-
-            seen.add(
-                url
-            )
-
-            unique.append(
-                url
-            )
-
-
-    return unique
-
-
-# ============================================================
-# Manager start URLs
+# Manager starts
 # ============================================================
 
 
@@ -2121,15 +1924,15 @@ def get_manager_starts(
 
     sorted_sources = sorted(
         [
-            item
-            for item in sources
+            source
+            for source in sources
             if isinstance(
-                item,
+                source,
                 dict
             )
         ],
-        key=lambda item:
-            item.get(
+        key=lambda source:
+            source.get(
                 "priority",
                 999
             )
@@ -2163,7 +1966,7 @@ def get_manager_starts(
 
 
 # ============================================================
-# Dedupe candidates
+# Dedupe
 # ============================================================
 
 
@@ -2184,7 +1987,6 @@ def dedupe_candidates(
 
 
         if not url:
-
             continue
 
 
@@ -2206,8 +2008,6 @@ def dedupe_candidates(
 
             continue
 
-
-        # نحتفظ بالنسخة ذات السياق الأكثر فائدة
 
         current_text = normalize_text(
             f"{item.get('anchor_text', '')} "
@@ -2237,7 +2037,7 @@ def dedupe_candidates(
 
 
 # ============================================================
-# Inspect candidate
+# Inspect
 # ============================================================
 
 
@@ -2367,14 +2167,6 @@ def discover_report(
     )
 
 
-    initial_urls = (
-        get_initial_urls(
-            report,
-            entry
-        )
-    )
-
-
     manager_starts = (
         get_manager_starts(
             entry
@@ -2384,14 +2176,44 @@ def discover_report(
 
     if not manager_starts:
 
-        manager_starts = (
-            initial_urls
-        )
+        return {
+            "symbol":
+                symbol,
 
+            "company_name":
+                company_name,
 
-    # ========================================================
-    # Crawl manager
-    # ========================================================
+            "report_type":
+                report_type,
+
+            "period_end":
+                period_end,
+
+            "discovery_state":
+                "NO_MANAGER_SOURCE",
+
+            "best_url":
+                None,
+
+            "best_score":
+                None,
+
+            "best_document_type":
+                None,
+
+            "best_anchor_text":
+                None,
+
+            "best_context":
+                None,
+
+            "pages_crawled":
+                [],
+
+            "attempts":
+                []
+        }
+
 
     (
         pages,
@@ -2407,7 +2229,7 @@ def discover_report(
 
 
     # ========================================================
-    # Add direct report URLs from registry
+    # Registry URLs أيضاً تدخل كمرشحين
     # ========================================================
 
     for field in [
@@ -2422,7 +2244,6 @@ def discover_report(
 
 
         if not value:
-
             continue
 
 
@@ -2442,10 +2263,6 @@ def discover_report(
                 f"registry:{field}"
         })
 
-
-    # ========================================================
-    # Merge HTML report pages + discovered docs
-    # ========================================================
 
     all_candidates = (
         page_candidates
@@ -2527,23 +2344,65 @@ def discover_report(
 
 
     # ========================================================
-    # Fetch and verify
+    # Fetch + Verify + Early Stop
     # ========================================================
 
     attempts = []
 
+    early_best = None
 
-    for item in pre_ranked:
+
+    for index, item in enumerate(
+        pre_ranked,
+        start=1
+    ):
+
+        print(
+            f"📄 Verify "
+            f"{index}/{len(pre_ranked)} | "
+            f"PreScore="
+            f"{item['pre_score']:.2f} | "
+            f"{item['url']}",
+            flush=True
+        )
+
+
+        result = inspect_candidate(
+            symbol,
+            company_name,
+            report_type,
+            period_end,
+            item
+        )
+
 
         attempts.append(
-            inspect_candidate(
-                symbol,
-                company_name,
-                report_type,
-                period_end,
-                item
-            )
+            result
         )
+
+
+        if (
+            result[
+                "status"
+            ]
+            == "SUCCESS"
+            and result[
+                "relevance_score"
+            ]
+            >= EARLY_STOP_SCORE
+        ):
+
+            early_best = result
+
+            print(
+                f"🚀 EARLY STOP | "
+                f"Strong document found | "
+                f"Score="
+                f"{result['relevance_score']:.2f}",
+                flush=True
+            )
+
+            break
 
 
     attempts.sort(
@@ -2580,13 +2439,19 @@ def discover_report(
     ]
 
 
-    best = (
-        usable[
-            0
-        ]
-        if usable
-        else None
-    )
+    if early_best is not None:
+
+        best = early_best
+
+    else:
+
+        best = (
+            usable[
+                0
+            ]
+            if usable
+            else None
+        )
 
 
     # ========================================================
@@ -2639,10 +2504,6 @@ def discover_report(
             "NOT_FOUND"
         )
 
-
-    # ========================================================
-    # Top crawled pages
-    # ========================================================
 
     ranked_pages = sorted(
         pages,
@@ -2801,6 +2662,13 @@ def print_result(
     )
 
 
+    print(
+        f"📄 Verified Candidates: "
+        f"{len(result['attempts'])}",
+        flush=True
+    )
+
+
     print_separator()
 
 
@@ -2814,7 +2682,7 @@ def print_result(
         result[
             "pages_crawled"
         ][
-            :12
+            :10
         ],
         start=1
     ):
@@ -2855,7 +2723,7 @@ def print_result(
         result[
             "attempts"
         ][
-            :15
+            :10
         ],
         start=1
     ):
@@ -2868,10 +2736,10 @@ def print_result(
 
         if len(
             context
-        ) > 220:
+        ) > 200:
 
             context = context[
-                -220:
+                -200:
             ]
 
 
@@ -2926,7 +2794,7 @@ def print_summary(
 ):
 
     print_header(
-        "🏆 REIT REPORT DISCOVERY SUMMARY v5"
+        "🏆 REIT REPORT DISCOVERY SUMMARY v5.1 FAST"
     )
 
 
@@ -2976,7 +2844,7 @@ def print_summary(
             f"{result['best_document_type']} | "
             f"Pages="
             f"{len(result['pages_crawled'])} | "
-            f"Candidates="
+            f"Checked="
             f"{len(result['attempts'])}",
             flush=True
         )
@@ -3041,15 +2909,29 @@ def run_discovery():
 
 
     print(
-        f"🎯 Minimum Accept Score: "
-        f"{MIN_ACCEPT_SCORE}",
+        f"⏱ HTTP Timeout: "
+        f"{HTTP_TIMEOUT}s",
         flush=True
     )
 
 
     print(
-        f"🏆 Strong Accept Score: "
-        f"{STRONG_ACCEPT_SCORE}",
+        f"🌐 Max Pages: "
+        f"{MAX_PAGES}",
+        flush=True
+    )
+
+
+    print(
+        f"📄 Max Document Checks: "
+        f"{MAX_DOCUMENT_CHECKS}",
+        flush=True
+    )
+
+
+    print(
+        f"🚀 Early Stop Score: "
+        f"{EARLY_STOP_SCORE}",
         flush=True
     )
 
@@ -3072,6 +2954,7 @@ def run_discovery():
 
 
     active_map = {
+
         normalize_symbol(
             stock[
                 "symbol"
