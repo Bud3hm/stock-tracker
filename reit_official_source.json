@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "updated_at": "2026-08-15T00:00:00Z",
+  "reits": {
+    "4340.SR": {
+      "company_name": "الراجحي ريت",
+      "sources": [
+        {
+          "source_type": "saudi_exchange",
+          "url": "https://www.saudiexchange.sa/wps/portal/saudiexchange/hidden/company-profile-reit/?companySymbol=4340",
+          "priority": 1
+        },
+        {
+          "source_type": "fund_manager",
+          "url": "https://www.alrajhi-capital.com/",
+          "priority": 2
+        }
+      ],
+      "reports": []
+    }
+  }
+}
