@@ -16,32 +16,48 @@ from supabase import create_client
 
 
 # ============================================================
-# REIT REPORT DISCOVERY ENGINE v5.3
+# REIT REPORT DISCOVERY ENGINE v5.4
 #
-# FAST + CACHED
+# STRICT DOCUMENT IDENTITY
 # STRICT YEAR
 # STRICT PERIOD
-# STRICT DOCUMENT TYPE
+# HARD REJECT
+# REIT PATH GUARD
+# HTTP + LINK CACHE
 #
 # READ ONLY
 #
-# الهدف:
-# 1) منع التقارير القديمة
-# 2) منع تقارير التقييم العقاري من المرور كتقرير مالي
-# 3) منع Factsheets / NAV / Portfolio من المرور
-# 4) Q1/Q2/Q3/Q4 تحتاج Quarterly identity
-# 5) H1 يحتاج Semiannual / Interim / Financial identity
-# 6) FY يحتاج Annual Financial identity
-# 7) HTTP + Link Cache
-# 8) Early Stop فقط بعد اجتياز جميع Gates
+# أهم تغيير:
 #
-# عام لجميع صناديق REIT
+# DOCUMENT TYPE يعتمد على:
+#   URL + Anchor Text
+#
+# وليس على Context المحيط.
+#
+# Context يستخدم فقط للمساعدة في:
+#   Year
+#   Period
+#   Ranking
+#
+# مثال:
+#
+# URL:
+# Terms_and_Conditions.pdf
+#
+# Context:
+# Quarterly report June 2026
+#
+# النتيجة:
+# DocTypeOK=False
+# HardReject=True
+#
+# عام لكل صناديق REIT.
 # ============================================================
 
 
 ENGINE_NAME = (
     "REIT REPORT DISCOVERY ENGINE "
-    "v5.3 STRICT DOCUMENT TYPE"
+    "v5.4 STRICT DOCUMENT IDENTITY"
 )
 
 REGISTRY_FILENAME = "reit_official_sources.json"
@@ -102,7 +118,7 @@ supabase = create_client(
 
 
 # ============================================================
-# HTML parser
+# HTML Parser
 # ============================================================
 
 
@@ -231,7 +247,7 @@ def print_header(
 
     print(
         "\n"
-        + "=" * 120,
+        + "=" * 122,
         flush=True
     )
 
@@ -241,7 +257,7 @@ def print_header(
     )
 
     print(
-        "=" * 120,
+        "=" * 122,
         flush=True
     )
 
@@ -249,7 +265,7 @@ def print_header(
 def print_separator():
 
     print(
-        "-" * 120,
+        "-" * 122,
         flush=True
     )
 
@@ -314,6 +330,7 @@ def normalize_text(
 
 
     value = value.lower()
+
 
     value = value.replace(
         "\xa0",
@@ -528,9 +545,9 @@ def looks_like_pdf(
 
     return (
         ".pdf" in value
-        or "/fspdf/" in value
-        or "/resources/" in value
         or "/media/" in value
+        or "/resources/" in value
+        or "/fspdf/" in value
     )
 
 
@@ -908,7 +925,7 @@ def detect_document_type(
 
 
 # ============================================================
-# Link cache
+# Links
 # ============================================================
 
 
@@ -1185,19 +1202,23 @@ def period_keywords(
 
 
 # ============================================================
-# Hard reject vocabulary
+# Hard Reject
 # ============================================================
 
 
-HARD_REJECT_DOCUMENT_TYPES = {
+HARD_REJECT_IDENTITY = {
+
+    "terms and conditions",
+    "terms conditions",
+    "terms condition",
+    "terms",
+    "conditions",
 
     "valuation",
     "valuation report",
     "valuation reports",
     "property valuation",
-    "property valuation report",
     "appraisal",
-    "appraisal report",
 
     "portfolio",
     "portfolio report",
@@ -1207,7 +1228,6 @@ HARD_REJECT_DOCUMENT_TYPES = {
 
     "nav report",
     "daily nav",
-    "daily nav report",
 
     "prospectus",
     "sukuk",
@@ -1233,12 +1253,67 @@ GENERAL_NAVIGATION_NOISE = {
     "shariah",
     "investment banking",
     "open account",
-    "eservices"
+    "eservices",
+    "poa request"
 }
 
 
 # ============================================================
-# Strict gates
+# Strict Identity
+# ============================================================
+
+
+def document_identity_text(
+    url,
+    anchor_text
+):
+
+    return normalize_text(
+        f"{url} {anchor_text}"
+    )
+
+
+def contextual_text(
+    url,
+    anchor_text,
+    context
+):
+
+    return normalize_text(
+        f"{url} {anchor_text} {context}"
+    )
+
+
+def hard_reject_document(
+    url,
+    anchor_text
+):
+
+    identity = document_identity_text(
+        url,
+        anchor_text
+    )
+
+
+    matches = [
+        keyword
+
+        for keyword in HARD_REJECT_IDENTITY
+
+        if keyword in identity
+    ]
+
+
+    return (
+        bool(
+            matches
+        ),
+        matches
+    )
+
+
+# ============================================================
+# Strict year
 # ============================================================
 
 
@@ -1259,8 +1334,10 @@ def strict_year_match(
         return False
 
 
-    combined = normalize_text(
-        f"{url} {anchor_text} {context}"
+    combined = contextual_text(
+        url,
+        anchor_text,
+        context
     )
 
 
@@ -1279,6 +1356,11 @@ def strict_year_match(
     )
 
 
+# ============================================================
+# Strict period
+# ============================================================
+
+
 def strict_period_match(
     report_type,
     url,
@@ -1286,8 +1368,10 @@ def strict_period_match(
     context
 ):
 
-    combined = normalize_text(
-        f"{url} {anchor_text} {context}"
+    combined = contextual_text(
+        url,
+        anchor_text,
+        context
     )
 
 
@@ -1300,43 +1384,23 @@ def strict_period_match(
     )
 
 
-def hard_reject_document(
-    url,
-    anchor_text,
-    context
-):
-
-    combined = normalize_text(
-        f"{url} {anchor_text} {context}"
-    )
-
-
-    matches = [
-        keyword
-
-        for keyword in HARD_REJECT_DOCUMENT_TYPES
-
-        if keyword in combined
-    ]
-
-
-    return (
-        bool(
-            matches
-        ),
-        matches
-    )
+# ============================================================
+# Strict document identity
+# ============================================================
 
 
 def strict_document_type_match(
     report_type,
     url,
-    anchor_text,
-    context
+    anchor_text
 ):
 
-    combined = normalize_text(
-        f"{url} {anchor_text} {context}"
+    # مهم:
+    # لا نستخدم Context هنا.
+
+    identity = document_identity_text(
+        url,
+        anchor_text
     )
 
 
@@ -1356,20 +1420,22 @@ def strict_document_type_match(
         "Q4"
     }:
 
-        required_identity = any(
-            keyword in combined
+        return any(
+            keyword in identity
 
             for keyword in [
                 "quarterly",
                 "quarterly statement",
                 "quarterly report",
                 "quarterly financial",
-                "quarter statement"
+                "quarter statement",
+                "quarter report",
+                "q1",
+                "q2",
+                "q3",
+                "q4"
             ]
         )
-
-
-        return required_identity
 
 
     # ========================================================
@@ -1378,41 +1444,21 @@ def strict_document_type_match(
 
     if rt == "H1":
 
-        required_identity = any(
-            keyword in combined
+        return any(
+            keyword in identity
 
             for keyword in [
                 "semi annual",
                 "semiannual",
-                "semi annual report",
                 "half year",
                 "half yearly",
                 "six months",
                 "interim financial",
                 "interim financial statement",
-                "interim financial statements"
-            ]
-        )
-
-
-        financial_identity = any(
-            keyword in combined
-
-            for keyword in [
+                "interim financial statements",
                 "financial statement",
-                "financial statements",
-                "financial report",
-                "interim"
+                "financial statements"
             ]
-        )
-
-
-        return (
-            required_identity
-            or (
-                financial_identity
-                and "june" in combined
-            )
         )
 
 
@@ -1423,7 +1469,7 @@ def strict_document_type_match(
     if rt == "FY":
 
         return any(
-            keyword in combined
+            keyword in identity
 
             for keyword in [
                 "annual financial",
@@ -1442,12 +1488,117 @@ def strict_document_type_match(
 
 
 # ============================================================
+# REIT Path Guard
+# ============================================================
+
+
+def get_reit_base_path(
+    manager_url
+):
+
+    try:
+
+        parsed = urllib.parse.urlparse(
+            manager_url
+        )
+
+
+        path = parsed.path.rstrip(
+            "/"
+        )
+
+
+        return path
+
+
+    except Exception:
+
+        return None
+
+
+def is_allowed_reit_path(
+    manager_url,
+    candidate_url
+):
+
+    if not same_domain(
+        manager_url,
+        candidate_url
+    ):
+
+        return False
+
+
+    manager_path = get_reit_base_path(
+        manager_url
+    )
+
+
+    if not manager_path:
+
+        return True
+
+
+    candidate_path = (
+        urllib.parse.urlparse(
+            candidate_url
+        )
+        .path
+        .lower()
+    )
+
+
+    manager_path_lower = (
+        manager_path.lower()
+    )
+
+
+    # ========================================================
+    # Primary:
+    # داخل مسار صفحة الصندوق
+    # ========================================================
+
+    if candidate_path.startswith(
+        manager_path_lower
+    ):
+
+        return True
+
+
+    # ========================================================
+    # PDFs قد تكون تحت /media/
+    # ========================================================
+
+    if (
+        "/media/"
+        in candidate_path
+        or "/resources/"
+        in candidate_path
+        or "/fspdf/"
+        in candidate_path
+    ):
+
+        return True
+
+
+    # ========================================================
+    # Data paths المستخدمة لبعض المواقع
+    # ========================================================
+
+    if "/data/" in candidate_path:
+
+        return True
+
+
+    return False
+
+
+# ============================================================
 # Page priority
 # ============================================================
 
 
 def calculate_page_priority(
-    symbol,
     company_name,
     report_type,
     period_end,
@@ -1456,8 +1607,10 @@ def calculate_page_priority(
     context
 ):
 
-    combined = normalize_text(
-        f"{url} {anchor_text} {context}"
+    combined = contextual_text(
+        url,
+        anchor_text,
+        context
     )
 
 
@@ -1500,7 +1653,7 @@ def calculate_page_priority(
 
         if "announcement" in combined:
 
-            score += 70
+            score += 80
 
 
         if "quarter" in combined:
@@ -1580,14 +1733,13 @@ def calculate_page_priority(
 
     rejected, _ = hard_reject_document(
         url,
-        anchor_text,
-        context
+        anchor_text
     )
 
 
     if rejected:
 
-        score -= 200
+        score -= 250
 
 
     if any(
@@ -1596,41 +1748,44 @@ def calculate_page_priority(
         for noise in GENERAL_NAVIGATION_NOISE
     ):
 
-        score -= 70
+        score -= 100
 
 
     return score
 
 
 # ============================================================
-# Document score + gates
+# Document Score
 # ============================================================
 
 
 def calculate_document_score(
-    symbol,
     company_name,
     report_type,
     period_end,
     url,
     anchor_text,
     context,
-    document_type,
+    detected_type,
     readable
 ):
 
-    combined = normalize_text(
-        f"{url} {anchor_text} {context}"
+    identity = document_identity_text(
+        url,
+        anchor_text
+    )
+
+
+    combined = contextual_text(
+        url,
+        anchor_text,
+        context
     )
 
 
     score = 0.0
     reasons = []
 
-
-    # ========================================================
-    # Gates
-    # ========================================================
 
     year_ok = strict_year_match(
         period_end,
@@ -1648,23 +1803,26 @@ def calculate_document_score(
     )
 
 
-    document_type_ok = strict_document_type_match(
-        report_type,
-        url,
-        anchor_text,
-        context
+    document_type_ok = (
+        strict_document_type_match(
+            report_type,
+            url,
+            anchor_text
+        )
     )
 
 
-    hard_reject, reject_reasons = hard_reject_document(
+    (
+        hard_reject,
+        reject_reasons
+    ) = hard_reject_document(
         url,
-        anchor_text,
-        context
+        anchor_text
     )
 
 
     # ========================================================
-    # Base score
+    # Base
     # ========================================================
 
     if readable:
@@ -1676,7 +1834,7 @@ def calculate_document_score(
         )
 
 
-    if document_type == "PDF":
+    if detected_type == "PDF":
 
         score += 10
 
@@ -1685,7 +1843,7 @@ def calculate_document_score(
         )
 
 
-    if "reit" in combined:
+    if "reit" in identity:
 
         score += 15
 
@@ -1701,7 +1859,7 @@ def calculate_document_score(
             company_name
         )
 
-        if token in combined
+        if token in identity
     )
 
 
@@ -1727,7 +1885,7 @@ def calculate_document_score(
         score += 25
 
         reasons.append(
-            "+25 exact year"
+            "+25 year"
         )
 
 
@@ -1745,47 +1903,51 @@ def calculate_document_score(
         score += 30
 
         reasons.append(
-            "+30 document type"
+            "+30 document identity"
+        )
+
+
+    # ========================================================
+    # Identity bonus
+    # ========================================================
+
+    if "quarterly" in identity:
+
+        score += 10
+
+        reasons.append(
+            "+10 quarterly identity"
+        )
+
+
+    if (
+        "semi annual" in identity
+        or "semiannual" in identity
+    ):
+
+        score += 10
+
+        reasons.append(
+            "+10 semiannual identity"
         )
 
 
     if (
         "financial statement"
-        in combined
+        in identity
         or "financial statements"
-        in combined
+        in identity
     ):
 
         score += 10
 
         reasons.append(
-            "+10 financial statement"
-        )
-
-
-    if "quarterly" in combined:
-
-        score += 10
-
-        reasons.append(
-            "+10 quarterly"
-        )
-
-
-    if (
-        "semi annual" in combined
-        or "semiannual" in combined
-    ):
-
-        score += 10
-
-        reasons.append(
-            "+10 semiannual"
+            "+10 financial identity"
         )
 
 
     # ========================================================
-    # Hard reject
+    # Hard Reject
     # ========================================================
 
     if hard_reject:
@@ -1808,7 +1970,7 @@ def calculate_document_score(
 
         score = min(
             score,
-            45
+            45.0
         )
 
         reasons.append(
@@ -1820,7 +1982,7 @@ def calculate_document_score(
 
         score = min(
             score,
-            50
+            50.0
         )
 
         reasons.append(
@@ -1832,11 +1994,11 @@ def calculate_document_score(
 
         score = min(
             score,
-            40
+            35.0
         )
 
         reasons.append(
-            "DOCUMENT_TYPE_GATE_FAIL"
+            "DOCUMENT_IDENTITY_GATE_FAIL"
         )
 
 
@@ -1874,12 +2036,82 @@ def calculate_document_score(
 
 
 # ============================================================
+# Manager starts
+# ============================================================
+
+
+def get_manager_starts(
+    entry
+):
+
+    starts = []
+
+
+    sources = entry.get(
+        "sources",
+        []
+    )
+
+
+    if not isinstance(
+        sources,
+        list
+    ):
+
+        return starts
+
+
+    sources = sorted(
+        [
+            source
+
+            for source in sources
+
+            if isinstance(
+                source,
+                dict
+            )
+        ],
+        key=lambda source:
+            source.get(
+                "priority",
+                999
+            )
+    )
+
+
+    for source in sources:
+
+        if source.get(
+            "source_type"
+        ) != "fund_manager":
+
+            continue
+
+
+        url = canonical_url(
+            source.get(
+                "url"
+            )
+        )
+
+
+        if url:
+
+            starts.append(
+                url
+            )
+
+
+    return starts
+
+
+# ============================================================
 # Crawl
 # ============================================================
 
 
 def crawl_manager_site(
-    symbol,
     company_name,
     report_type,
     period_end,
@@ -1897,6 +2129,15 @@ def crawl_manager_site(
     page_candidates = []
 
     document_candidates = []
+
+
+    primary_manager_url = (
+        start_urls[
+            0
+        ]
+        if start_urls
+        else None
+    )
 
 
     for url in start_urls:
@@ -1946,7 +2187,26 @@ def crawl_manager_site(
         )
 
 
-        if url in visited:
+        url = canonical_url(
+            url
+        )
+
+
+        if (
+            not url
+            or url in visited
+        ):
+
+            continue
+
+
+        if (
+            primary_manager_url
+            and not is_allowed_reit_path(
+                primary_manager_url,
+                url
+            )
+        ):
 
             continue
 
@@ -2033,14 +2293,15 @@ def crawl_manager_site(
         )
 
 
-        page_priority = calculate_page_priority(
-            symbol,
-            company_name,
-            report_type,
-            period_end,
-            url,
-            incoming_anchor,
-            incoming_context
+        page_priority = (
+            calculate_page_priority(
+                company_name,
+                report_type,
+                period_end,
+                url,
+                incoming_anchor,
+                incoming_context
+            )
         )
 
 
@@ -2099,23 +2360,35 @@ def crawl_manager_site(
                 continue
 
 
+            if (
+                primary_manager_url
+                and not is_allowed_reit_path(
+                    primary_manager_url,
+                    link_url
+                )
+            ):
+
+                continue
+
+
             if link_url == url:
 
                 continue
 
 
-            priority = calculate_page_priority(
-                symbol,
-                company_name,
-                report_type,
-                period_end,
-                link_url,
-                link[
-                    "anchor_text"
-                ],
-                link[
-                    "context"
-                ]
+            priority = (
+                calculate_page_priority(
+                    company_name,
+                    report_type,
+                    period_end,
+                    link_url,
+                    link[
+                        "anchor_text"
+                    ],
+                    link[
+                        "context"
+                    ]
+                )
             )
 
 
@@ -2164,10 +2437,16 @@ def crawl_manager_site(
             ]
 
 
-            combined = normalize_text(
-                f"{link_url} "
-                f"{anchor} "
-                f"{context}"
+            identity = document_identity_text(
+                link_url,
+                anchor
+            )
+
+
+            combined = contextual_text(
+                link_url,
+                anchor,
+                context
             )
 
 
@@ -2176,7 +2455,7 @@ def crawl_manager_site(
                     link_url
                 )
                 or any(
-                    keyword in combined
+                    keyword in identity
 
                     for keyword in [
                         "quarter",
@@ -2188,10 +2467,23 @@ def crawl_manager_site(
                         "interim",
                         "annual report",
                         "announcement",
-                        "announcements",
-                        "report",
-                        "here"
+                        "report"
                     ]
+                )
+                or (
+                    "here" in identity
+                    and any(
+                        keyword in combined
+
+                        for keyword in [
+                            "quarter",
+                            "quarterly",
+                            "financial",
+                            "statement",
+                            "semi annual",
+                            "semiannual"
+                        ]
+                    )
                 )
             )
 
@@ -2265,77 +2557,6 @@ def crawl_manager_site(
 
 
 # ============================================================
-# Manager source
-# ============================================================
-
-
-def get_manager_starts(
-    entry
-):
-
-    starts = []
-
-
-    sources = entry.get(
-        "sources",
-        []
-    )
-
-
-    if not isinstance(
-        sources,
-        list
-    ):
-
-        return starts
-
-
-    sources = sorted(
-        [
-            item
-
-            for item in sources
-
-            if isinstance(
-                item,
-                dict
-            )
-        ],
-        key=lambda item:
-            item.get(
-                "priority",
-                999
-            )
-    )
-
-
-    for source in sources:
-
-        if source.get(
-            "source_type"
-        ) != "fund_manager":
-
-            continue
-
-
-        url = canonical_url(
-            source.get(
-                "url"
-            )
-        )
-
-
-        if url:
-
-            starts.append(
-                url
-            )
-
-
-    return starts
-
-
-# ============================================================
 # Dedupe
 # ============================================================
 
@@ -2371,9 +2592,16 @@ def dedupe_candidates(
         ] = url
 
 
-        combined = normalize_text(
-            f"{item.get('anchor_text', '')} "
-            f"{item.get('context', '')}"
+        combined = contextual_text(
+            url,
+            item.get(
+                "anchor_text",
+                ""
+            ),
+            item.get(
+                "context",
+                ""
+            )
         )
 
 
@@ -2397,9 +2625,16 @@ def dedupe_candidates(
             continue
 
 
-        old_combined = normalize_text(
-            f"{existing.get('anchor_text', '')} "
-            f"{existing.get('context', '')}"
+        old_combined = contextual_text(
+            url,
+            existing.get(
+                "anchor_text",
+                ""
+            ),
+            existing.get(
+                "context",
+                ""
+            )
         )
 
 
@@ -2441,12 +2676,11 @@ def dedupe_candidates(
 
 
 # ============================================================
-# Inspect candidate
+# Inspect
 # ============================================================
 
 
 def inspect_candidate(
-    symbol,
     company_name,
     report_type,
     period_end,
@@ -2468,7 +2702,7 @@ def inspect_candidate(
     )
 
 
-    doc_type = (
+    detected_type = (
         detect_document_type(
             response
         )
@@ -2478,7 +2712,6 @@ def inspect_candidate(
 
 
     validation = calculate_document_score(
-        symbol,
         company_name,
         report_type,
         period_end,
@@ -2493,7 +2726,7 @@ def inspect_candidate(
             "context",
             ""
         ),
-        doc_type,
+        detected_type,
         readable
     )
 
@@ -2532,7 +2765,7 @@ def inspect_candidate(
             ),
 
         "document_type":
-            doc_type,
+            detected_type,
 
         "relevance_score":
             validation[
@@ -2578,7 +2811,7 @@ def inspect_candidate(
 
 
 # ============================================================
-# Discover report
+# Discover Report
 # ============================================================
 
 
@@ -2599,8 +2832,10 @@ def discover_report(
     )
 
 
-    manager_starts = get_manager_starts(
-        entry
+    manager_starts = (
+        get_manager_starts(
+            entry
+        )
     )
 
 
@@ -2644,7 +2879,6 @@ def discover_report(
         page_candidates,
         document_candidates
     ) = crawl_manager_site(
-        symbol,
         company_name,
         report_type,
         period_end,
@@ -2653,7 +2887,7 @@ def discover_report(
 
 
     # ========================================================
-    # Registry report links
+    # Registry report URLs
     # ========================================================
 
     for field in [
@@ -2724,7 +2958,6 @@ def discover_report(
 
 
         validation = calculate_document_score(
-            symbol,
             company_name,
             report_type,
             period_end,
@@ -2834,7 +3067,7 @@ def discover_report(
             f"{item['pre_year_ok']} | "
             f"Period="
             f"{item['pre_period_ok']} | "
-            f"DocType="
+            f"Identity="
             f"{item['pre_doc_type_ok']} | "
             f"Reject="
             f"{item['pre_hard_reject']} | "
@@ -2844,7 +3077,6 @@ def discover_report(
 
 
         result = inspect_candidate(
-            symbol,
             company_name,
             report_type,
             period_end,
@@ -2856,10 +3088,6 @@ def discover_report(
             result
         )
 
-
-        # ====================================================
-        # EARLY STOP
-        # ====================================================
 
         if (
             result[
@@ -2889,7 +3117,7 @@ def discover_report(
 
             print(
                 "🚀 EARLY STOP | "
-                "All strict gates passed | "
+                "STRICT IDENTITY VERIFIED | "
                 f"Score="
                 f"{result['relevance_score']:.2f}",
                 flush=True
@@ -2920,10 +3148,6 @@ def discover_report(
         reverse=True
     )
 
-
-    # ========================================================
-    # Strict usable candidates
-    # ========================================================
 
     usable = [
         item
@@ -3022,7 +3246,7 @@ def discover_report(
         ):
 
             state = (
-                "ONLY_WRONG_DOCUMENT_TYPES"
+                "ONLY_HARD_REJECTED_DOCUMENTS"
             )
 
 
@@ -3046,7 +3270,7 @@ def discover_report(
         ):
 
             state = (
-                "NO_VALID_FINANCIAL_DOCUMENT_TYPE"
+                "NO_VALID_DOCUMENT_IDENTITY"
             )
 
 
@@ -3217,10 +3441,12 @@ def print_result(
             f"{item['year_match']} | "
             f"PeriodOK="
             f"{item['period_match']} | "
-            f"DocTypeOK="
+            f"IdentityOK="
             f"{item['document_type_match']} | "
             f"HardReject="
             f"{item['hard_reject']} | "
+            f"Cache="
+            f"{item['from_cache']} | "
             f"HTTP="
             f"{item['http_status']} | "
             f"Type="
@@ -3251,7 +3477,7 @@ def print_summary(
 ):
 
     print_header(
-        "🏆 REIT REPORT DISCOVERY SUMMARY v5.3"
+        "🏆 REIT REPORT DISCOVERY SUMMARY v5.4"
     )
 
 
@@ -3349,7 +3575,7 @@ def print_summary(
 
 
     print(
-        "=" * 120,
+        "=" * 122,
         flush=True
     )
 
@@ -3392,13 +3618,19 @@ def run_discovery():
 
 
     print(
-        "🔐 Strict Document Type Gate: ON",
+        "🔐 Strict Document Identity: ON",
         flush=True
     )
 
 
     print(
-        "🚫 Valuation/Factsheet/NAV Hard Reject: ON",
+        "🚫 Terms / Valuation / Factsheet / NAV Reject: ON",
+        flush=True
+    )
+
+
+    print(
+        "🛡 REIT Path Guard: ON",
         flush=True
     )
 
