@@ -7,17 +7,18 @@ from supabase import create_client
 
 
 # ============================================================
-# REIT OFFICIAL SOURCE REGISTRY v1
+# REIT OFFICIAL SOURCE REGISTRY v1.1
 #
 # READ ONLY بالنسبة لـ Supabase
 #
-# الهدف:
-# 1) قراءة جميع REITs النشطة
-# 2) قراءة سجل المصادر الرسمية من JSON
-# 3) التحقق من صحة المصادر والتقارير
-# 4) اكتشاف REITs غير المسجلة
-# 5) اكتشاف روابط مكررة / بيانات غير مكتملة
-# 6) تجهيز Registry عام وقابل للتوسع
+# التحسينات:
+# 1) البحث عن Registry بأكثر من مسار آمن
+# 2) إظهار المسار الفعلي المستخدم
+# 3) عدم إخفاء مشكلة الملف المفقود
+# 4) التحقق من بنية JSON
+# 5) التحقق من جميع REITs النشطة
+# 6) اكتشاف المصادر والتقارير غير المكتملة
+# 7) اكتشاف الروابط المكررة
 #
 # لا توجد كتابة في Supabase.
 # ============================================================
@@ -43,14 +44,9 @@ supabase = create_client(
 )
 
 
-ENGINE_NAME = "REIT OFFICIAL SOURCE REGISTRY v1"
+ENGINE_NAME = "REIT OFFICIAL SOURCE REGISTRY v1.1"
 
-REGISTRY_FILE = Path(
-    os.environ.get(
-        "REIT_REGISTRY_FILE",
-        "reit_official_sources.json"
-    )
-)
+DEFAULT_REGISTRY_FILENAME = "reit_official_sources.json"
 
 
 # ============================================================
@@ -83,7 +79,7 @@ ALLOWED_REPORT_TYPES = {
 
 
 # ============================================================
-# أدوات
+# أدوات عامة
 # ============================================================
 
 
@@ -147,10 +143,116 @@ def is_http_url(url):
         value.startswith(
             "https://"
         )
-        or value.startswith(
+        or
+        value.startswith(
             "http://"
         )
     )
+
+
+# ============================================================
+# تحديد مكان Registry
+# ============================================================
+
+
+def get_registry_candidates():
+
+    candidates = []
+
+    # --------------------------------------------------------
+    # 1) Environment variable إن وجد
+    # --------------------------------------------------------
+
+    env_path = os.environ.get(
+        "REIT_REGISTRY_FILE"
+    )
+
+    if env_path:
+
+        candidates.append(
+            Path(env_path)
+        )
+
+    # --------------------------------------------------------
+    # 2) بجانب ملف Python نفسه
+    # --------------------------------------------------------
+
+    script_directory = Path(
+        __file__
+    ).resolve().parent
+
+    candidates.append(
+        script_directory
+        / DEFAULT_REGISTRY_FILENAME
+    )
+
+    # --------------------------------------------------------
+    # 3) Current working directory
+    # --------------------------------------------------------
+
+    candidates.append(
+        Path.cwd()
+        / DEFAULT_REGISTRY_FILENAME
+    )
+
+    # --------------------------------------------------------
+    # إزالة التكرار
+    # --------------------------------------------------------
+
+    unique = []
+
+    seen = set()
+
+    for candidate in candidates:
+
+        resolved = candidate.resolve()
+
+        key = str(
+            resolved
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(
+            key
+        )
+
+        unique.append(
+            resolved
+        )
+
+    return unique
+
+
+def find_registry_file():
+
+    candidates = get_registry_candidates()
+
+    print(
+        "🔎 Registry search paths:",
+        flush=True
+    )
+
+    for candidate in candidates:
+
+        exists = candidate.exists()
+
+        icon = (
+            "✅"
+            if exists
+            else "❌"
+        )
+
+        print(
+            f"{icon} {candidate}",
+            flush=True
+        )
+
+        if exists:
+            return candidate
+
+    return None
 
 
 # ============================================================
@@ -199,23 +301,25 @@ def get_reit_stocks():
 
 def load_registry():
 
-    if not REGISTRY_FILE.exists():
+    registry_file = find_registry_file()
 
-        return {
-            "version":
-                1,
+    if registry_file is None:
 
-            "updated_at":
-                None,
+        raise RuntimeError(
+            "reit_official_sources.json was not found. "
+            "Make sure it exists in the repository root "
+            "and was committed to GitHub."
+        )
 
-            "reits":
-                {}
-        }
-
+    print(
+        f"📁 Registry file found: "
+        f"{registry_file}",
+        flush=True
+    )
 
     try:
 
-        with REGISTRY_FILE.open(
+        with registry_file.open(
             "r",
             encoding="utf-8"
         ) as file:
@@ -228,10 +332,17 @@ def load_registry():
 
         raise RuntimeError(
             "Invalid JSON in "
-            f"{REGISTRY_FILE}: "
+            f"{registry_file}: "
             f"{error}"
         )
 
+    except Exception as error:
+
+        raise RuntimeError(
+            "Unable to read registry file: "
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
 
     if not isinstance(
         data,
@@ -239,9 +350,8 @@ def load_registry():
     ):
 
         raise RuntimeError(
-            "Registry root must be an object"
+            "Registry root must be a JSON object"
         )
-
 
     data.setdefault(
         "version",
@@ -258,18 +368,64 @@ def load_registry():
         {}
     )
 
-
     if not isinstance(
         data["reits"],
         dict
     ):
 
         raise RuntimeError(
-            "Registry 'reits' must be an object"
+            "Registry 'reits' must be a JSON object"
         )
 
+    # --------------------------------------------------------
+    # Normalize symbols
+    # --------------------------------------------------------
 
-    return data
+    normalized_reits = {}
+
+    for symbol, entry in data[
+        "reits"
+    ].items():
+
+        normalized_symbol = (
+            normalize_symbol(
+                symbol
+            )
+        )
+
+        if not normalized_symbol:
+            continue
+
+        normalized_reits[
+            normalized_symbol
+        ] = entry
+
+    data[
+        "reits"
+    ] = normalized_reits
+
+    print(
+        f"📚 Loaded Registry Entries: "
+        f"{len(normalized_reits)}",
+        flush=True
+    )
+
+    if normalized_reits:
+
+        print(
+            "📌 Registered Symbols: "
+            + ", ".join(
+                sorted(
+                    normalized_reits.keys()
+                )
+            ),
+            flush=True
+        )
+
+    return (
+        data,
+        registry_file
+    )
 
 
 # ============================================================
@@ -309,7 +465,6 @@ def validate_source(
 
     findings = []
 
-
     if not isinstance(
         source,
         dict
@@ -328,7 +483,6 @@ def validate_source(
             }
         ]
 
-
     source_type = source.get(
         "source_type"
     )
@@ -339,6 +493,9 @@ def validate_source(
         )
     )
 
+    priority = source.get(
+        "priority"
+    )
 
     if not source_type:
 
@@ -352,7 +509,6 @@ def validate_source(
             "message":
                 "source_type is missing"
         })
-
 
     elif source_type not in ALLOWED_SOURCE_TYPES:
 
@@ -370,7 +526,6 @@ def validate_source(
                 )
         })
 
-
     if not url:
 
         findings.append({
@@ -383,7 +538,6 @@ def validate_source(
             "message":
                 "Source URL is missing"
         })
-
 
     elif not is_http_url(
         url
@@ -403,6 +557,48 @@ def validate_source(
                 )
         })
 
+    if priority is not None:
+
+        try:
+
+            numeric_priority = int(
+                priority
+            )
+
+            if numeric_priority < 1:
+
+                findings.append({
+                    "severity":
+                        "WARN",
+
+                    "code":
+                        "SOURCE_PRIORITY_INVALID",
+
+                    "message":
+                        (
+                            "priority should be "
+                            "a positive integer"
+                        )
+                })
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            findings.append({
+                "severity":
+                    "WARN",
+
+                "code":
+                    "SOURCE_PRIORITY_INVALID",
+
+                "message":
+                    (
+                        "priority should be "
+                        "a positive integer"
+                    )
+            })
 
     return findings
 
@@ -417,7 +613,6 @@ def validate_report(
 ):
 
     findings = []
-
 
     if not isinstance(
         report,
@@ -437,7 +632,6 @@ def validate_report(
             }
         ]
 
-
     report_type = report.get(
         "report_type"
     )
@@ -456,7 +650,6 @@ def validate_report(
         "source_type"
     )
 
-
     if not report_type:
 
         findings.append({
@@ -469,7 +662,6 @@ def validate_report(
             "message":
                 "report_type is missing"
         })
-
 
     elif report_type not in ALLOWED_REPORT_TYPES:
 
@@ -487,7 +679,6 @@ def validate_report(
                 )
         })
 
-
     if not period_end:
 
         findings.append({
@@ -504,7 +695,6 @@ def validate_report(
                 )
         })
 
-
     if not url:
 
         findings.append({
@@ -520,7 +710,6 @@ def validate_report(
                     "has no URL"
                 )
         })
-
 
     elif not is_http_url(
         url
@@ -539,7 +728,6 @@ def validate_report(
                     f"{url}"
                 )
         })
-
 
     if (
         source_type
@@ -561,7 +749,6 @@ def validate_report(
                 )
         })
 
-
     return findings
 
 
@@ -576,7 +763,6 @@ def validate_reit_entry(
 ):
 
     findings = []
-
 
     if not isinstance(
         entry,
@@ -599,7 +785,6 @@ def validate_reit_entry(
             }
         ]
 
-
     sources = entry.get(
         "sources",
         []
@@ -609,7 +794,6 @@ def validate_reit_entry(
         "reports",
         []
     )
-
 
     if not isinstance(
         sources,
@@ -629,7 +813,6 @@ def validate_reit_entry(
 
         sources = []
 
-
     if not isinstance(
         reports,
         list
@@ -648,7 +831,6 @@ def validate_reit_entry(
 
         reports = []
 
-
     if not sources:
 
         findings.append({
@@ -662,7 +844,6 @@ def validate_reit_entry(
                 "No official sources registered"
         })
 
-
     if not reports:
 
         findings.append({
@@ -673,9 +854,11 @@ def validate_reit_entry(
                 "NO_REPORTS",
 
             "message":
-                "No official reports registered"
+                (
+                    "Official sources exist, "
+                    "but no report URLs are registered yet"
+                )
         })
-
 
     for index, source in enumerate(
         sources,
@@ -701,7 +884,6 @@ def validate_reit_entry(
                 finding
             )
 
-
     for index, report in enumerate(
         reports,
         start=1
@@ -726,7 +908,6 @@ def validate_reit_entry(
                 finding
             )
 
-
     return findings
 
 
@@ -743,7 +924,6 @@ def find_duplicate_urls(
 
     duplicates = []
 
-
     for symbol, entry in (
         registry
         .get(
@@ -758,7 +938,6 @@ def find_duplicate_urls(
             dict
         ):
             continue
-
 
         for source in entry.get(
             "sources",
@@ -807,7 +986,6 @@ def find_duplicate_urls(
                     "source"
                 )
 
-
         for report in entry.get(
             "reports",
             []
@@ -855,7 +1033,6 @@ def find_duplicate_urls(
                     "report"
                 )
 
-
     return duplicates
 
 
@@ -882,12 +1059,10 @@ def analyze_reit(
         or symbol
     )
 
-
     entry = get_registry_entry(
         registry,
         symbol
     )
-
 
     if entry is None:
 
@@ -922,11 +1097,13 @@ def analyze_reit(
                         "REGISTRY_ENTRY_MISSING",
 
                     "message":
-                        "REIT is not registered"
+                        (
+                            "REIT is not registered "
+                            "in reit_official_sources.json"
+                        )
                 }
             ]
         }
-
 
     findings = (
         validate_reit_entry(
@@ -934,7 +1111,6 @@ def analyze_reit(
             entry
         )
     )
-
 
     fail_count = sum(
         1
@@ -944,7 +1120,6 @@ def analyze_reit(
         ] == "FAIL"
     )
 
-
     warn_count = sum(
         1
         for finding in findings
@@ -952,7 +1127,6 @@ def analyze_reit(
             "severity"
         ] == "WARN"
     )
-
 
     if fail_count > 0:
 
@@ -966,7 +1140,6 @@ def analyze_reit(
 
         state = "READY"
 
-
     sources = entry.get(
         "sources",
         []
@@ -976,7 +1149,6 @@ def analyze_reit(
         "reports",
         []
     )
-
 
     return {
         "symbol":
@@ -1033,13 +1205,11 @@ def print_result(
         f"{result['company_name']}"
     )
 
-
     print(
         f"🧭 Registry State: "
         f"{result['registry_state']}",
         flush=True
     )
-
 
     print(
         f"🌐 Sources: "
@@ -1047,13 +1217,11 @@ def print_result(
         flush=True
     )
 
-
     print(
         f"📄 Reports: "
         f"{result['reports']}",
         flush=True
     )
-
 
     print(
         f"🔴 Fail: "
@@ -1062,7 +1230,6 @@ def print_result(
         f"{result['warn_count']}",
         flush=True
     )
-
 
     if not result[
         "findings"
@@ -1075,9 +1242,7 @@ def print_result(
 
         return
 
-
     print_separator()
-
 
     for finding in result[
         "findings"
@@ -1108,13 +1273,13 @@ def print_result(
 
 def print_summary(
     results,
-    registry
+    registry,
+    registry_file
 ):
 
     print_header(
-        "🏆 REIT SOURCE REGISTRY SUMMARY v1"
+        "🏆 REIT SOURCE REGISTRY SUMMARY v1.1"
     )
-
 
     for index, result in enumerate(
         results,
@@ -1138,12 +1303,9 @@ def print_summary(
             flush=True
         )
 
-
     print_separator()
 
-
     state_counts = {}
-
 
     for result in results:
 
@@ -1161,6 +1323,11 @@ def print_summary(
             + 1
         )
 
+    print(
+        f"📁 Registry File: "
+        f"{registry_file}",
+        flush=True
+    )
 
     print(
         f"🏢 Active REITs: "
@@ -1168,13 +1335,11 @@ def print_summary(
         flush=True
     )
 
-
     print(
         f"📚 Registry Entries: "
         f"{len(registry.get('reits', {}))}",
         flush=True
     )
-
 
     for state, count in sorted(
         state_counts.items()
@@ -1186,16 +1351,13 @@ def print_summary(
             flush=True
         )
 
-
     duplicates = (
         find_duplicate_urls(
             registry
         )
     )
 
-
     print_separator()
-
 
     if duplicates:
 
@@ -1208,7 +1370,9 @@ def print_summary(
         for duplicate in duplicates:
 
             print(
-                f"- {duplicate['url']}",
+                f"- {duplicate['url']} | "
+                f"{duplicate['first']} → "
+                f"{duplicate['second']}",
                 flush=True
             )
 
@@ -1218,7 +1382,6 @@ def print_summary(
             "✅ No duplicate official URLs",
             flush=True
         )
-
 
     print(
         "=" * 100,
@@ -1237,19 +1400,22 @@ def run_registry_audit():
         ENGINE_NAME
     )
 
-
     print(
         "🔒 Supabase Mode: READ ONLY",
         flush=True
     )
 
-
     print(
-        f"📁 Registry File: "
-        f"{REGISTRY_FILE}",
+        f"📂 Current Working Directory: "
+        f"{Path.cwd()}",
         flush=True
     )
 
+    print(
+        f"📂 Script Directory: "
+        f"{Path(__file__).resolve().parent}",
+        flush=True
+    )
 
     print(
         f"🕐 Started: "
@@ -1257,11 +1423,11 @@ def run_registry_audit():
         flush=True
     )
 
-
     stocks = get_reit_stocks()
 
-    registry = load_registry()
-
+    registry, registry_file = (
+        load_registry()
+    )
 
     print(
         f"🏢 Active REITs: "
@@ -1269,16 +1435,13 @@ def run_registry_audit():
         flush=True
     )
 
-
     print(
         f"📚 Registry Entries: "
         f"{len(registry.get('reits', {}))}",
         flush=True
     )
 
-
     results = []
-
 
     for stock in stocks:
 
@@ -1295,10 +1458,10 @@ def run_registry_audit():
             result
         )
 
-
     print_summary(
         results,
-        registry
+        registry,
+        registry_file
     )
 
 
