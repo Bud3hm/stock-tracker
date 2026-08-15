@@ -4,4 +4,3 @@ requests
 supabase
 pandas
 lxml
-pypdf
