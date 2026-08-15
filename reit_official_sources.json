@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-15T00:00:00Z",
+  "updated_at": "2026-08-15T23:23:00+03:00",
   "reits": {
     "4340.SR": {
       "company_name": "الراجحي ريت",
@@ -16,7 +16,20 @@
           "priority": 2
         }
       ],
-      "reports": []
+      "reports": [
+        {
+          "report_type": "Q2",
+          "period_end": "2026-06-30",
+          "source_type": "official_announcement",
+          "url": "https://www.saudiexchange.sa/wps/portal/saudiexchange/newsandreports/issuer-news/issuer-announcements/issuer-announcements-details/?anCat=1&anId=96746&cs=4340&locale=ar"
+        },
+        {
+          "report_type": "H1",
+          "period_end": "2026-06-30",
+          "source_type": "official_announcement",
+          "url": "https://www.saudiexchange.sa/wps/portal/saudiexchange/newsandreports/issuer-news/issuer-announcements/issuer-announcements-details/?anCat=1&anId=97470&cs=4340&locale=ar"
+        }
+      ]
     }
   }
 }
