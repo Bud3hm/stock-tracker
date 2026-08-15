@@ -2,24 +2,28 @@ import os
 from datetime import datetime, timezone
 from supabase import create_client
 
+from reit_period_schema import (
+    identify_reit_period,
+    build_reit_audit_requirements,
+    validate_reit_period,
+)
+
 
 # ============================================================
-# REIT OFFICIAL DATA ENGINE v1
+# REIT OFFICIAL DATA ENGINE v2
 #
-# المرحلة الحالية:
 # READ ONLY
 #
 # الهدف:
-# 1) قراءة جميع صناديق REIT من stocks
-# 2) فحص البيانات الخام لكل صندوق
-# 3) تحديد الفترات السنوية والربعية
-# 4) قياس اكتمال كل فترة
-# 5) تحديد البيانات المفقودة
-# 6) تحديد هل الصندوق يحتاج Official Fallback
-# 7) عدم تعديل أي بيانات حاليًا
-#
-# مهم:
-# هذا المحرك عام لجميع REITs وليس لصندوق محدد.
+# 1) فحص جميع صناديق REIT
+# 2) تطبيق REIT Period Schema الصحيح
+# 3) الفصل بين:
+#       Quarterly Statement
+#       H1 Financial Report
+#       FY Financial Report
+# 4) تحديد ما ينقص كل فترة
+# 5) تحديد المصدر المطلوب
+# 6) عدم الكتابة في Supabase
 # ============================================================
 
 
@@ -46,94 +50,75 @@ supabase = create_client(
 
 
 # ============================================================
-# إعدادات عامة
+# أسماء المحرك
 # ============================================================
 
-ENGINE_NAME = "REIT OFFICIAL DATA ENGINE v1"
+ENGINE_NAME = "REIT OFFICIAL DATA ENGINE v2"
 READ_ONLY = True
 
 
 # ============================================================
-# البنود الأساسية المطلوبة
+# خرائط Yahoo/Raw → REIT Schema
+#
+# هذه المرحلة لا تجلب المصدر الرسمي بعد.
+# فقط نوحد ما لدينا حاليًا.
 # ============================================================
 
-QUARTERLY_CORE_METRICS = [
 
-    "quarterlyTotalRevenue",
+QUARTERLY_RAW_MAP = {
 
-    "quarterlyOperatingIncome",
+    "quarterlyTotalRevenue":
+        "rental_income",
 
-    "quarterlyNetIncome",
+    "quarterlyTotalAssets":
+        "total_assets",
 
-    "quarterlyTotalAssets",
+    "quarterlyTotalDebt":
+        "total_debt",
 
-    "quarterlyTotalLiabilitiesNetMinorityInterest",
+    "quarterlyTotalLiabilitiesNetMinorityInterest":
+        "total_liabilities",
 
-    "quarterlyStockholdersEquity",
-
-    "quarterlyTotalDebt",
-
-    "quarterlyOperatingCashFlow",
-
-    "quarterlyFreeCashFlow"
-]
+    "quarterlyStockholdersEquity":
+        "net_asset_value",
+}
 
 
-QUARTERLY_INCOME_METRICS = [
+FINANCIAL_RAW_MAP = {
 
-    "quarterlyTotalRevenue",
+    "annualTotalRevenue":
+        "total_revenue",
 
-    "quarterlyOperatingIncome",
+    "annualOperatingIncome":
+        "operating_income",
 
-    "quarterlyNetIncome"
-]
+    "annualNetIncome":
+        "net_income",
 
+    "annualTotalAssets":
+        "total_assets",
 
-QUARTERLY_BALANCE_METRICS = [
+    "annualTotalLiabilitiesNetMinorityInterest":
+        "total_liabilities",
 
-    "quarterlyTotalAssets",
+    "annualStockholdersEquity":
+        "net_assets",
 
-    "quarterlyTotalLiabilitiesNetMinorityInterest",
+    "annualTotalDebt":
+        "total_debt",
 
-    "quarterlyStockholdersEquity",
+    "annualOperatingCashFlow":
+        "operating_cash_flow",
 
-    "quarterlyTotalDebt"
-]
-
-
-QUARTERLY_CASHFLOW_METRICS = [
-
-    "quarterlyOperatingCashFlow",
-
-    "quarterlyFreeCashFlow"
-]
-
-
-ANNUAL_CORE_METRICS = [
-
-    "annualTotalRevenue",
-
-    "annualOperatingIncome",
-
-    "annualNetIncome",
-
-    "annualTotalAssets",
-
-    "annualTotalLiabilitiesNetMinorityInterest",
-
-    "annualStockholdersEquity",
-
-    "annualTotalDebt",
-
-    "annualOperatingCashFlow",
-
-    "annualFreeCashFlow"
-]
+    "annualFreeCashFlow":
+        "free_cash_flow",
+}
 
 
 # ============================================================
-# أدوات عامة
+# أدوات
 # ============================================================
+
 
 def safe_number(value):
 
@@ -160,7 +145,8 @@ def fmt(value):
 def print_header(title):
 
     print(
-        "\n" + "=" * 90,
+        "\n"
+        + "=" * 92,
         flush=True
     )
 
@@ -170,7 +156,7 @@ def print_header(title):
     )
 
     print(
-        "=" * 90,
+        "=" * 92,
         flush=True
     )
 
@@ -178,14 +164,15 @@ def print_header(title):
 def print_separator():
 
     print(
-        "-" * 90,
+        "-" * 92,
         flush=True
     )
 
 
 # ============================================================
-# جلب جميع صناديق REIT
+# Supabase
 # ============================================================
+
 
 def get_reit_stocks():
 
@@ -221,11 +208,7 @@ def get_reit_stocks():
     return response.data or []
 
 
-# ============================================================
-# جلب البيانات المالية الخام
-# ============================================================
-
-def get_financial_data(stock_id):
+def get_financial_rows(stock_id):
 
     response = (
         supabase
@@ -234,7 +217,8 @@ def get_financial_data(stock_id):
             "period_end,"
             "period_type,"
             "metric,"
-            "value"
+            "value,"
+            "source"
         )
         .eq(
             "stock_id",
@@ -247,13 +231,13 @@ def get_financial_data(stock_id):
 
 
 # ============================================================
-# تنظيم البيانات
+# تنظيم Raw Data
 # ============================================================
 
-def organize_financial_data(rows):
 
-    annual = {}
-    quarterly = {}
+def organize_raw_data(rows):
+
+    periods = {}
 
     for row in rows:
 
@@ -275,6 +259,10 @@ def organize_financial_data(rows):
             )
         )
 
+        source = row.get(
+            "source"
+        )
+
         if (
             not period_end
             or not period_type
@@ -287,744 +275,597 @@ def organize_financial_data(rows):
             period_end
         )
 
-        if period_type == "12M":
+        key = (
+            period_end,
+            str(period_type)
+        )
 
-            annual.setdefault(
-                period_end,
-                {}
+        periods.setdefault(
+            key,
+            {
+                "period_end":
+                    period_end,
+
+                "period_type":
+                    str(period_type),
+
+                "metrics":
+                    {},
+
+                "sources":
+                    set(),
+            }
+        )
+
+        periods[
+            key
+        ][
+            "metrics"
+        ][
+            metric
+        ] = metric_value
+
+        if source:
+            periods[
+                key
+            ][
+                "sources"
+            ].add(
+                str(source)
             )
 
-            annual[
-                period_end
-            ][
-                metric
-            ] = metric_value
-
-        elif period_type == "3M":
-
-            quarterly.setdefault(
-                period_end,
-                {}
-            )
-
-            quarterly[
-                period_end
-            ][
-                metric
-            ] = metric_value
-
-    return annual, quarterly
+    return periods
 
 
 # ============================================================
-# فحص مجموعة مؤشرات
+# تحويل Raw Quarterly إلى REIT Schema
 # ============================================================
 
-def inspect_metric_group(
-    data,
-    required_metrics
+
+def normalize_quarterly_metrics(
+    raw_metrics
 ):
 
-    available = []
-    missing = []
+    normalized = {}
 
-    for metric_name in required_metrics:
+    for (
+        raw_name,
+        schema_name
+    ) in QUARTERLY_RAW_MAP.items():
 
-        metric_value = safe_number(
-            data.get(
-                metric_name
+        value = safe_number(
+            raw_metrics.get(
+                raw_name
             )
         )
 
-        if metric_value is None:
+        if value is not None:
 
-            missing.append(
-                metric_name
-            )
+            normalized[
+                schema_name
+            ] = value
 
-        else:
 
-            available.append(
-                metric_name
-            )
+    # ========================================================
+    # مشتقات آمنة من القيم الموجودة
+    # ========================================================
 
-    total = len(
-        required_metrics
-    )
-
-    available_count = len(
-        available
-    )
-
-    coverage = (
-        (
-            available_count
-            / total
+    total_assets = safe_number(
+        normalized.get(
+            "total_assets"
         )
-        * 100
-        if total > 0
-        else 0.0
     )
 
-    return {
-        "available":
-            available,
-
-        "missing":
-            missing,
-
-        "available_count":
-            available_count,
-
-        "total_count":
-            total,
-
-        "coverage":
-            coverage
-    }
-
-
-# ============================================================
-# فحص فترة ربع سنوية
-# ============================================================
-
-def inspect_quarter(
-    period_end,
-    data
-):
-
-    core = inspect_metric_group(
-        data,
-        QUARTERLY_CORE_METRICS
+    total_debt = safe_number(
+        normalized.get(
+            "total_debt"
+        )
     )
 
-    income = inspect_metric_group(
-        data,
-        QUARTERLY_INCOME_METRICS
-    )
-
-    balance = inspect_metric_group(
-        data,
-        QUARTERLY_BALANCE_METRICS
-    )
-
-    cashflow = inspect_metric_group(
-        data,
-        QUARTERLY_CASHFLOW_METRICS
-    )
-
-    # --------------------------------------------------------
-    # هل الفترة تحتوي قائمة دخل؟
-    # --------------------------------------------------------
-
-    has_income_statement = (
-        income[
-            "available_count"
-        ] > 0
-    )
-
-    income_complete = (
-        income[
-            "available_count"
-        ]
-        ==
-        income[
-            "total_count"
-        ]
-    )
-
-    # --------------------------------------------------------
-    # هل الميزانية موجودة؟
-    # --------------------------------------------------------
-
-    has_balance_sheet = (
-        balance[
-            "available_count"
-        ] > 0
-    )
-
-    balance_complete = (
-        balance[
-            "available_count"
-        ]
-        ==
-        balance[
-            "total_count"
-        ]
-    )
-
-    # --------------------------------------------------------
-    # هل التدفقات موجودة؟
-    # --------------------------------------------------------
-
-    has_cashflow = (
-        cashflow[
-            "available_count"
-        ] > 0
-    )
-
-    cashflow_complete = (
-        cashflow[
-            "available_count"
-        ]
-        ==
-        cashflow[
-            "total_count"
-        ]
-    )
-
-    # --------------------------------------------------------
-    # تصنيف الفترة
-    # --------------------------------------------------------
 
     if (
-        income_complete
-        and balance_complete
-        and cashflow_complete
+        total_assets is not None
+        and total_assets != 0
+        and total_debt is not None
     ):
 
-        status = "COMPLETE"
+        normalized[
+            "debt_to_assets"
+        ] = (
+            total_debt
+            / total_assets
+        ) * 100
 
-    elif (
-        has_balance_sheet
-        and not has_income_statement
-    ):
 
-        status = "BALANCE_ONLY"
+    # لا نحسب nav_per_unit بدون عدد الوحدات
+    # لا نخترع market_price
+    # لا نخترع expenses
+    # لا نخترع occupancy_rate
 
-    elif (
-        has_income_statement
-        and not income_complete
-    ):
 
-        status = "PARTIAL_INCOME"
+    return normalized
 
-    elif core[
-        "available_count"
-    ] > 0:
 
-        status = "PARTIAL"
+# ============================================================
+# تحويل Annual Financial إلى REIT Schema
+# ============================================================
+
+
+def normalize_financial_metrics(
+    raw_metrics
+):
+
+    normalized = {}
+
+    for (
+        raw_name,
+        schema_name
+    ) in FINANCIAL_RAW_MAP.items():
+
+        value = safe_number(
+            raw_metrics.get(
+                raw_name
+            )
+        )
+
+        if value is not None:
+
+            normalized[
+                schema_name
+            ] = value
+
+
+    return normalized
+
+
+# ============================================================
+# تحديد report type المنطقي
+#
+# Raw period_type الحالي عندنا:
+# 3M / 12M
+#
+# 3M = quarterly statement candidate
+# 12M = FY candidate
+#
+# H1 سيأتي لاحقًا من المصدر الرسمي عند توفر 6M.
+# ============================================================
+
+
+def resolve_report_type(
+    period_end,
+    raw_period_type
+):
+
+    raw_period_type = (
+        str(
+            raw_period_type
+        )
+        .strip()
+        .upper()
+    )
+
+
+    if raw_period_type == "12M":
+
+        return "FY"
+
+
+    if raw_period_type == "6M":
+
+        return "H1"
+
+
+    if raw_period_type == "3M":
+
+        return identify_reit_period(
+            period_end
+        )
+
+
+    return None
+
+
+# ============================================================
+# تحليل فترة واحدة
+# ============================================================
+
+
+def analyze_period(
+    period_record
+):
+
+    period_end = period_record[
+        "period_end"
+    ]
+
+    raw_period_type = period_record[
+        "period_type"
+    ]
+
+    raw_metrics = period_record[
+        "metrics"
+    ]
+
+    sources = sorted(
+        period_record[
+            "sources"
+        ]
+    )
+
+
+    logical_period = (
+        resolve_report_type(
+            period_end,
+            raw_period_type
+        )
+    )
+
+
+    # ========================================================
+    # لا يمكن تصنيف الفترة
+    # ========================================================
+
+    if not logical_period:
+
+        return {
+
+            "period_end":
+                period_end,
+
+            "raw_period_type":
+                raw_period_type,
+
+            "logical_period":
+                None,
+
+            "status":
+                "UNKNOWN_PERIOD",
+
+            "quality_score":
+                0.0,
+
+            "needs_official":
+                True,
+
+            "missing_required":
+                [],
+
+            "missing_important":
+                [],
+
+            "source_priority":
+                [],
+
+            "sources":
+                sources,
+
+            "normalized_metrics":
+                {},
+        }
+
+
+    # ========================================================
+    # Normalization
+    # ========================================================
+
+    if logical_period in {
+        "Q1",
+        "Q2",
+        "Q3",
+        "Q4",
+    }:
+
+        normalized = (
+            normalize_quarterly_metrics(
+                raw_metrics
+            )
+        )
 
     else:
 
-        status = "EMPTY"
+        normalized = (
+            normalize_financial_metrics(
+                raw_metrics
+            )
+        )
 
-    # --------------------------------------------------------
-    # هل نحتاج مصدر رسمي؟
-    # --------------------------------------------------------
 
-    needs_official_fallback = (
-        not income_complete
-        or not balance_complete
-        or not cashflow_complete
+    # ========================================================
+    # Schema requirements
+    # ========================================================
+
+    requirements = (
+        build_reit_audit_requirements(
+            logical_period
+        )
     )
 
+
+    validation = (
+        validate_reit_period(
+            logical_period,
+            normalized
+        )
+    )
+
+
+    needs_official = (
+        validation[
+            "status"
+        ] != "READY"
+    )
+
+
     return {
+
         "period_end":
             period_end,
 
+        "raw_period_type":
+            raw_period_type,
+
+        "logical_period":
+            logical_period,
+
         "status":
-            status,
-
-        "coverage":
-            core[
-                "coverage"
+            validation[
+                "status"
             ],
 
-        "available_count":
-            core[
-                "available_count"
+        "quality_score":
+            validation[
+                "quality_score"
             ],
 
-        "required_count":
-            core[
-                "total_count"
+        "required_coverage":
+            validation[
+                "required_coverage"
             ],
 
-        "missing":
-            core[
-                "missing"
+        "important_coverage":
+            validation[
+                "important_coverage"
             ],
 
-        "income_coverage":
-            income[
-                "coverage"
+        "missing_required":
+            validation[
+                "required_missing"
             ],
 
-        "balance_coverage":
-            balance[
-                "coverage"
+        "missing_important":
+            validation[
+                "important_missing"
             ],
 
-        "cashflow_coverage":
-            cashflow[
-                "coverage"
+        "available_required":
+            validation[
+                "required_available"
             ],
 
-        "has_income_statement":
-            has_income_statement,
+        "available_important":
+            validation[
+                "important_available"
+            ],
 
-        "has_balance_sheet":
-            has_balance_sheet,
+        "needs_official":
+            needs_official,
 
-        "has_cashflow":
-            has_cashflow,
+        "source_priority":
+            requirements[
+                "source_priority"
+            ],
 
-        "needs_official_fallback":
-            needs_official_fallback
+        "sources":
+            sources,
+
+        "normalized_metrics":
+            normalized,
     }
 
 
 # ============================================================
-# فحص الفترة السنوية
+# تحديد هل لدينا H1
 # ============================================================
 
-def inspect_annual_period(
-    period_end,
-    data
+
+def has_h1_period(
+    period_results
 ):
 
-    result = inspect_metric_group(
-        data,
-        ANNUAL_CORE_METRICS
+    return any(
+        result.get(
+            "logical_period"
+        ) == "H1"
+
+        for result in period_results
     )
 
-    if (
-        result[
-            "available_count"
-        ]
-        ==
-        result[
-            "total_count"
-        ]
-    ):
-
-        status = "COMPLETE"
-
-    elif result[
-        "available_count"
-    ] > 0:
-
-        status = "PARTIAL"
-
-    else:
-
-        status = "EMPTY"
-
-    return {
-        "period_end":
-            period_end,
-
-        "status":
-            status,
-
-        "coverage":
-            result[
-                "coverage"
-            ],
-
-        "available_count":
-            result[
-                "available_count"
-            ],
-
-        "required_count":
-            result[
-                "total_count"
-            ],
-
-        "missing":
-            result[
-                "missing"
-            ]
-    }
-
 
 # ============================================================
-# فحص توفر YoY
+# تحديد هل لدينا FY
 # ============================================================
 
-def inspect_yoy_availability(
-    quarter_dates,
-    quarterly
+
+def has_fy_period(
+    period_results
 ):
 
-    results = []
+    return any(
+        result.get(
+            "logical_period"
+        ) == "FY"
 
-    for period_end in quarter_dates:
+        for result in period_results
+    )
+
+
+# ============================================================
+# تحديد Quarterly history
+# ============================================================
+
+
+def get_quarter_results(
+    period_results
+):
+
+    return [
+
+        result
+
+        for result in period_results
+
+        if result.get(
+            "logical_period"
+        ) in {
+            "Q1",
+            "Q2",
+            "Q3",
+            "Q4",
+        }
+    ]
+
+
+# ============================================================
+# فحص YoY structure
+#
+# لا نحسب YoY هنا.
+# فقط نتحقق من وجود نفس Logical Quarter
+# في السنة السابقة.
+# ============================================================
+
+
+def analyze_yoy_structure(
+    quarter_results
+):
+
+    index = {}
+
+    for result in quarter_results:
+
+        period_end = result[
+            "period_end"
+        ]
+
+        logical_period = result[
+            "logical_period"
+        ]
 
         try:
 
-            current_date = datetime.strptime(
-                period_end,
-                "%Y-%m-%d"
+            year = int(
+                period_end[
+                    0:4
+                ]
             )
 
         except Exception:
 
             continue
 
-        prior_year_date = (
-            f"{current_date.year - 1}-"
-            f"{current_date.month:02d}-"
-            f"{current_date.day:02d}"
-        )
+        index[
+            (
+                year,
+                logical_period
+            )
+        ] = result
 
-        current = quarterly.get(
-            period_end,
-            {}
-        )
 
-        previous_year = quarterly.get(
-            prior_year_date
-        )
+    yoy_results = []
 
-        current_income = (
-            inspect_metric_group(
-                current,
-                QUARTERLY_INCOME_METRICS
+
+    for result in quarter_results:
+
+        period_end = result[
+            "period_end"
+        ]
+
+        logical_period = result[
+            "logical_period"
+        ]
+
+
+        try:
+
+            year = int(
+                period_end[
+                    0:4
+                ]
+            )
+
+        except Exception:
+
+            continue
+
+
+        previous = index.get(
+            (
+                year - 1,
+                logical_period
             )
         )
 
-        previous_income = (
-            inspect_metric_group(
-                previous_year or {},
-                QUARTERLY_INCOME_METRICS
+
+        current_ready = (
+            result.get(
+                "status"
             )
+            == "READY"
         )
 
-        exact_reference_exists = (
-            previous_year is not None
+
+        previous_ready = (
+            previous is not None
+            and previous.get(
+                "status"
+            )
+            == "READY"
         )
+
 
         yoy_ready = (
-            exact_reference_exists
-            and
-            current_income[
-                "available_count"
-            ]
-            ==
-            current_income[
-                "total_count"
-            ]
-            and
-            previous_income[
-                "available_count"
-            ]
-            ==
-            previous_income[
-                "total_count"
-            ]
+            current_ready
+            and previous_ready
         )
 
-        results.append({
+
+        yoy_results.append({
+
             "period_end":
                 period_end,
 
-            "prior_year_period":
-                prior_year_date,
+            "logical_period":
+                logical_period,
+
+            "reference_period":
+                (
+                    previous[
+                        "period_end"
+                    ]
+                    if previous
+                    else None
+                ),
 
             "reference_exists":
-                exact_reference_exists,
+                previous is not None,
 
-            "current_income_complete":
-                (
-                    current_income[
-                        "available_count"
-                    ]
-                    ==
-                    current_income[
-                        "total_count"
-                    ]
-                ),
+            "current_ready":
+                current_ready,
 
-            "previous_income_complete":
-                (
-                    previous_income[
-                        "available_count"
-                    ]
-                    ==
-                    previous_income[
-                        "total_count"
-                    ]
-                ),
+            "reference_ready":
+                previous_ready,
 
             "yoy_ready":
-                yoy_ready
+                yoy_ready,
         })
 
-    return results
+
+    return yoy_results
 
 
 # ============================================================
-# تقييم احتياج المصدر الرسمي
+# تقييم الصندوق كاملًا
 # ============================================================
 
-def determine_fallback_need(
-    quarter_results,
-    yoy_results
-):
-
-    reasons = []
-
-    # --------------------------------------------------------
-    # لا توجد بيانات ربعية أصلًا
-    # --------------------------------------------------------
-
-    if not quarter_results:
-
-        reasons.append(
-            "NO_QUARTERLY_DATA"
-        )
-
-    # --------------------------------------------------------
-    # فترات ناقصة
-    # --------------------------------------------------------
-
-    incomplete_periods = [
-        result
-        for result in quarter_results
-        if result[
-            "needs_official_fallback"
-        ]
-    ]
-
-    if incomplete_periods:
-
-        reasons.append(
-            "INCOMPLETE_QUARTERLY_PERIODS"
-        )
-
-    # --------------------------------------------------------
-    # قائمة الدخل ناقصة
-    # --------------------------------------------------------
-
-    missing_income_periods = [
-        result
-        for result in quarter_results
-        if not result[
-            "has_income_statement"
-        ]
-    ]
-
-    if missing_income_periods:
-
-        reasons.append(
-            "MISSING_QUARTERLY_INCOME"
-        )
-
-    # --------------------------------------------------------
-    # YoY غير ممكن
-    # --------------------------------------------------------
-
-    if yoy_results:
-
-        latest_yoy = yoy_results[
-            -1
-        ]
-
-        if not latest_yoy[
-            "yoy_ready"
-        ]:
-
-            reasons.append(
-                "LATEST_YOY_NOT_READY"
-            )
-
-    # --------------------------------------------------------
-    # تاريخ ربعي قصير
-    # --------------------------------------------------------
-
-    if len(
-        quarter_results
-    ) < 5:
-
-        reasons.append(
-            "INSUFFICIENT_QUARTER_HISTORY"
-        )
-
-    needs_fallback = (
-        len(
-            reasons
-        ) > 0
-    )
-
-    return (
-        needs_fallback,
-        reasons
-    )
-
-
-# ============================================================
-# تقييم جودة المصدر الحالي
-# ============================================================
-
-def calculate_source_quality(
-    quarter_results,
-    annual_results,
-    yoy_results
-):
-
-    components = []
-
-    # --------------------------------------------------------
-    # أحدث ربع
-    # --------------------------------------------------------
-
-    if quarter_results:
-
-        latest_quarter = quarter_results[
-            -1
-        ]
-
-        components.append(
-            (
-                latest_quarter[
-                    "coverage"
-                ],
-                40
-            )
-        )
-
-    else:
-
-        components.append(
-            (
-                0.0,
-                40
-            )
-        )
-
-    # --------------------------------------------------------
-    # التاريخ الربعي
-    # --------------------------------------------------------
-
-    quarter_count = len(
-        quarter_results
-    )
-
-    if quarter_count >= 8:
-
-        quarter_history_score = 100
-
-    elif quarter_count >= 6:
-
-        quarter_history_score = 90
-
-    elif quarter_count >= 5:
-
-        quarter_history_score = 80
-
-    elif quarter_count >= 4:
-
-        quarter_history_score = 65
-
-    elif quarter_count >= 3:
-
-        quarter_history_score = 45
-
-    elif quarter_count >= 2:
-
-        quarter_history_score = 30
-
-    elif quarter_count == 1:
-
-        quarter_history_score = 15
-
-    else:
-
-        quarter_history_score = 0
-
-    components.append(
-        (
-            quarter_history_score,
-            25
-        )
-    )
-
-    # --------------------------------------------------------
-    # YoY
-    # --------------------------------------------------------
-
-    if yoy_results:
-
-        yoy_ready_count = len(
-            [
-                result
-                for result in yoy_results
-                if result[
-                    "yoy_ready"
-                ]
-            ]
-        )
-
-        yoy_score = (
-            yoy_ready_count
-            / len(
-                yoy_results
-            )
-        ) * 100
-
-    else:
-
-        yoy_score = 0.0
-
-    components.append(
-        (
-            yoy_score,
-            20
-        )
-    )
-
-    # --------------------------------------------------------
-    # السنوي
-    # --------------------------------------------------------
-
-    if annual_results:
-
-        latest_annual = annual_results[
-            -1
-        ]
-
-        annual_score = latest_annual[
-            "coverage"
-        ]
-
-    else:
-
-        annual_score = 0.0
-
-    components.append(
-        (
-            annual_score,
-            15
-        )
-    )
-
-    total = 0.0
-    total_weight = 0.0
-
-    for value, weight in components:
-
-        total += (
-            value
-            * weight
-        )
-
-        total_weight += weight
-
-    if total_weight == 0:
-        return 0.0
-
-    return (
-        total
-        / total_weight
-    )
-
-
-# ============================================================
-# تحليل صندوق واحد
-# ============================================================
 
 def analyze_reit(stock):
 
@@ -1043,90 +884,174 @@ def analyze_reit(stock):
         or symbol
     )
 
-    rows = get_financial_data(
+
+    rows = get_financial_rows(
         stock_id
     )
 
-    annual, quarterly = (
-        organize_financial_data(
-            rows
-        )
+
+    periods = organize_raw_data(
+        rows
     )
 
-    annual_dates = sorted(
-        annual.keys()
-    )
 
-    quarter_dates = sorted(
-        quarterly.keys()
-    )
+    period_results = []
 
-    annual_results = []
 
-    for period_end in annual_dates:
+    for key in sorted(
+        periods.keys()
+    ):
 
-        annual_results.append(
-            inspect_annual_period(
-                period_end,
-                annual[
-                    period_end
+        period_results.append(
+            analyze_period(
+                periods[
+                    key
                 ]
             )
         )
 
-    quarter_results = []
 
-    for period_end in quarter_dates:
-
-        quarter_results.append(
-            inspect_quarter(
-                period_end,
-                quarterly[
-                    period_end
-                ]
-            )
+    quarter_results = (
+        get_quarter_results(
+            period_results
         )
+    )
+
 
     yoy_results = (
-        inspect_yoy_availability(
-            quarter_dates,
-            quarterly
+        analyze_yoy_structure(
+            quarter_results
         )
     )
 
-    (
-        needs_fallback,
-        fallback_reasons
-    ) = determine_fallback_need(
-        quarter_results,
-        yoy_results
-    )
 
-    source_quality = (
-        calculate_source_quality(
-            quarter_results,
-            annual_results,
-            yoy_results
+    # ========================================================
+    # Fallback reasons
+    # ========================================================
+
+    fallback_reasons = []
+
+
+    if not quarter_results:
+
+        fallback_reasons.append(
+            "NO_QUARTERLY_REIT_STATEMENTS"
         )
+
+
+    incomplete_quarters = [
+
+        result
+
+        for result in quarter_results
+
+        if result[
+            "status"
+        ] != "READY"
+    ]
+
+
+    if incomplete_quarters:
+
+        fallback_reasons.append(
+            "INCOMPLETE_QUARTERLY_REIT_STATEMENTS"
+        )
+
+
+    if len(
+        quarter_results
+    ) < 5:
+
+        fallback_reasons.append(
+            "INSUFFICIENT_QUARTER_HISTORY"
+        )
+
+
+    if yoy_results:
+
+        latest_yoy = sorted(
+            yoy_results,
+            key=lambda item:
+                item[
+                    "period_end"
+                ]
+        )[-1]
+
+
+        if not latest_yoy[
+            "yoy_ready"
+        ]:
+
+            fallback_reasons.append(
+                "LATEST_YOY_NOT_READY"
+            )
+
+
+    if not has_h1_period(
+        period_results
+    ):
+
+        fallback_reasons.append(
+            "H1_FINANCIAL_REPORT_MISSING"
+        )
+
+
+    if not has_fy_period(
+        period_results
+    ):
+
+        fallback_reasons.append(
+            "FY_FINANCIAL_REPORT_MISSING"
+        )
+
+
+    needs_official = (
+        len(
+            fallback_reasons
+        ) > 0
     )
 
-    latest_quarter = (
-        quarter_results[
-            -1
-        ]
-        if quarter_results
-        else None
-    )
 
-    latest_annual = (
-        annual_results[
-            -1
-        ]
-        if annual_results
-        else None
-    )
+    # ========================================================
+    # Quality summary
+    # ========================================================
+
+    valid_quality_scores = [
+
+        safe_number(
+            result.get(
+                "quality_score"
+            )
+        )
+
+        for result in period_results
+
+        if safe_number(
+            result.get(
+                "quality_score"
+            )
+        ) is not None
+    ]
+
+
+    if valid_quality_scores:
+
+        source_quality = (
+            sum(
+                valid_quality_scores
+            )
+            / len(
+                valid_quality_scores
+            )
+        )
+
+    else:
+
+        source_quality = 0.0
+
 
     return {
+
         "status":
             "success",
 
@@ -1141,24 +1066,8 @@ def analyze_reit(stock):
                 rows
             ),
 
-        "annual_count":
-            len(
-                annual_dates
-            ),
-
-        "quarter_count":
-            len(
-                quarter_dates
-            ),
-
-        "annual_dates":
-            annual_dates,
-
-        "quarter_dates":
-            quarter_dates,
-
-        "annual_results":
-            annual_results,
+        "period_results":
+            period_results,
 
         "quarter_results":
             quarter_results,
@@ -1166,26 +1075,124 @@ def analyze_reit(stock):
         "yoy_results":
             yoy_results,
 
-        "latest_quarter":
-            latest_quarter,
-
-        "latest_annual":
-            latest_annual,
+        "quarter_count":
+            len(
+                quarter_results
+            ),
 
         "source_quality":
             source_quality,
 
-        "needs_fallback":
-            needs_fallback,
+        "needs_official":
+            needs_official,
 
         "fallback_reasons":
-            fallback_reasons
+            fallback_reasons,
+
+        "has_h1":
+            has_h1_period(
+                period_results
+            ),
+
+        "has_fy":
+            has_fy_period(
+                period_results
+            ),
     }
 
 
 # ============================================================
-# طباعة نتيجة صندوق
+# طباعة فترة
 # ============================================================
+
+
+def print_period_result(result):
+
+    print(
+        "\n"
+        f"📅 {result['period_end']} | "
+        f"Raw={result['raw_period_type']} | "
+        f"Logical={result['logical_period']} | "
+        f"{result['status']}",
+        flush=True
+    )
+
+
+    print(
+        f"Quality="
+        f"{fmt(result['quality_score'])} | "
+        f"Required="
+        f"{fmt(result.get('required_coverage'))}% | "
+        f"Important="
+        f"{fmt(result.get('important_coverage'))}%",
+        flush=True
+    )
+
+
+    print(
+        f"Existing Sources: "
+        f"{', '.join(result['sources']) or 'UNKNOWN'}",
+        flush=True
+    )
+
+
+    if result[
+        "source_priority"
+    ]:
+
+        print(
+            "Preferred Source: "
+            + " → ".join(
+                result[
+                    "source_priority"
+                ]
+            ),
+            flush=True
+        )
+
+
+    if result[
+        "missing_required"
+    ]:
+
+        print(
+            "🔴 Missing Required:",
+            flush=True
+        )
+
+        for metric_name in result[
+            "missing_required"
+        ]:
+
+            print(
+                f"  - {metric_name}",
+                flush=True
+            )
+
+
+    if result[
+        "missing_important"
+    ]:
+
+        print(
+            "🟡 Missing Important:",
+            flush=True
+        )
+
+        for metric_name in result[
+            "missing_important"
+        ]:
+
+            print(
+                f"  - {metric_name}",
+                flush=True
+            )
+
+
+# ============================================================
+# طباعة صندوق
+# ============================================================
+
 
 def print_reit_result(result):
 
@@ -1194,23 +1201,34 @@ def print_reit_result(result):
         f"{result['company_name']}"
     )
 
+
     print(
         f"📄 Raw Rows: "
         f"{result['raw_rows']}",
         flush=True
     )
 
-    print(
-        f"📘 Annual Periods: "
-        f"{result['annual_count']}",
-        flush=True
-    )
 
     print(
-        f"📗 Quarterly Periods: "
+        f"📗 Quarterly Logical Periods: "
         f"{result['quarter_count']}",
         flush=True
     )
+
+
+    print(
+        f"📘 H1 Available: "
+        f"{result['has_h1']}",
+        flush=True
+    )
+
+
+    print(
+        f"📕 FY Available: "
+        f"{result['has_fy']}",
+        flush=True
+    )
+
 
     print(
         f"🧪 Current Source Quality: "
@@ -1218,138 +1236,43 @@ def print_reit_result(result):
         flush=True
     )
 
+
     print_separator()
 
-    # ========================================================
-    # الفترات السنوية
-    # ========================================================
 
     print(
-        "📘 ANNUAL DATA",
+        "📚 PERIOD ANALYSIS",
         flush=True
     )
 
-    if not result[
-        "annual_results"
+
+    for period_result in result[
+        "period_results"
     ]:
 
-        print(
-            "⚠️ No annual periods",
-            flush=True
+        print_period_result(
+            period_result
         )
 
-    else:
-
-        for annual in result[
-            "annual_results"
-        ]:
-
-            print(
-                f"{annual['period_end']} | "
-                f"{annual['status']} | "
-                f"Coverage="
-                f"{fmt(annual['coverage'])}% | "
-                f"{annual['available_count']}/"
-                f"{annual['required_count']}",
-                flush=True
-            )
 
     print_separator()
 
-    # ========================================================
-    # الفترات الربعية
-    # ========================================================
 
     print(
-        "📗 QUARTERLY DATA",
+        "🔁 YOY STRUCTURE",
         flush=True
     )
 
-    if not result[
-        "quarter_results"
-    ]:
-
-        print(
-            "🔴 No quarterly periods",
-            flush=True
-        )
-
-    else:
-
-        for quarter in result[
-            "quarter_results"
-        ]:
-
-            print(
-                "\n"
-                f"📅 {quarter['period_end']} | "
-                f"{quarter['status']}",
-                flush=True
-            )
-
-            print(
-                f"Core Coverage: "
-                f"{fmt(quarter['coverage'])}% | "
-                f"{quarter['available_count']}/"
-                f"{quarter['required_count']}",
-                flush=True
-            )
-
-            print(
-                f"Income Coverage: "
-                f"{fmt(quarter['income_coverage'])}%",
-                flush=True
-            )
-
-            print(
-                f"Balance Coverage: "
-                f"{fmt(quarter['balance_coverage'])}%",
-                flush=True
-            )
-
-            print(
-                f"CashFlow Coverage: "
-                f"{fmt(quarter['cashflow_coverage'])}%",
-                flush=True
-            )
-
-            if quarter[
-                "missing"
-            ]:
-
-                print(
-                    "Missing:",
-                    flush=True
-                )
-
-                for metric_name in quarter[
-                    "missing"
-                ]:
-
-                    print(
-                        f"  - {metric_name}",
-                        flush=True
-                    )
-
-    print_separator()
-
-    # ========================================================
-    # YoY
-    # ========================================================
-
-    print(
-        "🔁 YOY READINESS",
-        flush=True
-    )
 
     if not result[
         "yoy_results"
     ]:
 
         print(
-            "⚠️ No YoY periods",
+            "⚠️ No quarterly YoY structure available",
             flush=True
         )
+
 
     else:
 
@@ -1366,31 +1289,27 @@ def print_reit_result(result):
             )
 
             print(
-                f"{yoy['period_end']} → "
-                f"{yoy['prior_year_period']} | "
+                f"{yoy['period_end']} | "
+                f"{yoy['logical_period']} | "
+                f"Reference="
+                f"{yoy['reference_period'] or 'NONE'} | "
                 f"{status}",
                 flush=True
             )
 
+
     print_separator()
 
-    # ========================================================
-    # القرار
-    # ========================================================
 
     if result[
-        "needs_fallback"
+        "needs_official"
     ]:
 
         print(
-            "🌐 OFFICIAL FALLBACK: REQUIRED",
+            "🌐 OFFICIAL SOURCE REQUIRED",
             flush=True
         )
 
-        print(
-            "Reasons:",
-            flush=True
-        )
 
         for reason in result[
             "fallback_reasons"
@@ -1401,57 +1320,39 @@ def print_reit_result(result):
                 flush=True
             )
 
+
     else:
 
         print(
-            "✅ OFFICIAL FALLBACK: NOT REQUIRED",
+            "✅ CURRENT SOURCE IS SUFFICIENT",
             flush=True
         )
 
 
 # ============================================================
-# الملخص النهائي
+# Summary
 # ============================================================
+
 
 def print_summary(results):
 
     print_header(
-        "🏆 REIT OFFICIAL DATA SUMMARY"
+        "🏆 REIT OFFICIAL DATA SUMMARY v2"
     )
 
+
     successful = [
+
         result
+
         for result in results
+
         if result.get(
             "status"
         ) == "success"
     ]
 
-    fallback_required = [
-        result
-        for result in successful
-        if result.get(
-            "needs_fallback"
-        )
-    ]
 
-    fallback_not_required = [
-        result
-        for result in successful
-        if not result.get(
-            "needs_fallback"
-        )
-    ]
-
-    failed = [
-        result
-        for result in results
-        if result.get(
-            "status"
-        ) != "success"
-    ]
-
-    # الأسوأ أولًا
     successful.sort(
         key=lambda result:
             result.get(
@@ -1460,42 +1361,20 @@ def print_summary(results):
             )
     )
 
+
     for index, result in enumerate(
         successful,
         start=1
     ):
 
-        fallback_state = (
+        fallback = (
             "REQUIRED"
             if result[
-                "needs_fallback"
+                "needs_official"
             ]
             else "NOT_REQUIRED"
         )
 
-        latest_quarter = (
-            result[
-                "latest_quarter"
-            ][
-                "period_end"
-            ]
-            if result[
-                "latest_quarter"
-            ]
-            else "NONE"
-        )
-
-        latest_coverage = (
-            result[
-                "latest_quarter"
-            ][
-                "coverage"
-            ]
-            if result[
-                "latest_quarter"
-            ]
-            else 0.0
-        )
 
         print(
             f"{index:02d}. "
@@ -1505,16 +1384,42 @@ def print_summary(results):
             f"{fmt(result['source_quality'])} | "
             f"Quarters="
             f"{result['quarter_count']} | "
-            f"Latest="
-            f"{latest_quarter} | "
-            f"Coverage="
-            f"{fmt(latest_coverage)}% | "
-            f"Fallback="
-            f"{fallback_state}",
+            f"H1="
+            f"{result['has_h1']} | "
+            f"FY="
+            f"{result['has_fy']} | "
+            f"Official="
+            f"{fallback}",
             flush=True
         )
 
+
+    official_required = [
+
+        result
+
+        for result in successful
+
+        if result[
+            "needs_official"
+        ]
+    ]
+
+
+    errors = [
+
+        result
+
+        for result in results
+
+        if result.get(
+            "status"
+        ) != "success"
+    ]
+
+
     print_separator()
+
 
     print(
         f"🏢 Total REITs: "
@@ -1522,64 +1427,65 @@ def print_summary(results):
         flush=True
     )
 
+
     print(
-        f"🟢 Fallback Not Required: "
-        f"{len(fallback_not_required)}",
+        f"✅ Current Source Sufficient: "
+        f"{len(successful) - len(official_required)}",
         flush=True
     )
 
+
     print(
-        f"🌐 Official Fallback Required: "
-        f"{len(fallback_required)}",
+        f"🌐 Official Source Required: "
+        f"{len(official_required)}",
         flush=True
     )
+
 
     print(
         f"🔴 Errors: "
-        f"{len(failed)}",
+        f"{len(errors)}",
         flush=True
     )
 
-    if fallback_required:
+
+    if official_required:
 
         print(
-            "\n🌐 REITs requiring official source:",
+            "\n🌐 OFFICIAL SOURCE QUEUE",
             flush=True
         )
 
-        for result in fallback_required:
+
+        for result in official_required:
 
             print(
                 f"- {result['symbol']} | "
-                f"{result['company_name']} | "
-                f"{', '.join(result['fallback_reasons'])}",
+                f"{result['company_name']}",
                 flush=True
             )
 
-    if failed:
 
-        print(
-            "\n🔴 ERRORS:",
-            flush=True
-        )
+            for reason in result[
+                "fallback_reasons"
+            ]:
 
-        for result in failed:
+                print(
+                    f"    • {reason}",
+                    flush=True
+                )
 
-            print(
-                f"- {result.get('symbol')} | "
-                f"{result.get('error')}",
-                flush=True
-            )
 
     print(
-        "=" * 90,
+        "=" * 92,
         flush=True
     )
 
 
 # ============================================================
-# التشغيل
+# تشغيل
 # ============================================================
+
 
 def run_reit_official_data_engine():
 
@@ -1587,10 +1493,12 @@ def run_reit_official_data_engine():
         ENGINE_NAME
     )
 
+
     print(
         "🔒 Mode: READ ONLY",
         flush=True
     )
+
 
     print(
         f"🕐 Started: "
@@ -1598,7 +1506,9 @@ def run_reit_official_data_engine():
         flush=True
     )
 
+
     stocks = get_reit_stocks()
+
 
     print(
         f"🏢 Active REITs: "
@@ -1606,7 +1516,9 @@ def run_reit_official_data_engine():
         flush=True
     )
 
+
     results = []
+
 
     for index, stock in enumerate(
         stocks,
@@ -1615,11 +1527,12 @@ def run_reit_official_data_engine():
 
         print(
             "\n"
-            f"🔍 REIT Check "
+            f"🔍 REIT Schema Check "
             f"{index}/{len(stocks)} | "
             f"{stock['symbol']}",
             flush=True
         )
+
 
         try:
 
@@ -1627,9 +1540,11 @@ def run_reit_official_data_engine():
                 stock
             )
 
+
         except Exception as error:
 
             result = {
+
                 "status":
                     "error",
 
@@ -1650,6 +1565,7 @@ def run_reit_official_data_engine():
                     )
             }
 
+
             print(
                 f"🔴 "
                 f"{stock.get('symbol')} | "
@@ -1657,9 +1573,11 @@ def run_reit_official_data_engine():
                 flush=True
             )
 
+
         results.append(
             result
         )
+
 
         if result.get(
             "status"
@@ -1669,14 +1587,11 @@ def run_reit_official_data_engine():
                 result
             )
 
+
     print_summary(
         results
     )
 
-
-# ============================================================
-# START
-# ============================================================
 
 if __name__ == "__main__":
 
