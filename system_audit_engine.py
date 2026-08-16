@@ -6,7 +6,7 @@ from supabase import create_client
 
 
 # ============================================================
-# SYSTEM AUDIT ENGINE v1.2
+# SYSTEM AUDIT ENGINE v1.2.1
 #
 # الهدف:
 # تدقيق النظام المالي كاملًا:
@@ -24,9 +24,10 @@ from supabase import create_client
 # READ ONLY
 # لا يكتب أو يعدل أي بيانات.
 #
-# v1.2:
+# v1.2.1:
 #
-# - دعم Turning Engine v2.0.2 رسميًا.
+# - تصحيح Turning State Codes لتطابق Turning Engine v2.0.2.
+# - دعم IMPROVING_LIMITED_HISTORY بالترتيب الصحيح.
 # - turning_engine_state_code هو مصدر الحقيقة لحالة Turning.
 # - عدم اعتبار اختلاف Base Turning عن Turning Engine خطأ.
 # - التحقق من التناقض الحقيقي بين Turning State والدرجات.
@@ -71,7 +72,7 @@ supabase = create_client(
 # Settings
 # ============================================================
 
-ENGINE_VERSION = "1.2"
+ENGINE_VERSION = "1.2.1"
 
 
 MODEL_PREFIX = {
@@ -113,10 +114,19 @@ MODEL_SIGNAL_PREFIX = {
 # ============================================================
 # Turning State Codes
 #
-# نفس الحالات المستخدمة في Turning Engine v2.0.2.
+# IMPORTANT:
+# هذا هو الترتيب الفعلي المستخدم في Turning Engine v2.0.2.
 #
-# ملاحظة:
-# IMPROVING_LIMITED_HISTORY أضيفت بعد v2.0.
+# 0 = LOW_CONFIDENCE
+# 1 = WEAK
+# 2 = DETERIORATING
+# 3 = NEUTRAL
+# 4 = IMPROVING
+# 5 = IMPROVING_LIMITED_HISTORY
+# 6 = EARLY_TURNING_POINT
+# 7 = STRONG_TURNING_POINT
+# 8 = STRONG_CONTINUATION
+#
 # ============================================================
 
 TURNING_STATE_CODES = {
@@ -137,16 +147,16 @@ TURNING_STATE_CODES = {
         "IMPROVING",
 
     5:
-        "EARLY_TURNING_POINT",
+        "IMPROVING_LIMITED_HISTORY",
 
     6:
-        "STRONG_TURNING_POINT",
+        "EARLY_TURNING_POINT",
 
     7:
-        "STRONG_CONTINUATION",
+        "STRONG_TURNING_POINT",
 
     8:
-        "IMPROVING_LIMITED_HISTORY"
+        "STRONG_CONTINUATION"
 }
 
 
@@ -592,10 +602,6 @@ def detect_limited_data(
         latest_period,
         {}
     )
-
-    # --------------------------------------------------------
-    # REIT
-    # --------------------------------------------------------
 
     if analysis_model == "reit":
 
@@ -1366,12 +1372,7 @@ def audit_period_alignment(
 # ============================================================
 # Scoring Internal Logic
 #
-# مهم:
-# لم نعد نقارن Base Turning مع Turning Engine مباشرة.
-#
-# Base Turning = تقييم أولي.
-# Turning Engine = تقييم تاريخي مستقل.
-#
+# Base Turning وTurning Engine مستقلان.
 # اختلافهما ليس خطأ.
 # ============================================================
 
@@ -1556,7 +1557,7 @@ def audit_turning_logic(
         return findings
 
     # --------------------------------------------------------
-    # Gate consistency
+    # LOW CONFIDENCE
     # --------------------------------------------------------
 
     if state == "LOW_CONFIDENCE":
@@ -1596,7 +1597,7 @@ def audit_turning_logic(
             )
 
     # --------------------------------------------------------
-    # Strong Turning
+    # STRONG TURNING POINT
     # --------------------------------------------------------
 
     if state == "STRONG_TURNING_POINT":
@@ -1636,7 +1637,7 @@ def audit_turning_logic(
             )
 
     # --------------------------------------------------------
-    # Early Turning
+    # EARLY TURNING POINT
     # --------------------------------------------------------
 
     if state == "EARLY_TURNING_POINT":
@@ -1676,7 +1677,7 @@ def audit_turning_logic(
             )
 
     # --------------------------------------------------------
-    # Improving Limited History
+    # IMPROVING LIMITED HISTORY
     # --------------------------------------------------------
 
     if (
@@ -1703,7 +1704,7 @@ def audit_turning_logic(
             )
 
     # --------------------------------------------------------
-    # Strong Continuation
+    # STRONG CONTINUATION
     # --------------------------------------------------------
 
     if state == "STRONG_CONTINUATION":
@@ -1726,7 +1727,7 @@ def audit_turning_logic(
             )
 
     # --------------------------------------------------------
-    # Deteriorating
+    # DETERIORATING
     # --------------------------------------------------------
 
     if state == "DETERIORATING":
@@ -1749,7 +1750,7 @@ def audit_turning_logic(
             )
 
     # --------------------------------------------------------
-    # Weak
+    # WEAK
     # --------------------------------------------------------
 
     if state == "WEAK":
@@ -1957,13 +1958,20 @@ def audit_decision_logic(
 
     if turning_state_code is not None:
 
-        state = TURNING_STATE_CODES.get(
-            int(
-                round(
-                    turning_state_code
-                )
+        rounded_state = int(
+            round(
+                turning_state_code
             )
         )
+
+        if abs(
+            turning_state_code
+            - rounded_state
+        ) <= 0.001:
+
+            state = TURNING_STATE_CODES.get(
+                rounded_state
+            )
 
     # --------------------------------------------------------
     # High Decision vs Data Quality
@@ -2135,8 +2143,6 @@ def audit_decision_logic(
 
     # --------------------------------------------------------
     # Turning vs Decision
-    #
-    # INFO فقط لأن Decision Engine قد يستخدم عوامل أخرى.
     # --------------------------------------------------------
 
     if (
@@ -2163,13 +2169,6 @@ def audit_decision_logic(
                 )
             )
         )
-
-    # --------------------------------------------------------
-    # لا يوجد MOMENTUM_BOUNDARY هنا.
-    #
-    # الإصدار السابق كان يعتبر 10 و92 حدودًا بصورة عامة،
-    # وهذا لا يكشف خطأ حقيقيًا في النظام.
-    # --------------------------------------------------------
 
     return findings
 
@@ -2485,15 +2484,22 @@ def audit_stock(stock):
 
     if turning_state_code is not None:
 
-        turning_state = (
-            TURNING_STATE_CODES.get(
-                int(
-                    round(
-                        turning_state_code
-                    )
-                )
+        rounded_state = int(
+            round(
+                turning_state_code
             )
         )
+
+        if abs(
+            turning_state_code
+            - rounded_state
+        ) <= 0.001:
+
+            turning_state = (
+                TURNING_STATE_CODES.get(
+                    rounded_state
+                )
+            )
 
     return {
 
@@ -3182,8 +3188,13 @@ def print_final_summary(
 
     print(
         "\n"
-        "✅ Turning Audit v1.2: "
-        "Base Turning وTurning Engine "
+        "✅ Turning Audit v1.2.1: "
+        "State Codes متطابقة مع Turning Engine v2.0.2.",
+        flush=True
+    )
+
+    print(
+        "✅ Base Turning وTurning Engine "
         "مستقلان ولا يعاقب النظام على اختلافهما.",
         flush=True
     )
@@ -3244,6 +3255,12 @@ def run_system_audit():
     print(
         "🧠 Turning State Source: "
         "turning_engine_state_code",
+        flush=True
+    )
+
+    print(
+        "🔢 Turning State Map: "
+        "v2.0.2",
         flush=True
     )
 
