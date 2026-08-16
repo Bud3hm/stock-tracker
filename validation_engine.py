@@ -3,28 +3,23 @@ from supabase import create_client
 
 
 # ============================================================
-# VALIDATION ENGINE v1.2
+# VALIDATION ENGINE v1.2.1
 #
 # READ ONLY
 #
-# أهم تحسينات v1.2:
+# v1.2.1:
 #
-# 1) System Layer Coverage
-#    Scoring / Signal / Turning / Data Quality / Decision
+# 1) إصلاح أولوية Turning:
+#    STRONG_CONTINUATION قبل EARLY_TURNING
 #
-# 2) Turning Validation الحقيقي
-#    يعتمد على turning_engine_score أولًا
-#    ثم score_turning_point_score كـ fallback
+# 2) فصل:
+#    Base Turning Delta
+#    Turning Engine Delta
 #
-# 3) Financial Comparability
-#    يقيس قابلية مقارنة المدخلات المالية بين آخر فترتين
-#
-# 4) Momentum Reliability v2
-#    يجمع:
-#    - Score Availability
-#    - Financial Comparability
-#
-# 5) فصل Base Effect عن Cash Flow Volatility
+# 3) System Layer Coverage
+# 4) Financial Comparability
+# 5) Momentum Reliability v2
+# 6) Extreme / Base Effect Review
 # ============================================================
 
 
@@ -361,7 +356,7 @@ MODEL_PREFIX = {
 
 
 # ============================================================
-# Financial inputs used for comparability
+# Financial Comparability Inputs
 # ============================================================
 
 MODEL_COMPARABILITY_INPUTS = {
@@ -429,7 +424,7 @@ MODEL_COMPARABILITY_INPUTS = {
 
 
 # ============================================================
-# Latest periods
+# Latest Periods
 # ============================================================
 
 def find_latest_periods(
@@ -599,7 +594,87 @@ def get_turning_value(metrics):
 
 
 # ============================================================
-# Classification
+# Turning Engine Delta
+# ============================================================
+
+def calculate_turning_engine_delta(
+    latest,
+    previous
+):
+
+    current = get_turning_value(
+        latest
+    )
+
+    if not previous:
+
+        return {
+
+            "current":
+                current[
+                    "value"
+                ],
+
+            "previous":
+                None,
+
+            "delta":
+                None,
+
+            "source":
+                current[
+                    "source"
+                ]
+        }
+
+    previous_turning = get_turning_value(
+        previous
+    )
+
+    current_value = safe_number(
+        current[
+            "value"
+        ]
+    )
+
+    previous_value = safe_number(
+        previous_turning[
+            "value"
+        ]
+    )
+
+    delta = None
+
+    if (
+        current_value is not None
+        and previous_value is not None
+    ):
+
+        delta = (
+            current_value
+            - previous_value
+        )
+
+    return {
+
+        "current":
+            current_value,
+
+        "previous":
+            previous_value,
+
+        "delta":
+            delta,
+
+        "source":
+            current[
+                "source"
+            ]
+    }
+
+
+# ============================================================
+# General Classification
 # ============================================================
 
 def classify_score(
@@ -914,7 +989,7 @@ def calculate_financial_comparability(
 
 
 # ============================================================
-# Momentum
+# Score Momentum
 # ============================================================
 
 MOMENTUM_KEYS = [
@@ -1013,10 +1088,6 @@ def calculate_momentum(
         ]
     )
 
-    # --------------------------------------------------------
-    # Financial Comparability أهم من مجرد وجود Scores
-    # --------------------------------------------------------
-
     reliability = (
 
         score_availability
@@ -1065,7 +1136,17 @@ def calculate_momentum(
 
 
 # ============================================================
-# Turning Validation
+# Turning Validation v1.2.1
+#
+# مهم:
+#
+# ترتيب الشروط:
+#
+# 1) TRUE TURNING
+# 2) STRONG CONTINUATION
+# 3) EARLY TURNING
+#
+# حتى لا نصنف شركة قوية أصلًا كتحول جديد.
 # ============================================================
 
 def validate_turning(
@@ -1200,6 +1281,8 @@ def validate_turning(
 
     # --------------------------------------------------------
     # TRUE TURNING
+    #
+    # الشركة كانت ضعيفة/متوسطة ثم قفزت إلى مستوى قوي
     # --------------------------------------------------------
 
     if (
@@ -1216,42 +1299,8 @@ def validate_turning(
             "description":
                 (
                     f"تحول مؤكد نسبيًا؛ "
-                    f"Turning Δ {signed_fmt(delta)}"
-                ),
-
-            "value":
-                current_value,
-
-            "previous_value":
-                previous_value,
-
-            "delta":
-                delta,
-
-            "source":
-                current[
-                    "source"
-                ]
-        }
-
-    # --------------------------------------------------------
-    # EARLY TURNING
-    # --------------------------------------------------------
-
-    if (
-        current_value >= 55
-        and delta >= 10
-    ):
-
-        return {
-
-            "state":
-                "EARLY_TURNING",
-
-            "description":
-                (
-                    f"إشارة تحول مبكرة؛ "
-                    f"Turning Δ {signed_fmt(delta)}"
+                    f"Turning Engine Δ "
+                    f"{signed_fmt(delta)}"
                 ),
 
             "value":
@@ -1271,6 +1320,8 @@ def validate_turning(
 
     # --------------------------------------------------------
     # STRONG CONTINUATION
+    #
+    # مهم أن يأتي قبل EARLY_TURNING
     # --------------------------------------------------------
 
     if (
@@ -1304,6 +1355,47 @@ def validate_turning(
                 ]
         }
 
+    # --------------------------------------------------------
+    # EARLY TURNING
+    # --------------------------------------------------------
+
+    if (
+        current_value >= 55
+        and previous_value < 70
+        and delta >= 10
+    ):
+
+        return {
+
+            "state":
+                "EARLY_TURNING",
+
+            "description":
+                (
+                    f"إشارة تحول مبكرة؛ "
+                    f"Turning Engine Δ "
+                    f"{signed_fmt(delta)}"
+                ),
+
+            "value":
+                current_value,
+
+            "previous_value":
+                previous_value,
+
+            "delta":
+                delta,
+
+            "source":
+                current[
+                    "source"
+                ]
+        }
+
+    # --------------------------------------------------------
+    # NO TURNING
+    # --------------------------------------------------------
+
     if current_value < 55:
 
         return {
@@ -1328,6 +1420,10 @@ def validate_turning(
                     "source"
                 ]
         }
+
+    # --------------------------------------------------------
+    # MIXED
+    # --------------------------------------------------------
 
     return {
 
@@ -1492,7 +1588,8 @@ def detect_extreme_flags(
             flags.append(
                 (
                     f"BASE_EFFECT_REVIEW | "
-                    f"{name} {signed_fmt(value)}%"
+                    f"{name} "
+                    f"{signed_fmt(value)}%"
                 )
             )
 
@@ -1501,7 +1598,8 @@ def detect_extreme_flags(
             flags.append(
                 (
                     f"EXTREME_DECLINE | "
-                    f"{name} {signed_fmt(value)}%"
+                    f"{name} "
+                    f"{signed_fmt(value)}%"
                 )
             )
 
@@ -1519,7 +1617,8 @@ def detect_extreme_flags(
             flags.append(
                 (
                     f"CASH_FLOW_VOLATILITY | "
-                    f"{name} {signed_fmt(value)}%"
+                    f"{name} "
+                    f"{signed_fmt(value)}%"
                 )
             )
 
@@ -1672,7 +1771,7 @@ def validate_standard(
         )
 
     # --------------------------------------------------------
-    # Risk
+    # Risks
     # --------------------------------------------------------
 
     if (
@@ -2229,7 +2328,7 @@ def validate_reit(
 
 
 # ============================================================
-# Analyze one stock
+# Analyze Stock
 # ============================================================
 
 def validate_stock(stock):
@@ -2316,7 +2415,18 @@ def validate_stock(stock):
     ]
 
     # ========================================================
-    # Turning
+    # Turning Engine Delta
+    # ========================================================
+
+    turning_engine_change = (
+        calculate_turning_engine_delta(
+            latest,
+            previous
+        )
+    )
+
+    # ========================================================
+    # Turning Validation
     # ========================================================
 
     turning = validate_turning(
@@ -2328,7 +2438,7 @@ def validate_stock(stock):
     )
 
     # ========================================================
-    # Coverage
+    # System Coverage
     # ========================================================
 
     system_coverage = (
@@ -2370,7 +2480,7 @@ def validate_stock(stock):
     )
 
     # ========================================================
-    # Model-specific validation
+    # Model Validation
     # ========================================================
 
     if analysis_model == "standard":
@@ -2700,7 +2810,7 @@ def validate_stock(stock):
     print_separator()
 
     print(
-        "🚀 SCORE MOMENTUM v2",
+        "🚀 SCORE MOMENTUM v2.1",
         flush=True
     )
 
@@ -2733,31 +2843,37 @@ def validate_stock(stock):
     if changes:
 
         print(
-            f"Opportunity Δ: "
+            f"Opportunity Δ:       "
             f"{signed_fmt(changes.get('opportunity'))}",
             flush=True
         )
 
         print(
-            f"Risk Δ:        "
+            f"Risk Δ:              "
             f"{signed_fmt(changes.get('risk'))}",
             flush=True
         )
 
         print(
-            f"Turning Δ:     "
+            f"Base Turning Δ:      "
             f"{signed_fmt(changes.get('turning'))}",
             flush=True
         )
 
         print(
-            f"Growth Δ:      "
+            f"Turning Engine Δ:    "
+            f"{signed_fmt(turning_engine_change.get('delta'))}",
+            flush=True
+        )
+
+        print(
+            f"Growth Δ:            "
             f"{signed_fmt(changes.get('growth'))}",
             flush=True
         )
 
         print(
-            f"Quality Δ:     "
+            f"Quality Δ:           "
             f"{signed_fmt(changes.get('quality'))}",
             flush=True
         )
@@ -2824,6 +2940,21 @@ def validate_stock(stock):
                 "source"
             ],
 
+        "base_turning":
+            scores.get(
+                "turning"
+            ),
+
+        "turning_engine":
+            turning[
+                "value"
+            ],
+
+        "turning_engine_delta":
+            turning_engine_change[
+                "delta"
+            ],
+
         "financial_comparability":
             financial_comparability[
                 "score"
@@ -2847,11 +2978,6 @@ def validate_stock(stock):
                     "risk"
                 )
             ),
-
-        "turning":
-            turning[
-                "value"
-            ],
 
         "positive_count":
             len(
@@ -2909,7 +3035,7 @@ def print_final_summary(results):
     )
 
     print_header(
-        "📋 VALIDATION SUMMARY v1.2"
+        "📋 VALIDATION SUMMARY v1.2.1"
     )
 
     for index, result in enumerate(
@@ -2947,8 +3073,14 @@ def print_final_summary(results):
             f"Risk="
             f"{fmt(result['risk'])} | "
 
-            f"Turning="
-            f"{fmt(result['turning'])} | "
+            f"BaseTurning="
+            f"{fmt(result['base_turning'])} | "
+
+            f"TurningEngine="
+            f"{fmt(result['turning_engine'])} | "
+
+            f"TurningEngineΔ="
+            f"{signed_fmt(result['turning_engine_delta'])} | "
 
             f"+Signals="
             f"{result['positive_count']} | "
@@ -3027,6 +3159,16 @@ def print_final_summary(results):
         ] == "STRONG_CONTINUATION"
     )
 
+    insufficient_turning_count = sum(
+
+        1
+        for result in valid
+
+        if result[
+            "turning_state"
+        ] == "INSUFFICIENT_HISTORY"
+    )
+
     low_momentum_count = sum(
 
         1
@@ -3092,6 +3234,12 @@ def print_final_summary(results):
     )
 
     print(
+        f"🗂️ Insufficient Turning History: "
+        f"{insufficient_turning_count}",
+        flush=True
+    )
+
+    print(
         f"🟡 Low Momentum Reliability: "
         f"{low_momentum_count}",
         flush=True
@@ -3112,16 +3260,16 @@ def print_final_summary(results):
 
     print(
         "\n"
-        "🧬 Momentum Reliability v2 يأخذ "
-        "قابلية مقارنة المدخلات المالية نفسها "
-        "وليس وجود Scores فقط.",
+        "🧬 Momentum Reliability v2.1 يجمع "
+        "بين قابلية مقارنة المدخلات المالية "
+        "وتوفر درجات Scoring.",
         flush=True
     )
 
     print(
         "\n"
-        "🔄 Turning Validation يعتمد على "
-        "turning_engine_score عند توفره.",
+        "🔄 Base Turning منفصل عن "
+        "Turning Engine الحقيقي في العرض والمقارنة.",
         flush=True
     )
 
@@ -3151,7 +3299,7 @@ def run_validation_engine():
     )
 
     print_header(
-        "🧪 VALIDATION ENGINE v1.2"
+        "🧪 VALIDATION ENGINE v1.2.1"
     )
 
     print(
