@@ -4,7 +4,7 @@ from supabase import create_client
 
 
 # ============================================================
-# BANK SIGNAL ENGINE v1.0
+# BANK SIGNAL ENGINE v1.0.1
 #
 # Specialized Signal Engine for Banks
 #
@@ -16,6 +16,12 @@ from supabase import create_client
 #
 # Prefix:
 # bank_signal_
+#
+# v1.0.1:
+# - منع التصنيف القوي عند ضعف Signal Coverage
+# - منع التصنيف القوي عند نقص التاريخ
+# - منع التصنيف القوي عند ضعف Trend Reliability
+# - تحسين تفسير حالة INSUFFICIENT_HISTORY
 # ============================================================
 
 
@@ -54,11 +60,19 @@ supabase = create_client(
 # Settings
 # ============================================================
 
-ENGINE_VERSION = "1.0"
+ENGINE_VERSION = "1.0.1"
 
 ENGINE_PREFIX = "bank_signal_"
 
 MIN_DATA_CONFIDENCE = 60.0
+
+MIN_FINAL_CONFIDENCE = 55.0
+
+MIN_SIGNAL_COVERAGE = 60.0
+
+MIN_HISTORY_SUFFICIENCY = 40.0
+
+MIN_TREND_RELIABILITY = 35.0
 
 
 # ============================================================
@@ -1091,6 +1105,7 @@ def calculate_trend_reliability(
             )
 
             if value is not None:
+
                 values.append(
                     value
                 )
@@ -1167,13 +1182,42 @@ def finalize_engine(
 
     for component in components:
 
-        weight = component[
-            "weight"
-        ]
+        weight = safe_number(
+            component.get(
+                "weight"
+            )
+        )
 
-        coverage = component[
-            "coverage"
-        ]
+        coverage = safe_number(
+            component.get(
+                "coverage"
+            )
+        )
+
+        improvement = safe_number(
+            component.get(
+                "improvement"
+            )
+        )
+
+        risk = safe_number(
+            component.get(
+                "risk"
+            )
+        )
+
+        if (
+            weight is None
+            or coverage is None
+            or improvement is None
+            or risk is None
+            or weight <= 0
+        ):
+            continue
+
+        coverage = clamp(
+            coverage
+        )
 
         usable_weight = (
             weight
@@ -1182,22 +1226,21 @@ def finalize_engine(
         )
 
         total_possible_weight += weight
-        total_available_weight += usable_weight
+
+        total_available_weight += (
+            usable_weight
+        )
 
         improvement_items.append(
             (
-                component[
-                    "improvement"
-                ],
+                improvement,
                 usable_weight
             )
         )
 
         risk_items.append(
             (
-                component[
-                    "risk"
-                ],
+                risk,
                 usable_weight
             )
         )
@@ -1214,6 +1257,7 @@ def finalize_engine(
         raw_improvement is None
         or raw_risk is None
         or total_possible_weight <= 0
+        or total_available_weight <= 0
     ):
         return None
 
@@ -1221,6 +1265,10 @@ def finalize_engine(
         total_available_weight
         / total_possible_weight
     ) * 100
+
+    signal_coverage = clamp(
+        signal_coverage
+    )
 
     coverage_factor = (
         0.35
@@ -1255,6 +1303,20 @@ def finalize_engine(
     data_confidence = (
         safe_number(
             data_confidence
+        )
+        or 0.0
+    )
+
+    history = (
+        safe_number(
+            history
+        )
+        or 0.0
+    )
+
+    trend_reliability = (
+        safe_number(
+            trend_reliability
         )
         or 0.0
     )
@@ -1309,26 +1371,105 @@ def finalize_engine(
 
 def classify_result(scores):
 
-    net_score = scores[
-        "net_score"
-    ]
+    net_score = safe_number(
+        scores.get(
+            "net_score"
+        )
+    )
 
-    confidence = scores[
-        "confidence_score"
-    ]
+    confidence = safe_number(
+        scores.get(
+            "confidence_score"
+        )
+    )
 
-    history = scores[
-        "history_sufficiency_score"
-    ]
+    coverage = safe_number(
+        scores.get(
+            "signal_coverage_score"
+        )
+    )
 
-    if (
-        confidence < 55
-        or history < 35
-    ):
+    history = safe_number(
+        scores.get(
+            "history_sufficiency_score"
+        )
+    )
+
+    reliability = safe_number(
+        scores.get(
+            "trend_reliability_score"
+        )
+    )
+
+    if net_score is None:
+
+        return (
+            "INSUFFICIENT_DATA",
+            "لا توجد درجة نهائية صالحة"
+        )
+
+    confidence = (
+        confidence
+        if confidence is not None
+        else 0.0
+    )
+
+    coverage = (
+        coverage
+        if coverage is not None
+        else 0.0
+    )
+
+    history = (
+        history
+        if history is not None
+        else 0.0
+    )
+
+    reliability = (
+        reliability
+        if reliability is not None
+        else 0.0
+    )
+
+    limitations = []
+
+    if confidence < MIN_FINAL_CONFIDENCE:
+
+        limitations.append(
+            f"Confidence {confidence:.2f}"
+            f"<{MIN_FINAL_CONFIDENCE:.0f}"
+        )
+
+    if coverage < MIN_SIGNAL_COVERAGE:
+
+        limitations.append(
+            f"Coverage {coverage:.2f}"
+            f"<{MIN_SIGNAL_COVERAGE:.0f}"
+        )
+
+    if history < MIN_HISTORY_SUFFICIENCY:
+
+        limitations.append(
+            f"History {history:.2f}"
+            f"<{MIN_HISTORY_SUFFICIENCY:.0f}"
+        )
+
+    if reliability < MIN_TREND_RELIABILITY:
+
+        limitations.append(
+            f"Trend {reliability:.2f}"
+            f"<{MIN_TREND_RELIABILITY:.0f}"
+        )
+
+    if limitations:
 
         return (
             "INSUFFICIENT_HISTORY",
-            "التاريخ أو الثقة غير كافيين"
+            "لا يصدر تصنيف اتجاه قوي بسبب: "
+            + " | ".join(
+                limitations
+            )
         )
 
     if net_score >= 40:
@@ -1615,7 +1756,8 @@ def run_bank_signal_engine(
 
             print(
                 "🟡 LIMITED DATA | "
-                "الثقة غير كافية لإصدار Signal",
+                "الثقة الأساسية للبيانات غير كافية "
+                "لإصدار Signal",
                 flush=True
             )
 
@@ -1625,6 +1767,10 @@ def run_bank_signal_engine(
 
         all_positive = []
         all_negative = []
+
+        # ====================================================
+        # Growth
+        # ====================================================
 
         growth = evaluate_growth(
             metrics
@@ -1652,6 +1798,10 @@ def run_bank_signal_engine(
                 ]
             )
 
+        # ====================================================
+        # Quality
+        # ====================================================
+
         quality = evaluate_quality(
             metrics
         )
@@ -1677,6 +1827,10 @@ def run_bank_signal_engine(
                     "negative"
                 ]
             )
+
+        # ====================================================
+        # Capital
+        # ====================================================
 
         capital = evaluate_capital(
             metrics
@@ -1704,6 +1858,10 @@ def run_bank_signal_engine(
                 ]
             )
 
+        # ====================================================
+        # Historical Reliability
+        # ====================================================
+
         history = calculate_history(
             quarter_dates,
             index
@@ -1717,6 +1875,10 @@ def run_bank_signal_engine(
             )
         )
 
+        # ====================================================
+        # Final Score
+        # ====================================================
+
         scores = finalize_engine(
             components,
             data_confidence,
@@ -1729,7 +1891,8 @@ def run_bank_signal_engine(
             limited += 1
 
             print(
-                "🟡 لا توجد Components كافية",
+                "🟡 LIMITED DATA | "
+                "لا توجد Components كافية للحساب",
                 flush=True
             )
 
@@ -1792,6 +1955,23 @@ def run_bank_signal_engine(
             flush=True
         )
 
+        # ====================================================
+        # Quality Gate explanation
+        # ====================================================
+
+        if status_code == "INSUFFICIENT_HISTORY":
+
+            print(
+                "🛡️ Quality Gate: "
+                "تم منع التصنيف الاتجاهي القوي "
+                "حتى تكتمل جودة الإشارة التاريخية.",
+                flush=True
+            )
+
+        # ====================================================
+        # Reasons
+        # ====================================================
+
         print(
             "\n🟢 أسباب التحسن:",
             flush=True
@@ -1834,6 +2014,10 @@ def run_bank_signal_engine(
                 flush=True
             )
 
+        # ====================================================
+        # Save
+        # ====================================================
+
         total_saved += (
             save_engine_metrics(
                 stock_id,
@@ -1848,6 +2032,10 @@ def run_bank_signal_engine(
             flush=True
         )
 
+    # ========================================================
+    # Summary
+    # ========================================================
+
     print(
         "\n"
         + "=" * 80,
@@ -1855,7 +2043,7 @@ def run_bank_signal_engine(
     )
 
     print(
-        "📊 BANK SIGNAL ENGINE SUMMARY",
+        f"📊 BANK SIGNAL ENGINE v{ENGINE_VERSION} SUMMARY",
         flush=True
     )
 
@@ -1891,6 +2079,35 @@ def run_bank_signal_engine(
     print(
         f"💾 Metrics Saved: "
         f"{total_saved}",
+        flush=True
+    )
+
+    print(
+        "\n🛡️ Classification Gates:",
+        flush=True
+    )
+
+    print(
+        f"- Final Confidence >= "
+        f"{MIN_FINAL_CONFIDENCE:.0f}",
+        flush=True
+    )
+
+    print(
+        f"- Signal Coverage >= "
+        f"{MIN_SIGNAL_COVERAGE:.0f}",
+        flush=True
+    )
+
+    print(
+        f"- History Sufficiency >= "
+        f"{MIN_HISTORY_SUFFICIENCY:.0f}",
+        flush=True
+    )
+
+    print(
+        f"- Trend Reliability >= "
+        f"{MIN_TREND_RELIABILITY:.0f}",
         flush=True
     )
 
