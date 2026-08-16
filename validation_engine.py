@@ -3,38 +3,19 @@ from supabase import create_client
 
 
 # ============================================================
-# VALIDATION ENGINE v1.2.2
+# VALIDATION ENGINE v1.2.3
+#
+# الهدف:
+# - التحقق من تكامل طبقات التحليل:
+#   Scoring / Signal / Turning / Data Quality / Decision
+# - احترام Turning Point Engine v2.0.2 كمصدر الحقيقة
+#   لحالة التحول النهائية.
+# - استخدام Turning Engine Delta كمعلومة زخم فقط، وليس
+#   لإعادة تصنيف الحالة.
+# - دعم standard / bank / insurance / reit
 #
 # READ ONLY
-#
-# v1.2.2:
-# - دعم Signal Engines المتخصصة حسب analysis_model
-#
-# standard:
-#   engine22_net_score
-#
-# reit:
-#   engine22_net_score
-#
-# bank:
-#   bank_signal_net_score
-#
-# insurance:
-#   insurance_signal_net_score
-#
-# v1.2.1:
-# - STRONG_CONTINUATION قبل EARLY_TURNING
-# - فصل Base Turning Delta عن Turning Engine Delta
-#
-# Features:
-# - System Layer Coverage
-# - Financial Comparability
-# - Momentum Reliability
-# - Turning Validation
-# - Extreme / Base Effect Review
-#
-# MODE:
-# READ ONLY
+# لا يكتب أو يعدل أي بيانات.
 # ============================================================
 
 
@@ -50,18 +31,15 @@ SUPABASE_SECRET_KEY = os.environ.get(
     "SUPABASE_SECRET_KEY"
 )
 
-
 if not SUPABASE_URL:
     raise RuntimeError(
         "SUPABASE_URL is missing"
     )
 
-
 if not SUPABASE_SECRET_KEY:
     raise RuntimeError(
         "SUPABASE_SECRET_KEY is missing"
     )
-
 
 supabase = create_client(
     SUPABASE_URL,
@@ -70,50 +48,92 @@ supabase = create_client(
 
 
 # ============================================================
-# Validation Sample
+# Settings
 # ============================================================
 
-DEFAULT_VALIDATION_SYMBOLS = [
+ENGINE_VERSION = "1.2.3"
 
+DEFAULT_VALIDATION_SYMBOLS = [
     "4030.SR",  # البحري
     "4190.SR",  # جرير
     "8010.SR",  # التعاونية
     "1831.SR",  # مهارة
-    "1111.SR",  # مجموعة تداول
+    "1111.SR",  # مجموعة تداول السعودية
     "2283.SR",  # المطاحن الأولى
     "7203.SR",  # علم
     "1150.SR"   # مصرف الإنماء
 ]
 
 
-def get_validation_symbols():
+MODEL_PREFIX = {
+    "standard": "q_",
+    "bank": "bank_q_",
+    "insurance": "insurance_q_",
+    "reit": "reit_q_"
+}
 
-    env_value = os.environ.get(
-        "VALIDATION_SYMBOLS"
-    )
 
-    if not env_value:
-        return DEFAULT_VALIDATION_SYMBOLS
+MODEL_SIGNAL_NET = {
+    "standard": "engine22_net_score",
+    "bank": "bank_signal_net_score",
+    "insurance": "insurance_signal_net_score",
+    "reit": "engine22_net_score"
+}
 
-    symbols = [
 
-        symbol.strip()
+MODEL_SIGNAL_CONFIDENCE = {
+    "standard": "engine22_confidence_score",
+    "bank": "bank_signal_confidence_score",
+    "insurance": "insurance_signal_confidence_score",
+    "reit": "engine22_confidence_score"
+}
 
-        for symbol
-        in env_value.split(",")
 
-        if symbol.strip()
-    ]
+TURNING_STATE_MAP = {
+    0: "LOW_CONFIDENCE",
+    1: "WEAK",
+    2: "DETERIORATING",
+    3: "NEUTRAL",
+    4: "IMPROVING",
+    5: "IMPROVING_LIMITED_HISTORY",
+    6: "EARLY_TURNING_POINT",
+    7: "STRONG_TURNING_POINT",
+    8: "STRONG_CONTINUATION"
+}
 
-    return (
-        symbols
-        if symbols
-        else DEFAULT_VALIDATION_SYMBOLS
-    )
+
+TURNING_STATE_DESCRIPTION = {
+    "LOW_CONFIDENCE":
+        "الثقة أو التاريخ المقارن غير كافيين",
+
+    "WEAK":
+        "لا توجد إشارات تحول إيجابي كافية",
+
+    "DETERIORATING":
+        "عدة مؤشرات مالية تتدهور",
+
+    "NEUTRAL":
+        "لا يوجد تحول واضح حتى الآن",
+
+    "IMPROVING":
+        "تحسن مستمر دون تحقق شروط Turning Point الحقيقي",
+
+    "IMPROVING_LIMITED_HISTORY":
+        "تحسن ظاهر لكن الاتساع التاريخي المقارن ما زال محدودًا",
+
+    "EARLY_TURNING_POINT":
+        "بوادر تحول مالي حقيقية من قاعدة أضعف",
+
+    "STRONG_TURNING_POINT":
+        "تحول مالي قوي ومتعدد الإشارات",
+
+    "STRONG_CONTINUATION":
+        "قوة مستمرة وليست Turning Point جديدة"
+}
 
 
 # ============================================================
-# General Helpers
+# Helpers
 # ============================================================
 
 def safe_number(value):
@@ -143,9 +163,7 @@ def fmt(
     if value is None:
         return "N/A"
 
-    return (
-        f"{value:.{decimals}f}"
-    )
+    return f"{value:.{decimals}f}"
 
 
 def signed_fmt(
@@ -160,16 +178,28 @@ def signed_fmt(
     if value is None:
         return "N/A"
 
-    return (
-        f"{value:+.{decimals}f}"
+    return f"{value:+.{decimals}f}"
+
+
+def clamp(
+    value,
+    minimum=0.0,
+    maximum=100.0
+):
+
+    value = safe_number(
+        value
     )
 
+    if value is None:
+        return None
 
-def print_separator():
-
-    print(
-        "-" * 96,
-        flush=True
+    return max(
+        minimum,
+        min(
+            maximum,
+            value
+        )
     )
 
 
@@ -192,8 +222,38 @@ def print_header(title):
     )
 
 
+def print_separator():
+
+    print(
+        "-" * 96,
+        flush=True
+    )
+
+
+def get_validation_symbols():
+
+    env_value = os.environ.get(
+        "VALIDATION_SYMBOLS"
+    )
+
+    if not env_value:
+        return DEFAULT_VALIDATION_SYMBOLS
+
+    symbols = [
+        symbol.strip()
+        for symbol in env_value.split(",")
+        if symbol.strip()
+    ]
+
+    return (
+        symbols
+        if symbols
+        else DEFAULT_VALIDATION_SYMBOLS
+    )
+
+
 # ============================================================
-# Stocks
+# Supabase Reads
 # ============================================================
 
 def get_stocks(symbols):
@@ -208,7 +268,8 @@ def get_stocks(symbols):
             "sector,"
             "analysis_model,"
             "priority,"
-            "data_status"
+            "data_status,"
+            "is_active"
         )
         .in_(
             "symbol",
@@ -223,10 +284,7 @@ def get_stocks(symbols):
     )
 
     stock_map = {
-
-        row["symbol"]:
-            row
-
+        row["symbol"]: row
         for row in rows
     }
 
@@ -254,10 +312,6 @@ def get_stocks(symbols):
 
     return ordered
 
-
-# ============================================================
-# Financial Metrics
-# ============================================================
 
 def get_metrics(stock_id):
 
@@ -332,115 +386,7 @@ def organize_metrics(rows):
 
 
 # ============================================================
-# Model Prefix
-# ============================================================
-
-MODEL_PREFIX = {
-
-    "standard":
-        "q_",
-
-    "bank":
-        "bank_q_",
-
-    "insurance":
-        "insurance_q_",
-
-    "reit":
-        "reit_q_"
-}
-
-
-# ============================================================
-# Signal Metric حسب النموذج
-# ============================================================
-
-MODEL_SIGNAL_METRIC = {
-
-    "standard":
-        "engine22_net_score",
-
-    "reit":
-        "engine22_net_score",
-
-    "bank":
-        "bank_signal_net_score",
-
-    "insurance":
-        "insurance_signal_net_score"
-}
-
-
-# ============================================================
-# Financial Comparability Inputs
-# ============================================================
-
-MODEL_COMPARABILITY_INPUTS = {
-
-    "standard": [
-
-        "q_revenue_growth_yoy",
-        "q_net_income_growth_yoy",
-        "q_revenue_growth_qoq",
-        "q_net_income_growth_qoq",
-
-        "q_gross_margin_change_yoy",
-        "q_operating_margin_change_yoy",
-        "q_net_margin_change_yoy",
-
-        "q_cash_conversion",
-        "q_ocf_growth_yoy",
-        "q_fcf_growth_yoy",
-
-        "q_debt_growth_qoq",
-        "q_debt_to_equity",
-        "q_current_ratio",
-        "q_cash_growth_qoq",
-
-        "q_inventory_growth_qoq",
-        "q_receivables_growth_qoq"
-    ],
-
-    "bank": [
-
-        "bank_q_revenue_growth_yoy",
-        "bank_q_net_income_growth_yoy",
-        "bank_q_assets_growth_yoy",
-        "bank_q_equity_growth_yoy",
-        "bank_q_profit_margin_change_yoy",
-        "bank_q_equity_to_assets",
-        "bank_ttm_roe",
-        "bank_ttm_roa"
-    ],
-
-    "insurance": [
-
-        "insurance_q_revenue_growth_yoy",
-        "insurance_q_net_income_growth_yoy",
-        "insurance_q_equity_growth_yoy",
-        "insurance_q_profit_margin_change_yoy",
-        "insurance_q_ocf_growth_yoy",
-        "insurance_ttm_cash_conversion",
-        "insurance_ttm_roe",
-        "insurance_ttm_roa"
-    ],
-
-    "reit": [
-
-        "reit_q_revenue_growth_yoy",
-        "reit_q_operating_income_growth_yoy",
-        "reit_q_net_income_growth_yoy",
-        "reit_q_operating_margin_change_yoy",
-        "reit_q_net_margin_change_yoy",
-        "reit_q_debt_growth_yoy",
-        "reit_q_debt_to_assets",
-        "reit_ttm_cash_conversion"
-    ]
-}
-
-
-# ============================================================
-# Latest Periods
+# Valid Financial Periods
 # ============================================================
 
 def find_latest_periods(
@@ -487,10 +433,7 @@ def find_latest_periods(
         else None
     )
 
-    return (
-        latest,
-        previous
-    )
+    return latest, previous
 
 
 # ============================================================
@@ -500,7 +443,6 @@ def find_latest_periods(
 def get_score_block(metrics):
 
     return {
-
         "growth":
             safe_number(
                 metrics.get(
@@ -550,7 +492,7 @@ def get_score_block(metrics):
                 )
             ),
 
-        "turning":
+        "base_turning":
             safe_number(
                 metrics.get(
                     "score_turning_point_score"
@@ -560,127 +502,7 @@ def get_score_block(metrics):
 
 
 # ============================================================
-# Turning Engine
-# ============================================================
-
-def get_turning_value(metrics):
-
-    engine_value = safe_number(
-        metrics.get(
-            "turning_engine_score"
-        )
-    )
-
-    if engine_value is not None:
-
-        return {
-
-            "value":
-                engine_value,
-
-            "source":
-                "turning_engine_score"
-        }
-
-    fallback = safe_number(
-        metrics.get(
-            "score_turning_point_score"
-        )
-    )
-
-    if fallback is not None:
-
-        return {
-
-            "value":
-                fallback,
-
-            "source":
-                "score_turning_point_score_fallback"
-        }
-
-    return {
-
-        "value":
-            None,
-
-        "source":
-            "missing"
-    }
-
-
-# ============================================================
-# Turning Engine Delta
-# ============================================================
-
-def calculate_turning_engine_delta(
-    latest,
-    previous
-):
-
-    current = get_turning_value(
-        latest
-    )
-
-    if not previous:
-
-        return {
-
-            "current":
-                current["value"],
-
-            "previous":
-                None,
-
-            "delta":
-                None,
-
-            "source":
-                current["source"]
-        }
-
-    previous_turning = get_turning_value(
-        previous
-    )
-
-    current_value = safe_number(
-        current["value"]
-    )
-
-    previous_value = safe_number(
-        previous_turning["value"]
-    )
-
-    delta = None
-
-    if (
-        current_value is not None
-        and previous_value is not None
-    ):
-
-        delta = (
-            current_value
-            - previous_value
-        )
-
-    return {
-
-        "current":
-            current_value,
-
-        "previous":
-            previous_value,
-
-        "delta":
-            delta,
-
-        "source":
-            current["source"]
-    }
-
-
-# ============================================================
-# Current State Classification
+# Current Validation State
 # ============================================================
 
 def classify_score(
@@ -708,7 +530,7 @@ def classify_score(
 
         return (
             "LOW_CONFIDENCE",
-            "اكتمال البيانات غير كافٍ لحكم قوي"
+            "البيانات غير كافية لحكم قوي"
         )
 
     if (
@@ -762,91 +584,401 @@ def classify_score(
 
 
 # ============================================================
-# System Layer Coverage v1.2.2
+# Signal Layer
 # ============================================================
 
-def calculate_system_layer_coverage(
+def get_signal_layer(
     metrics,
     analysis_model
 ):
 
     signal_metric = (
-        MODEL_SIGNAL_METRIC.get(
+        MODEL_SIGNAL_NET.get(
             analysis_model
         )
     )
 
-    signal_available = False
+    confidence_metric = (
+        MODEL_SIGNAL_CONFIDENCE.get(
+            analysis_model
+        )
+    )
 
-    if signal_metric:
+    if not signal_metric:
 
-        signal_available = (
-            safe_number(
-                metrics.get(
-                    signal_metric
-                )
+        return {
+            "available": False,
+            "source": "N/A",
+            "net_score": None,
+            "confidence": None
+        }
+
+    net_score = safe_number(
+        metrics.get(
+            signal_metric
+        )
+    )
+
+    signal_confidence = None
+
+    if confidence_metric:
+
+        signal_confidence = safe_number(
+            metrics.get(
+                confidence_metric
             )
-            is not None
         )
 
-    layers = {
+    return {
+        "available":
+            net_score is not None,
 
+        "source":
+            signal_metric,
+
+        "net_score":
+            net_score,
+
+        "confidence":
+            signal_confidence
+    }
+
+
+# ============================================================
+# Turning Layer v2.0.2
+# ============================================================
+
+def get_turning_layer(metrics):
+
+    score = safe_number(
+        metrics.get(
+            "turning_engine_score"
+        )
+    )
+
+    state_code = safe_number(
+        metrics.get(
+            "turning_engine_state_code"
+        )
+    )
+
+    confidence = safe_number(
+        metrics.get(
+            "turning_engine_confidence_score"
+        )
+    )
+
+    continuity = safe_number(
+        metrics.get(
+            "turning_engine_comparability_continuity_score"
+        )
+    )
+
+    breadth = safe_number(
+        metrics.get(
+            "turning_engine_comparability_breadth_score"
+        )
+    )
+
+    common_inputs = safe_number(
+        metrics.get(
+            "turning_engine_common_inputs"
+        )
+    )
+
+    newly_available = safe_number(
+        metrics.get(
+            "turning_engine_newly_available_inputs"
+        )
+    )
+
+    dropped_inputs = safe_number(
+        metrics.get(
+            "turning_engine_dropped_inputs"
+        )
+    )
+
+    state = None
+
+    if state_code is not None:
+
+        state = TURNING_STATE_MAP.get(
+            int(round(state_code))
+        )
+
+    return {
+        "available":
+            score is not None,
+
+        "source":
+            "turning_engine_score",
+
+        "score":
+            score,
+
+        "state_code":
+            state_code,
+
+        "state":
+            state,
+
+        "confidence":
+            confidence,
+
+        "continuity":
+            continuity,
+
+        "breadth":
+            breadth,
+
+        "common_inputs":
+            common_inputs,
+
+        "newly_available_inputs":
+            newly_available,
+
+        "dropped_inputs":
+            dropped_inputs
+    }
+
+
+def validate_turning_layer(
+    latest_turning,
+    previous_turning
+):
+
+    # --------------------------------------------------------
+    # v1.2.3:
+    # Turning Point Engine state_code هو مصدر الحقيقة.
+    # لا نعيد اختراع الحالة من Delta.
+    # --------------------------------------------------------
+
+    state = latest_turning.get(
+        "state"
+    )
+
+    score = safe_number(
+        latest_turning.get(
+            "score"
+        )
+    )
+
+    previous_score = (
+        safe_number(
+            previous_turning.get(
+                "score"
+            )
+        )
+        if previous_turning
+        else None
+    )
+
+    delta = None
+
+    if (
+        score is not None
+        and previous_score is not None
+    ):
+
+        delta = (
+            score
+            - previous_score
+        )
+
+    if state:
+
+        description = (
+            TURNING_STATE_DESCRIPTION.get(
+                state,
+                "حالة Turning صادرة مباشرة من Turning Engine"
+            )
+        )
+
+        return {
+            "state":
+                state,
+
+            "description":
+                description,
+
+            "delta":
+                delta,
+
+            "source":
+                "turning_engine_state_code",
+
+            "direct_state":
+                True
+        }
+
+    # --------------------------------------------------------
+    # Legacy fallback فقط لو state_code غير موجود
+    # --------------------------------------------------------
+
+    if score is None:
+
+        return {
+            "state":
+                "NO_TURNING_DATA",
+
+            "description":
+                "لا توجد نتيجة Turning Engine لهذه الفترة",
+
+            "delta":
+                delta,
+
+            "source":
+                "legacy_fallback",
+
+            "direct_state":
+                False
+        }
+
+    if delta is None:
+
+        return {
+            "state":
+                "INSUFFICIENT_HISTORY",
+
+            "description":
+                "Turning موجود لكن لا توجد فترة سابقة قابلة للمقارنة",
+
+            "delta":
+                delta,
+
+            "source":
+                "legacy_fallback",
+
+            "direct_state":
+                False
+        }
+
+    if (
+        score >= 80
+        and delta >= 20
+    ):
+
+        fallback_state = (
+            "STRONG_TURNING_POINT"
+        )
+
+    elif (
+        score >= 65
+        and delta >= 15
+    ):
+
+        fallback_state = (
+            "EARLY_TURNING_POINT"
+        )
+
+    elif score >= 55:
+
+        fallback_state = (
+            "IMPROVING"
+        )
+
+    elif score < 40:
+
+        fallback_state = (
+            "WEAK"
+        )
+
+    else:
+
+        fallback_state = (
+            "NEUTRAL"
+        )
+
+    return {
+        "state":
+            fallback_state,
+
+        "description":
+            "Legacy fallback لأن turning_engine_state_code غير موجود",
+
+        "delta":
+            delta,
+
+        "source":
+            "legacy_fallback",
+
+        "direct_state":
+            False
+    }
+
+
+# ============================================================
+# System Coverage
+# ============================================================
+
+def evaluate_system_coverage(
+    latest,
+    analysis_model
+):
+
+    layers = {
         "scoring":
             safe_number(
-                metrics.get(
+                latest.get(
                     "score_opportunity_score"
                 )
             ) is not None,
 
         "signal":
-            signal_available,
+            get_signal_layer(
+                latest,
+                analysis_model
+            )["available"],
 
         "turning":
             safe_number(
-                metrics.get(
+                latest.get(
                     "turning_engine_score"
                 )
             ) is not None,
 
         "data_quality":
             safe_number(
-                metrics.get(
+                latest.get(
                     "data_quality_score"
                 )
             ) is not None,
 
         "decision":
             safe_number(
-                metrics.get(
+                latest.get(
                     "decision_score"
                 )
             ) is not None
     }
 
-    available = sum(
-
+    available_count = sum(
         1
-
-        for value
-        in layers.values()
-
+        for value in layers.values()
         if value
     )
 
-    total = len(
+    total_count = len(
         layers
     )
 
-    score = (
-        available
-        / total
+    coverage = (
+        available_count
+        / total_count
     ) * 100
 
-    if available == total:
+    missing = [
+        layer_name
+        for layer_name, available
+        in layers.items()
+        if not available
+    ]
+
+    if available_count == total_count:
 
         status = "FULL"
 
-    elif available >= 3:
+    elif available_count >= 3:
 
         status = "PARTIAL"
 
@@ -854,787 +986,29 @@ def calculate_system_layer_coverage(
 
         status = "LIMITED"
 
-    missing = [
-
-        name
-
-        for name, value
-        in layers.items()
-
-        if not value
-    ]
-
     return {
-
         "status":
             status,
 
-        "score":
-            score,
+        "coverage":
+            coverage,
 
-        "available":
-            available,
+        "available_count":
+            available_count,
 
-        "total":
-            total,
-
-        "layers":
-            layers,
+        "total_count":
+            total_count,
 
         "missing":
             missing,
 
-        "signal_metric":
-            signal_metric,
-
-        "signal_available":
-            signal_available
+        "layers":
+            layers
     }
 
 
 # ============================================================
-# Financial Comparability
-# ============================================================
-
-def calculate_financial_comparability(
-    latest,
-    previous,
-    analysis_model
-):
-
-    watched = (
-        MODEL_COMPARABILITY_INPUTS.get(
-            analysis_model,
-            []
-        )
-    )
-
-    if (
-        not watched
-        or not previous
-    ):
-
-        return {
-
-            "score":
-                0.0,
-
-            "common":
-                0,
-
-            "union":
-                0,
-
-            "latest_available":
-                0,
-
-            "previous_available":
-                0,
-
-            "state":
-                "NO_HISTORY"
-        }
-
-    latest_available = {
-
-        metric_name
-
-        for metric_name
-        in watched
-
-        if safe_number(
-            latest.get(
-                metric_name
-            )
-        ) is not None
-    }
-
-    previous_available = {
-
-        metric_name
-
-        for metric_name
-        in watched
-
-        if safe_number(
-            previous.get(
-                metric_name
-            )
-        ) is not None
-    }
-
-    common = (
-        latest_available
-        & previous_available
-    )
-
-    union = (
-        latest_available
-        | previous_available
-    )
-
-    if not union:
-
-        score = 0.0
-
-    else:
-
-        score = (
-            len(common)
-            / len(union)
-        ) * 100
-
-    if score >= 85:
-
-        state = "HIGH"
-
-    elif score >= 60:
-
-        state = "MEDIUM"
-
-    elif score > 0:
-
-        state = "LOW"
-
-    else:
-
-        state = "NO_HISTORY"
-
-    return {
-
-        "score":
-            score,
-
-        "common":
-            len(common),
-
-        "union":
-            len(union),
-
-        "latest_available":
-            len(latest_available),
-
-        "previous_available":
-            len(previous_available),
-
-        "state":
-            state
-    }
-
-
-# ============================================================
-# Score Momentum
-# ============================================================
-
-MOMENTUM_KEYS = [
-
-    "growth",
-    "quality",
-    "cash",
-    "balance",
-    "opportunity",
-    "risk",
-    "turning"
-]
-
-
-def calculate_momentum(
-    latest_scores,
-    previous_metrics,
-    financial_comparability
-):
-
-    if not previous_metrics:
-
-        return {
-
-            "changes":
-                {},
-
-            "score_availability":
-                0.0,
-
-            "financial_comparability":
-                financial_comparability[
-                    "score"
-                ],
-
-            "reliability":
-                0.0,
-
-            "state":
-                "NO_HISTORY",
-
-            "comparable_scores":
-                0
-        }
-
-    previous_scores = get_score_block(
-        previous_metrics
-    )
-
-    changes = {}
-
-    comparable_scores = 0
-
-    for key in MOMENTUM_KEYS:
-
-        current = safe_number(
-            latest_scores.get(
-                key
-            )
-        )
-
-        previous = safe_number(
-            previous_scores.get(
-                key
-            )
-        )
-
-        if (
-            current is None
-            or previous is None
-        ):
-
-            changes[
-                key
-            ] = None
-
-        else:
-
-            comparable_scores += 1
-
-            changes[
-                key
-            ] = (
-                current
-                - previous
-            )
-
-    score_availability = (
-        comparable_scores
-        / len(MOMENTUM_KEYS)
-    ) * 100
-
-    financial_score = (
-        financial_comparability[
-            "score"
-        ]
-    )
-
-    reliability = (
-
-        score_availability
-        * 0.40
-
-        + financial_score
-        * 0.60
-    )
-
-    if reliability >= 85:
-
-        state = "HIGH"
-
-    elif reliability >= 60:
-
-        state = "MEDIUM"
-
-    elif reliability > 0:
-
-        state = "LOW"
-
-    else:
-
-        state = "NO_HISTORY"
-
-    return {
-
-        "changes":
-            changes,
-
-        "score_availability":
-            score_availability,
-
-        "financial_comparability":
-            financial_score,
-
-        "reliability":
-            reliability,
-
-        "state":
-            state,
-
-        "comparable_scores":
-            comparable_scores
-    }
-
-
-# ============================================================
-# Turning Validation
-# ============================================================
-
-def validate_turning(
-    latest,
-    previous,
-    momentum_reliability
-):
-
-    current = get_turning_value(
-        latest
-    )
-
-    current_value = current[
-        "value"
-    ]
-
-    if current_value is None:
-
-        return {
-
-            "state":
-                "NO_TURNING_DATA",
-
-            "description":
-                "Turning Engine غير متوفر",
-
-            "value":
-                None,
-
-            "previous_value":
-                None,
-
-            "delta":
-                None,
-
-            "source":
-                current["source"]
-        }
-
-    if not previous:
-
-        return {
-
-            "state":
-                "INSUFFICIENT_HISTORY",
-
-            "description":
-                "لا توجد فترة سابقة للمقارنة",
-
-            "value":
-                current_value,
-
-            "previous_value":
-                None,
-
-            "delta":
-                None,
-
-            "source":
-                current["source"]
-        }
-
-    previous_turning = get_turning_value(
-        previous
-    )
-
-    previous_value = (
-        previous_turning[
-            "value"
-        ]
-    )
-
-    if previous_value is None:
-
-        return {
-
-            "state":
-                "INSUFFICIENT_HISTORY",
-
-            "description":
-                "Turning غير متوفر في الفترة السابقة",
-
-            "value":
-                current_value,
-
-            "previous_value":
-                None,
-
-            "delta":
-                None,
-
-            "source":
-                current["source"]
-        }
-
-    delta = (
-        current_value
-        - previous_value
-    )
-
-    if momentum_reliability < 60:
-
-        return {
-
-            "state":
-                "LOW_COMPARABILITY",
-
-            "description":
-                (
-                    "التحول ظاهر لكن قابلية المقارنة "
-                    "بين الفترتين منخفضة"
-                ),
-
-            "value":
-                current_value,
-
-            "previous_value":
-                previous_value,
-
-            "delta":
-                delta,
-
-            "source":
-                current["source"]
-        }
-
-    # --------------------------------------------------------
-    # TRUE TURNING
-    # --------------------------------------------------------
-
-    if (
-        current_value >= 70
-        and previous_value < 60
-        and delta >= 10
-    ):
-
-        return {
-
-            "state":
-                "TRUE_TURNING",
-
-            "description":
-                (
-                    f"تحول مؤكد نسبيًا؛ "
-                    f"Turning Engine Δ "
-                    f"{signed_fmt(delta)}"
-                ),
-
-            "value":
-                current_value,
-
-            "previous_value":
-                previous_value,
-
-            "delta":
-                delta,
-
-            "source":
-                current["source"]
-        }
-
-    # --------------------------------------------------------
-    # STRONG CONTINUATION
-    # --------------------------------------------------------
-
-    if (
-        current_value >= 70
-        and previous_value >= 70
-    ):
-
-        return {
-
-            "state":
-                "STRONG_CONTINUATION",
-
-            "description":
-                (
-                    "قوة مستمرة وليست "
-                    "Turning Point جديدة"
-                ),
-
-            "value":
-                current_value,
-
-            "previous_value":
-                previous_value,
-
-            "delta":
-                delta,
-
-            "source":
-                current["source"]
-        }
-
-    # --------------------------------------------------------
-    # EARLY TURNING
-    # --------------------------------------------------------
-
-    if (
-        current_value >= 55
-        and previous_value < 70
-        and delta >= 10
-    ):
-
-        return {
-
-            "state":
-                "EARLY_TURNING",
-
-            "description":
-                (
-                    f"إشارة تحول مبكرة؛ "
-                    f"Turning Engine Δ "
-                    f"{signed_fmt(delta)}"
-                ),
-
-            "value":
-                current_value,
-
-            "previous_value":
-                previous_value,
-
-            "delta":
-                delta,
-
-            "source":
-                current["source"]
-        }
-
-    # --------------------------------------------------------
-    # NO TURNING
-    # --------------------------------------------------------
-
-    if current_value < 55:
-
-        return {
-
-            "state":
-                "NO_TURNING",
-
-            "description":
-                "لا توجد إشارة تحول قوية حاليًا",
-
-            "value":
-                current_value,
-
-            "previous_value":
-                previous_value,
-
-            "delta":
-                delta,
-
-            "source":
-                current["source"]
-        }
-
-    return {
-
-        "state":
-            "MIXED_TURNING",
-
-        "description":
-            (
-                "إشارة التحول مختلطة "
-                "ولا تكفي للحكم القوي"
-            ),
-
-        "value":
-            current_value,
-
-        "previous_value":
-            previous_value,
-
-        "delta":
-            delta,
-
-        "source":
-            current["source"]
-    }
-
-
-# ============================================================
-# Extreme / Base Effect Review
-# ============================================================
-
-def detect_extreme_flags(
-    latest,
-    analysis_model
-):
-
-    flags = []
-
-    if analysis_model == "standard":
-
-        growth_metrics = [
-
-            (
-                "الإيرادات",
-                latest.get(
-                    "q_revenue_growth_yoy"
-                )
-            ),
-
-            (
-                "صافي الربح",
-                latest.get(
-                    "q_net_income_growth_yoy"
-                )
-            )
-        ]
-
-        cash_metrics = [
-
-            (
-                "التدفق التشغيلي",
-                latest.get(
-                    "q_ocf_growth_yoy"
-                )
-            ),
-
-            (
-                "التدفق النقدي الحر",
-                latest.get(
-                    "q_fcf_growth_yoy"
-                )
-            )
-        ]
-
-    elif analysis_model == "bank":
-
-        growth_metrics = [
-
-            (
-                "دخل البنك",
-                latest.get(
-                    "bank_q_revenue_growth_yoy"
-                )
-            ),
-
-            (
-                "صافي الربح",
-                latest.get(
-                    "bank_q_net_income_growth_yoy"
-                )
-            )
-        ]
-
-        cash_metrics = []
-
-    elif analysis_model == "insurance":
-
-        growth_metrics = [
-
-            (
-                "الإيرادات",
-                latest.get(
-                    "insurance_q_revenue_growth_yoy"
-                )
-            ),
-
-            (
-                "صافي الربح",
-                latest.get(
-                    "insurance_q_net_income_growth_yoy"
-                )
-            )
-        ]
-
-        cash_metrics = [
-
-            (
-                "التدفق التشغيلي",
-                latest.get(
-                    "insurance_q_ocf_growth_yoy"
-                )
-            )
-        ]
-
-    elif analysis_model == "reit":
-
-        growth_metrics = [
-
-            (
-                "إيرادات REIT",
-                latest.get(
-                    "reit_q_revenue_growth_yoy"
-                )
-            ),
-
-            (
-                "الدخل التشغيلي",
-                latest.get(
-                    "reit_q_operating_income_growth_yoy"
-                )
-            ),
-
-            (
-                "صافي الربح",
-                latest.get(
-                    "reit_q_net_income_growth_yoy"
-                )
-            )
-        ]
-
-        cash_metrics = []
-
-    else:
-
-        growth_metrics = []
-        cash_metrics = []
-
-    for name, value in growth_metrics:
-
-        value = safe_number(
-            value
-        )
-
-        if value is None:
-            continue
-
-        if value >= 100:
-
-            flags.append(
-                (
-                    f"BASE_EFFECT_REVIEW | "
-                    f"{name} "
-                    f"{signed_fmt(value)}%"
-                )
-            )
-
-        elif value <= -70:
-
-            flags.append(
-                (
-                    f"EXTREME_DECLINE | "
-                    f"{name} "
-                    f"{signed_fmt(value)}%"
-                )
-            )
-
-    for name, value in cash_metrics:
-
-        value = safe_number(
-            value
-        )
-
-        if value is None:
-            continue
-
-        if abs(value) >= 100:
-
-            flags.append(
-                (
-                    f"CASH_FLOW_VOLATILITY | "
-                    f"{name} "
-                    f"{signed_fmt(value)}%"
-                )
-            )
-
-    return flags
-
-
-# ============================================================
-# Standard Validation
+# Model Validation Reasons
 # ============================================================
 
 def validate_standard(
@@ -1670,19 +1044,19 @@ def validate_standard(
         )
     )
 
-    gross_margin = safe_number(
+    gross_margin_yoy = safe_number(
         latest.get(
             "q_gross_margin_change_yoy"
         )
     )
 
-    operating_margin = safe_number(
+    operating_margin_yoy = safe_number(
         latest.get(
             "q_operating_margin_change_yoy"
         )
     )
 
-    net_margin = safe_number(
+    net_margin_yoy = safe_number(
         latest.get(
             "q_net_margin_change_yoy"
         )
@@ -1723,10 +1097,6 @@ def validate_standard(
             "q_revenue_growth_qoq"
         )
     )
-
-    # --------------------------------------------------------
-    # Positive
-    # --------------------------------------------------------
 
     if (
         revenue_yoy is not None
@@ -1769,47 +1139,43 @@ def validate_standard(
         )
 
     if (
-        operating_margin is not None
-        and operating_margin > 1
+        operating_margin_yoy is not None
+        and operating_margin_yoy > 1
     ):
 
         positives.append(
             f"الهامش التشغيلي يتحسن "
-            f"({signed_fmt(operating_margin)} نقطة)"
+            f"({signed_fmt(operating_margin_yoy)} نقطة)"
         )
 
-    # --------------------------------------------------------
-    # Risks
-    # --------------------------------------------------------
-
     if (
-        gross_margin is not None
-        and gross_margin <= -2
+        gross_margin_yoy is not None
+        and gross_margin_yoy <= -2
     ):
 
         risks.append(
             f"تآكل الهامش الإجمالي "
-            f"({signed_fmt(gross_margin)} نقطة)"
+            f"({signed_fmt(gross_margin_yoy)} نقطة)"
         )
 
     if (
-        operating_margin is not None
-        and operating_margin <= -2
+        operating_margin_yoy is not None
+        and operating_margin_yoy <= -2
     ):
 
         risks.append(
             f"تآكل الهامش التشغيلي "
-            f"({signed_fmt(operating_margin)} نقطة)"
+            f"({signed_fmt(operating_margin_yoy)} نقطة)"
         )
 
     if (
-        net_margin is not None
-        and net_margin <= -2
+        net_margin_yoy is not None
+        and net_margin_yoy <= -2
     ):
 
         risks.append(
             f"تآكل هامش صافي الربح "
-            f"({signed_fmt(net_margin)} نقطة)"
+            f"({signed_fmt(net_margin_yoy)} نقطة)"
         )
 
     if (
@@ -1868,10 +1234,6 @@ def validate_standard(
             f"{fmt(inventory_growth - revenue_qoq)} نقطة"
         )
 
-    # --------------------------------------------------------
-    # Contradictions
-    # --------------------------------------------------------
-
     if (
         revenue_yoy is not None
         and revenue_yoy >= 10
@@ -1900,10 +1262,6 @@ def validate_standard(
         contradictions
     )
 
-
-# ============================================================
-# Bank Validation
-# ============================================================
 
 def validate_bank(
     latest,
@@ -2071,10 +1429,6 @@ def validate_bank(
     )
 
 
-# ============================================================
-# Insurance Validation
-# ============================================================
-
 def validate_insurance(
     latest,
     previous
@@ -2191,16 +1545,6 @@ def validate_insurance(
         )
 
     if (
-        equity_growth is not None
-        and equity_growth < -5
-    ):
-
-        risks.append(
-            f"حقوق المساهمين تتراجع "
-            f"({signed_fmt(equity_growth)}%)"
-        )
-
-    if (
         revenue is not None
         and revenue > 10
         and profit is not None
@@ -2211,16 +1555,22 @@ def validate_insurance(
             "الإيرادات تنمو بينما الأرباح تتراجع"
         )
 
+    if (
+        equity_growth is not None
+        and equity_growth < -5
+    ):
+
+        risks.append(
+            f"حقوق المساهمين تتراجع "
+            f"({signed_fmt(equity_growth)}%)"
+        )
+
     return (
         positives,
         risks,
         contradictions
     )
 
-
-# ============================================================
-# REIT Validation
-# ============================================================
 
 def validate_reit(
     latest,
@@ -2336,7 +1686,455 @@ def validate_reit(
 
 
 # ============================================================
-# Validate Stock
+# Extreme / Base Effect Review
+# ============================================================
+
+def extreme_growth_review(
+    latest,
+    analysis_model
+):
+
+    flags = []
+
+    if analysis_model == "standard":
+
+        checks = [
+            (
+                "q_revenue_growth_yoy",
+                "الإيرادات",
+                "BASE_EFFECT_REVIEW"
+            ),
+            (
+                "q_net_income_growth_yoy",
+                "صافي الربح",
+                "BASE_EFFECT_REVIEW"
+            ),
+            (
+                "q_ocf_growth_yoy",
+                "التدفق التشغيلي",
+                "CASH_FLOW_VOLATILITY"
+            ),
+            (
+                "q_fcf_growth_yoy",
+                "التدفق النقدي الحر",
+                "CASH_FLOW_VOLATILITY"
+            )
+        ]
+
+    elif analysis_model == "bank":
+
+        checks = [
+            (
+                "bank_q_revenue_growth_yoy",
+                "دخل البنك",
+                "BASE_EFFECT_REVIEW"
+            ),
+            (
+                "bank_q_net_income_growth_yoy",
+                "صافي ربح البنك",
+                "BASE_EFFECT_REVIEW"
+            )
+        ]
+
+    elif analysis_model == "insurance":
+
+        checks = [
+            (
+                "insurance_q_revenue_growth_yoy",
+                "إيرادات التأمين",
+                "BASE_EFFECT_REVIEW"
+            ),
+            (
+                "insurance_q_net_income_growth_yoy",
+                "صافي ربح التأمين",
+                "BASE_EFFECT_REVIEW"
+            ),
+            (
+                "insurance_q_ocf_growth_yoy",
+                "التدفق التشغيلي",
+                "CASH_FLOW_VOLATILITY"
+            )
+        ]
+
+    elif analysis_model == "reit":
+
+        checks = [
+            (
+                "reit_q_revenue_growth_yoy",
+                "إيرادات الريت",
+                "BASE_EFFECT_REVIEW"
+            ),
+            (
+                "reit_q_net_income_growth_yoy",
+                "صافي ربح الريت",
+                "BASE_EFFECT_REVIEW"
+            )
+        ]
+
+    else:
+
+        checks = []
+
+    for (
+        metric_name,
+        label,
+        flag_type
+    ) in checks:
+
+        value = safe_number(
+            latest.get(
+                metric_name
+            )
+        )
+
+        if value is None:
+            continue
+
+        threshold = (
+            100
+            if flag_type
+            == "CASH_FLOW_VOLATILITY"
+            else 100
+        )
+
+        if abs(value) >= threshold:
+
+            flags.append(
+                f"{flag_type} | "
+                f"{label} {signed_fmt(value)}%"
+            )
+
+    return flags
+
+
+# ============================================================
+# Financial Comparability
+# ============================================================
+
+def financial_input_watchlist(
+    analysis_model
+):
+
+    if analysis_model == "standard":
+
+        return [
+            "q_revenue_growth_yoy",
+            "q_net_income_growth_yoy",
+            "q_ocf_growth_yoy",
+            "q_fcf_growth_yoy",
+            "q_gross_margin_change_yoy",
+            "q_operating_margin_change_yoy",
+            "q_net_margin_change_yoy",
+            "q_cash_conversion",
+            "q_debt_growth_qoq",
+            "q_current_ratio",
+            "q_receivables_growth_qoq",
+            "q_inventory_growth_qoq",
+            "q_revenue_growth_qoq",
+            "q_net_income_growth_qoq",
+            "ttm_cash_conversion",
+            "ttm_fcf_margin"
+        ]
+
+    if analysis_model == "bank":
+
+        return [
+            "bank_q_revenue_growth_yoy",
+            "bank_q_net_income_growth_yoy",
+            "bank_q_assets_growth_yoy",
+            "bank_q_equity_growth_yoy",
+            "bank_q_profit_margin_change_yoy",
+            "bank_ttm_roe"
+        ]
+
+    if analysis_model == "insurance":
+
+        return [
+            "insurance_q_revenue_growth_yoy",
+            "insurance_q_net_income_growth_yoy",
+            "insurance_q_equity_growth_yoy",
+            "insurance_q_eps_growth_yoy",
+            "insurance_q_profit_margin_change_yoy",
+            "insurance_ttm_roe",
+            "insurance_ttm_roa",
+            "insurance_ttm_cash_conversion"
+        ]
+
+    if analysis_model == "reit":
+
+        return [
+            "reit_q_revenue_growth_yoy",
+            "reit_q_operating_income_growth_yoy",
+            "reit_q_net_income_growth_yoy",
+            "reit_q_operating_margin_change_yoy",
+            "reit_q_net_margin_change_yoy",
+            "reit_q_debt_to_assets",
+            "reit_ttm_cash_conversion"
+        ]
+
+    return []
+
+
+def financial_comparability(
+    latest,
+    previous,
+    analysis_model
+):
+
+    watched = financial_input_watchlist(
+        analysis_model
+    )
+
+    latest_inputs = {
+        metric_name
+        for metric_name in watched
+        if safe_number(
+            latest.get(
+                metric_name
+            )
+        ) is not None
+    }
+
+    previous_inputs = {
+        metric_name
+        for metric_name in watched
+        if safe_number(
+            previous.get(
+                metric_name
+            )
+        ) is not None
+    }
+
+    common = (
+        latest_inputs
+        & previous_inputs
+    )
+
+    union = (
+        latest_inputs
+        | previous_inputs
+    )
+
+    score = (
+        (
+            len(common)
+            / len(union)
+        ) * 100
+        if union
+        else 0.0
+    )
+
+    if score >= 80:
+
+        reliability = "HIGH"
+
+    elif score >= 50:
+
+        reliability = "MEDIUM"
+
+    else:
+
+        reliability = "LOW"
+
+    return {
+        "latest_inputs":
+            len(latest_inputs),
+
+        "previous_inputs":
+            len(previous_inputs),
+
+        "common_inputs":
+            len(common),
+
+        "union_inputs":
+            len(union),
+
+        "score":
+            score,
+
+        "reliability":
+            reliability
+    }
+
+
+# ============================================================
+# Score Momentum v2.1
+# ============================================================
+
+def score_change(
+    latest_scores,
+    previous_metrics,
+    latest_turning,
+    previous_turning
+):
+
+    previous_scores = (
+        get_score_block(
+            previous_metrics
+        )
+        if previous_metrics
+        else {}
+    )
+
+    keys = [
+        "growth",
+        "quality",
+        "cash",
+        "balance",
+        "opportunity",
+        "risk",
+        "base_turning"
+    ]
+
+    changes = {}
+
+    comparable_count = 0
+
+    for key in keys:
+
+        current = safe_number(
+            latest_scores.get(
+                key
+            )
+        )
+
+        previous = safe_number(
+            previous_scores.get(
+                key
+            )
+        )
+
+        if (
+            current is None
+            or previous is None
+        ):
+
+            changes[
+                key
+            ] = None
+
+        else:
+
+            changes[
+                key
+            ] = (
+                current
+                - previous
+            )
+
+            comparable_count += 1
+
+    current_turning = safe_number(
+        latest_turning.get(
+            "score"
+        )
+    )
+
+    previous_turning_score = (
+        safe_number(
+            previous_turning.get(
+                "score"
+            )
+        )
+        if previous_turning
+        else None
+    )
+
+    if (
+        current_turning is not None
+        and previous_turning_score is not None
+    ):
+
+        changes[
+            "turning_engine"
+        ] = (
+            current_turning
+            - previous_turning_score
+        )
+
+    else:
+
+        changes[
+            "turning_engine"
+        ] = None
+
+    return {
+        "changes":
+            changes,
+
+        "comparable_scores":
+            comparable_count,
+
+        "possible_scores":
+            len(keys)
+    }
+
+
+def calculate_momentum_reliability(
+    score_momentum,
+    comparability
+):
+
+    possible_scores = (
+        score_momentum[
+            "possible_scores"
+        ]
+    )
+
+    comparable_scores = (
+        score_momentum[
+            "comparable_scores"
+        ]
+    )
+
+    score_availability = (
+        comparable_scores
+        / possible_scores
+    ) * 100 if possible_scores else 0.0
+
+    financial_score = safe_number(
+        comparability.get(
+            "score"
+        )
+    ) or 0.0
+
+    reliability = (
+        score_availability
+        * 0.60
+        + financial_score
+        * 0.40
+    )
+
+    reliability = clamp(
+        reliability
+    ) or 0.0
+
+    if reliability >= 80:
+
+        label = "HIGH"
+
+    elif reliability >= 55:
+
+        label = "MEDIUM"
+
+    else:
+
+        label = "LOW"
+
+    return {
+        "score_availability":
+            score_availability,
+
+        "reliability":
+            reliability,
+
+        "label":
+            label
+    }
+
+
+# ============================================================
+# Validate One Stock
 # ============================================================
 
 def validate_stock(stock):
@@ -2358,11 +2156,12 @@ def validate_stock(stock):
         or "standard"
     )
 
-    latest_period, previous_period = (
-        find_latest_periods(
-            periods,
-            analysis_model
-        )
+    (
+        latest_period,
+        previous_period
+    ) = find_latest_periods(
+        periods,
+        analysis_model
     )
 
     print_header(
@@ -2386,7 +2185,8 @@ def validate_stock(stock):
 
     previous = (
         periods.get(
-            previous_period
+            previous_period,
+            {}
         )
         if previous_period
         else {}
@@ -2396,151 +2196,54 @@ def validate_stock(stock):
         latest
     )
 
-    # ========================================================
-    # Financial Comparability
-    # ========================================================
-
-    financial_comparability = (
-        calculate_financial_comparability(
-            latest,
-            previous,
-            analysis_model
-        )
-    )
-
-    # ========================================================
-    # Momentum
-    # ========================================================
-
-    momentum = calculate_momentum(
-        scores,
-        previous,
-        financial_comparability
-    )
-
-    changes = momentum[
-        "changes"
-    ]
-
-    # ========================================================
-    # Turning Engine Delta
-    # ========================================================
-
-    turning_engine_change = (
-        calculate_turning_engine_delta(
-            latest,
-            previous
-        )
-    )
-
-    # ========================================================
-    # Turning Validation
-    # ========================================================
-
-    turning = validate_turning(
-        latest,
-        previous,
-        momentum[
-            "reliability"
-        ]
-    )
-
-    # ========================================================
-    # System Coverage
-    # ========================================================
-
-    system_coverage = (
-        calculate_system_layer_coverage(
-            latest,
-            analysis_model
-        )
-    )
-
-    # ========================================================
-    # General State
-    # ========================================================
-
     state, state_description = (
         classify_score(
-
             scores.get(
                 "opportunity"
             ),
-
             scores.get(
                 "risk"
             ),
-
             scores.get(
                 "confidence"
             )
         )
     )
 
-    # ========================================================
-    # Extreme Flags
-    # ========================================================
-
-    extreme_flags = (
-        detect_extreme_flags(
+    system_coverage = (
+        evaluate_system_coverage(
             latest,
             analysis_model
         )
     )
 
-    # ========================================================
-    # Model Validation
-    # ========================================================
-
-    if analysis_model == "standard":
-
-        positives, risks, contradictions = (
-            validate_standard(
-                latest,
-                previous
-            )
+    signal_layer = (
+        get_signal_layer(
+            latest,
+            analysis_model
         )
+    )
 
-    elif analysis_model == "bank":
-
-        positives, risks, contradictions = (
-            validate_bank(
-                latest,
-                previous
-            )
+    latest_turning = (
+        get_turning_layer(
+            latest
         )
+    )
 
-    elif analysis_model == "insurance":
-
-        positives, risks, contradictions = (
-            validate_insurance(
-                latest,
-                previous
-            )
+    previous_turning = (
+        get_turning_layer(
+            previous
         )
+        if previous
+        else {}
+    )
 
-    elif analysis_model == "reit":
-
-        positives, risks, contradictions = (
-            validate_reit(
-                latest,
-                previous
-            )
+    turning_validation = (
+        validate_turning_layer(
+            latest_turning,
+            previous_turning
         )
-
-    else:
-
-        positives = []
-
-        risks = []
-
-        contradictions = [
-            "نموذج تحليل غير معروف"
-        ]
-
-    # ========================================================
-    # Header
-    # ========================================================
+    )
 
     print(
         f"📅 Latest Period: "
@@ -2564,57 +2267,62 @@ def validate_stock(stock):
     print(
         f"🧱 System Coverage: "
         f"{system_coverage['status']} | "
-        f"{system_coverage['available']}/"
-        f"{system_coverage['total']} "
-        f"({fmt(system_coverage['score'])}%)",
+        f"{system_coverage['available_count']}/"
+        f"{system_coverage['total_count']} "
+        f"({fmt(system_coverage['coverage'])}%)",
         flush=True
     )
 
-    if system_coverage[
-        "missing"
-    ]:
-
-        print(
-            "🧩 Missing Layers: "
-            + ", ".join(
-                system_coverage[
-                    "missing"
-                ]
-            ),
-            flush=True
+    missing_layers_text = (
+        ", ".join(
+            system_coverage["missing"]
         )
+        if system_coverage["missing"]
+        else "NONE"
+    )
 
-    else:
-
-        print(
-            "🧩 Missing Layers: NONE",
-            flush=True
-        )
+    print(
+        f"🧩 Missing Layers: "
+        f"{missing_layers_text}",
+        flush=True
+    )
 
     print(
         f"📡 Signal Source: "
-        f"{system_coverage['signal_metric'] or 'N/A'}",
+        f"{signal_layer['source']}",
         flush=True
     )
 
     print(
         f"🔄 Turning Validation: "
-        f"{turning['state']} | "
-        f"{turning['description']}",
+        f"{turning_validation['state']} | "
+        f"{turning_validation['description']}",
         flush=True
     )
 
     print(
         f"🧠 Turning Source: "
-        f"{turning['source']}",
+        f"{turning_validation['source']}",
         flush=True
     )
 
-    print_separator()
+    if latest_turning.get(
+        "breadth"
+    ) is not None:
 
-    # ========================================================
-    # Scoring
-    # ========================================================
+        print(
+            f"📐 Turning Breadth: "
+            f"{fmt(latest_turning['breadth'])}% | "
+            f"Common="
+            f"{fmt(latest_turning['common_inputs'], 0)} | "
+            f"New="
+            f"{fmt(latest_turning['newly_available_inputs'], 0)} | "
+            f"Dropped="
+            f"{fmt(latest_turning['dropped_inputs'], 0)}",
+            flush=True
+        )
+
+    print_separator()
 
     print(
         "🎯 SCORING COMPONENTS",
@@ -2659,13 +2367,13 @@ def validate_stock(stock):
 
     print(
         f"Base Turning:      "
-        f"{fmt(scores.get('turning'))}",
+        f"{fmt(scores.get('base_turning'))}",
         flush=True
     )
 
     print(
         f"Turning Engine:    "
-        f"{fmt(turning['value'])}",
+        f"{fmt(latest_turning.get('score'))}",
         flush=True
     )
 
@@ -2676,8 +2384,52 @@ def validate_stock(stock):
     )
 
     # ========================================================
-    # Strength
+    # Reasons
     # ========================================================
+
+    if analysis_model == "standard":
+
+        positives, risks, contradictions = (
+            validate_standard(
+                latest,
+                previous
+            )
+        )
+
+    elif analysis_model == "bank":
+
+        positives, risks, contradictions = (
+            validate_bank(
+                latest,
+                previous
+            )
+        )
+
+    elif analysis_model == "insurance":
+
+        positives, risks, contradictions = (
+            validate_insurance(
+                latest,
+                previous
+            )
+        )
+
+    elif analysis_model == "reit":
+
+        positives, risks, contradictions = (
+            validate_reit(
+                latest,
+                previous
+            )
+        )
+
+    else:
+
+        positives = []
+        risks = []
+        contradictions = [
+            "نموذج تحليل غير معروف"
+        ]
 
     print_separator()
 
@@ -2702,10 +2454,6 @@ def validate_stock(stock):
             flush=True
         )
 
-    # ========================================================
-    # Risk
-    # ========================================================
-
     print(
         "\n🔴 أسباب الخطر:",
         flush=True
@@ -2726,10 +2474,6 @@ def validate_stock(stock):
             "- لا توجد إشارة خطر قوية",
             flush=True
         )
-
-    # ========================================================
-    # Contradictions
-    # ========================================================
 
     print(
         "\n⚠️ التناقضات:",
@@ -2753,8 +2497,15 @@ def validate_stock(stock):
         )
 
     # ========================================================
-    # Extreme
+    # Extreme / Base Effect
     # ========================================================
+
+    extreme_flags = (
+        extreme_growth_review(
+            latest,
+            analysis_model
+        )
+    )
 
     print(
         "\n🧨 EXTREME / BASE EFFECT REVIEW:",
@@ -2781,6 +2532,23 @@ def validate_stock(stock):
     # Financial Comparability
     # ========================================================
 
+    comparability = (
+        financial_comparability(
+            latest,
+            previous,
+            analysis_model
+        )
+        if previous
+        else {
+            "latest_inputs": 0,
+            "previous_inputs": 0,
+            "common_inputs": 0,
+            "union_inputs": 0,
+            "score": 0.0,
+            "reliability": "LOW"
+        }
+    )
+
     print_separator()
 
     print(
@@ -2790,32 +2558,32 @@ def validate_stock(stock):
 
     print(
         f"Latest Inputs:    "
-        f"{financial_comparability['latest_available']}",
+        f"{comparability['latest_inputs']}",
         flush=True
     )
 
     print(
         f"Previous Inputs:  "
-        f"{financial_comparability['previous_available']}",
+        f"{comparability['previous_inputs']}",
         flush=True
     )
 
     print(
         f"Common Inputs:    "
-        f"{financial_comparability['common']}",
+        f"{comparability['common_inputs']}",
         flush=True
     )
 
     print(
         f"Union Inputs:     "
-        f"{financial_comparability['union']}",
+        f"{comparability['union_inputs']}",
         flush=True
     )
 
     print(
         f"Comparability:    "
-        f"{fmt(financial_comparability['score'])}% | "
-        f"{financial_comparability['state']}",
+        f"{fmt(comparability['score'])}% | "
+        f"{comparability['reliability']}",
         flush=True
     )
 
@@ -2823,87 +2591,100 @@ def validate_stock(stock):
     # Momentum
     # ========================================================
 
+    score_momentum = (
+        score_change(
+            scores,
+            previous,
+            latest_turning,
+            previous_turning
+        )
+    )
+
+    momentum_reliability = (
+        calculate_momentum_reliability(
+            score_momentum,
+            comparability
+        )
+    )
+
+    changes = score_momentum[
+        "changes"
+    ]
+
     print_separator()
 
     print(
-        "🚀 SCORE MOMENTUM v2.1",
+        "🚀 SCORE MOMENTUM v2.2",
         flush=True
     )
 
     print(
         f"Comparable Scores: "
-        f"{momentum['comparable_scores']}/"
-        f"{len(MOMENTUM_KEYS)}",
+        f"{score_momentum['comparable_scores']}/"
+        f"{score_momentum['possible_scores']}",
         flush=True
     )
 
     print(
         f"Score Availability: "
-        f"{fmt(momentum['score_availability'])}%",
+        f"{fmt(momentum_reliability['score_availability'])}%",
         flush=True
     )
 
     print(
         f"Financial Comparability: "
-        f"{fmt(momentum['financial_comparability'])}%",
+        f"{fmt(comparability['score'])}%",
         flush=True
     )
 
     print(
         f"Momentum Reliability: "
-        f"{fmt(momentum['reliability'])}% | "
-        f"{momentum['state']}",
+        f"{fmt(momentum_reliability['reliability'])}% | "
+        f"{momentum_reliability['label']}",
         flush=True
     )
 
-    if changes:
+    print(
+        f"Opportunity Δ:       "
+        f"{signed_fmt(changes.get('opportunity'))}",
+        flush=True
+    )
 
-        print(
-            f"Opportunity Δ:       "
-            f"{signed_fmt(changes.get('opportunity'))}",
-            flush=True
-        )
+    print(
+        f"Risk Δ:              "
+        f"{signed_fmt(changes.get('risk'))}",
+        flush=True
+    )
 
-        print(
-            f"Risk Δ:              "
-            f"{signed_fmt(changes.get('risk'))}",
-            flush=True
-        )
+    print(
+        f"Base Turning Δ:      "
+        f"{signed_fmt(changes.get('base_turning'))}",
+        flush=True
+    )
 
-        print(
-            f"Base Turning Δ:      "
-            f"{signed_fmt(changes.get('turning'))}",
-            flush=True
-        )
+    print(
+        f"Turning Engine Δ:    "
+        f"{signed_fmt(changes.get('turning_engine'))}",
+        flush=True
+    )
 
-        print(
-            f"Turning Engine Δ:    "
-            f"{signed_fmt(turning_engine_change.get('delta'))}",
-            flush=True
-        )
+    print(
+        f"Growth Δ:            "
+        f"{signed_fmt(changes.get('growth'))}",
+        flush=True
+    )
 
-        print(
-            f"Growth Δ:            "
-            f"{signed_fmt(changes.get('growth'))}",
-            flush=True
-        )
+    print(
+        f"Quality Δ:           "
+        f"{signed_fmt(changes.get('quality'))}",
+        flush=True
+    )
 
-        print(
-            f"Quality Δ:           "
-            f"{signed_fmt(changes.get('quality'))}",
-            flush=True
-        )
-
-    else:
-
-        print(
-            "لا توجد مقارنة سابقة",
-            flush=True
-        )
-
-    if momentum[
-        "reliability"
-    ] < 60:
+    if (
+        momentum_reliability[
+            "reliability"
+        ] < 55
+    ):
 
         print(
             "🟡 Momentum غير موثوق بما يكفي "
@@ -2911,14 +2692,11 @@ def validate_stock(stock):
             flush=True
         )
 
-    # ========================================================
-    # Result
-    # ========================================================
-
     return {
-
         "symbol":
-            stock["symbol"],
+            stock[
+                "symbol"
+            ],
 
         "company_name":
             stock.get(
@@ -2941,48 +2719,44 @@ def validate_stock(stock):
 
         "system_coverage_score":
             system_coverage[
-                "score"
+                "coverage"
             ],
 
         "signal_source":
-            system_coverage[
-                "signal_metric"
+            signal_layer[
+                "source"
             ],
 
-        "turning_state":
-            turning[
+        "turning_validation":
+            turning_validation[
                 "state"
             ],
 
         "turning_source":
-            turning[
+            turning_validation[
                 "source"
             ],
 
-        "base_turning":
-            scores.get(
-                "turning"
+        "turning_engine_score":
+            safe_number(
+                latest_turning.get(
+                    "score"
+                )
             ),
 
-        "turning_engine":
-            turning[
-                "value"
-            ],
-
         "turning_engine_delta":
-            turning_engine_change[
-                "delta"
-            ],
+            safe_number(
+                changes.get(
+                    "turning_engine"
+                )
+            ),
 
-        "financial_comparability":
-            financial_comparability[
-                "score"
-            ],
-
-        "momentum_reliability":
-            momentum[
-                "reliability"
-            ],
+        "turning_breadth":
+            safe_number(
+                latest_turning.get(
+                    "breadth"
+                )
+            ),
 
         "opportunity":
             safe_number(
@@ -2997,6 +2771,30 @@ def validate_stock(stock):
                     "risk"
                 )
             ),
+
+        "base_turning":
+            safe_number(
+                scores.get(
+                    "base_turning"
+                )
+            ),
+
+        "confidence":
+            safe_number(
+                scores.get(
+                    "confidence"
+                )
+            ),
+
+        "financial_comparable":
+            comparability[
+                "score"
+            ],
+
+        "momentum_reliability":
+            momentum_reliability[
+                "reliability"
+            ],
 
         "positive_count":
             len(
@@ -3013,7 +2811,7 @@ def validate_stock(stock):
                 contradictions
             ),
 
-        "extreme_flag_count":
+        "extreme_count":
             len(
                 extreme_flags
             )
@@ -3027,34 +2825,26 @@ def validate_stock(stock):
 def print_final_summary(results):
 
     valid = [
-
         result
-
         for result in results
-
         if result is not None
     ]
 
     valid.sort(
-
         key=lambda result: (
-
             result.get(
                 "opportunity"
             )
-
             if result.get(
                 "opportunity"
             ) is not None
-
             else -1
         ),
-
         reverse=True
     )
 
     print_header(
-        "📋 VALIDATION SUMMARY v1.2.2"
+        f"📋 VALIDATION SUMMARY v{ENGINE_VERSION}"
     )
 
     for index, result in enumerate(
@@ -3063,160 +2853,156 @@ def print_final_summary(results):
     ):
 
         print(
-
             f"{index:02d}. "
             f"{result['symbol']} | "
             f"{result['company_name']} | "
             f"{result['analysis_model']} | "
             f"{result['state']} | "
-
             f"SystemCoverage="
             f"{result['system_coverage']} "
             f"({fmt(result['system_coverage_score'])}%) | "
-
             f"SignalSource="
             f"{result['signal_source']} | "
-
             f"TurningValidation="
-            f"{result['turning_state']} | "
-
+            f"{result['turning_validation']} | "
             f"TurningSource="
             f"{result['turning_source']} | "
-
+            f"TurningBreadth="
+            f"{fmt(result['turning_breadth'])}% | "
             f"FinancialComparable="
-            f"{fmt(result['financial_comparability'])}% | "
-
+            f"{fmt(result['financial_comparable'])}% | "
             f"MomentumRel="
             f"{fmt(result['momentum_reliability'])}% | "
-
             f"Opportunity="
             f"{fmt(result['opportunity'])} | "
-
             f"Risk="
             f"{fmt(result['risk'])} | "
-
             f"BaseTurning="
             f"{fmt(result['base_turning'])} | "
-
             f"TurningEngine="
-            f"{fmt(result['turning_engine'])} | "
-
+            f"{fmt(result['turning_engine_score'])} | "
             f"TurningEngineΔ="
             f"{signed_fmt(result['turning_engine_delta'])} | "
-
             f"+Signals="
             f"{result['positive_count']} | "
-
             f"-Signals="
             f"{result['risk_count']} | "
-
             f"Contradictions="
             f"{result['contradiction_count']} | "
-
             f"ExtremeFlags="
-            f"{result['extreme_flag_count']}",
-
+            f"{result['extreme_count']}",
             flush=True
         )
 
-    print_separator()
-
     full_count = sum(
-
         1
-
         for result in valid
-
         if result[
             "system_coverage"
         ] == "FULL"
     )
 
     partial_count = sum(
-
         1
-
         for result in valid
-
         if result[
             "system_coverage"
         ] == "PARTIAL"
     )
 
     limited_count = sum(
-
         1
-
         for result in valid
-
         if result[
             "system_coverage"
         ] == "LIMITED"
     )
 
-    true_turning_count = sum(
-
+    strong_turning = sum(
         1
-
         for result in valid
-
         if result[
-            "turning_state"
-        ] == "TRUE_TURNING"
+            "turning_validation"
+        ] == "STRONG_TURNING_POINT"
     )
 
-    early_turning_count = sum(
-
+    early_turning = sum(
         1
-
         for result in valid
-
         if result[
-            "turning_state"
-        ] == "EARLY_TURNING"
+            "turning_validation"
+        ] == "EARLY_TURNING_POINT"
     )
 
-    strong_continuation_count = sum(
-
+    improving = sum(
         1
-
         for result in valid
-
         if result[
-            "turning_state"
+            "turning_validation"
+        ] == "IMPROVING"
+    )
+
+    limited_history = sum(
+        1
+        for result in valid
+        if result[
+            "turning_validation"
+        ] == "IMPROVING_LIMITED_HISTORY"
+    )
+
+    continuation = sum(
+        1
+        for result in valid
+        if result[
+            "turning_validation"
         ] == "STRONG_CONTINUATION"
     )
 
-    insufficient_turning_count = sum(
-
+    deteriorating = sum(
         1
-
         for result in valid
-
         if result[
-            "turning_state"
-        ] == "INSUFFICIENT_HISTORY"
+            "turning_validation"
+        ] == "DETERIORATING"
     )
 
-    low_momentum_count = sum(
-
+    weak = sum(
         1
-
         for result in valid
-
         if result[
-            "momentum_reliability"
-        ] < 60
+            "turning_validation"
+        ] == "WEAK"
     )
 
-    extreme_total = sum(
+    low_confidence = sum(
+        1
+        for result in valid
+        if result[
+            "turning_validation"
+        ] == "LOW_CONFIDENCE"
+    )
 
+    low_momentum = sum(
+        1
+        for result in valid
+        if (
+            safe_number(
+                result[
+                    "momentum_reliability"
+                ]
+            )
+            or 0
+        ) < 55
+    )
+
+    total_extreme = sum(
         result[
-            "extreme_flag_count"
+            "extreme_count"
         ]
-
         for result in valid
     )
+
+    print_separator()
 
     print(
         f"🏢 Companies: "
@@ -3243,72 +3029,92 @@ def print_final_summary(results):
     )
 
     print(
-        f"🔄 TRUE Turning Points: "
-        f"{true_turning_count}",
+        f"🔄 Strong Turning Points: "
+        f"{strong_turning}",
         flush=True
     )
 
     print(
-        f"🌱 EARLY Turning Points: "
-        f"{early_turning_count}",
+        f"🌱 Early Turning Points: "
+        f"{early_turning}",
+        flush=True
+    )
+
+    print(
+        f"📈 Improving: "
+        f"{improving}",
+        flush=True
+    )
+
+    print(
+        f"🟠 Improving Limited History: "
+        f"{limited_history}",
         flush=True
     )
 
     print(
         f"💪 Strong Continuations: "
-        f"{strong_continuation_count}",
+        f"{continuation}",
         flush=True
     )
 
     print(
-        f"🗂️ Insufficient Turning History: "
-        f"{insufficient_turning_count}",
+        f"🔴 Deteriorating: "
+        f"{deteriorating}",
+        flush=True
+    )
+
+    print(
+        f"⚪ Weak: "
+        f"{weak}",
+        flush=True
+    )
+
+    print(
+        f"🟡 Low Turning Confidence: "
+        f"{low_confidence}",
         flush=True
     )
 
     print(
         f"🟡 Low Momentum Reliability: "
-        f"{low_momentum_count}",
+        f"{low_momentum}",
         flush=True
     )
 
     print(
         f"🧨 Extreme / Base Effect Flags: "
-        f"{extreme_total}",
+        f"{total_extreme}",
         flush=True
     )
 
     print(
         "\n"
-        "⚠️ Data Completeness لا تعني "
-        "صحة المصدر أو دقة التنبؤ.",
+        "✅ v1.2.3 Turning Integration: "
+        "turning_engine_state_code هو مصدر الحقيقة "
+        "لحالة Turning.",
         flush=True
     )
 
     print(
-        "\n"
-        "🧬 Momentum Reliability يجمع بين "
-        "قابلية مقارنة المدخلات المالية "
-        "وتوفر درجات Scoring.",
+        "✅ Turning Engine Δ يستخدم للزخم والمقارنة فقط، "
+        "ولا يعيد تصنيف الحالة.",
         flush=True
     )
 
     print(
-        "\n"
-        "📡 Signal Layer يتم التحقق منها "
-        "حسب Analysis Model لكل شركة.",
+        "✅ Breadth / Continuity / Common Inputs "
+        "تُقرأ مباشرة من Turning Engine v2.0.2.",
         flush=True
     )
 
     print(
-        "\n"
-        "🔄 Base Turning منفصل عن "
-        "Turning Engine الحقيقي في العرض والمقارنة.",
+        "⚠️ Data Completeness لا تعني صحة المصدر "
+        "أو دقة التنبؤ.",
         flush=True
     )
 
     print(
-        "\n"
         "🔒 VALIDATION ENGINE READ ONLY | "
         "لا يكتب أو يعدل أي بيانات.",
         flush=True
@@ -3321,7 +3127,7 @@ def print_final_summary(results):
 
 
 # ============================================================
-# START
+# Run
 # ============================================================
 
 def run_validation_engine():
@@ -3333,7 +3139,7 @@ def run_validation_engine():
     )
 
     print_header(
-        "🧪 VALIDATION ENGINE v1.2.2"
+        f"🧪 VALIDATION ENGINE v{ENGINE_VERSION}"
     )
 
     print(
@@ -3350,6 +3156,13 @@ def run_validation_engine():
     print(
         f"📌 Symbols: "
         f"{', '.join(symbols)}",
+        flush=True
+    )
+
+    print(
+        "🧠 Turning State Source: "
+        "turning_engine_state_code "
+        "(Turning Engine v2.0.2)",
         flush=True
     )
 
