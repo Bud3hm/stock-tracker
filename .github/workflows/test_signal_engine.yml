@@ -2,11 +2,6 @@ name: Test Signal Engine
 
 on:
   workflow_dispatch:
-    inputs:
-      stock_id:
-        description: "Stock ID to test"
-        required: true
-        default: "1"
 
 jobs:
   test-signal-engine:
@@ -28,5 +23,5 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-          STOCK_ID: ${{ inputs.stock_id }}
+          STOCK_ID: "ALL"
         run: python signal_engine.py
