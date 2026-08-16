@@ -23,5 +23,5 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-          STOCK_ID: "4"
+          STOCK_ID: "5"
         run: python bank_signal_engine.py
