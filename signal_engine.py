@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime, timezone
 from supabase import create_client
 
@@ -16,6 +17,7 @@ if not SUPABASE_URL:
 if not SUPABASE_SECRET_KEY:
     raise RuntimeError("SUPABASE_SECRET_KEY is missing")
 
+
 supabase = create_client(
     SUPABASE_URL,
     SUPABASE_SECRET_KEY
@@ -26,41 +28,97 @@ supabase = create_client(
 # إعدادات المحرك
 # ============================================================
 
-ENGINE_VERSION = "2.2.1"
+ENGINE_VERSION = "2.2.2"
 
-# مهم:
-# لا نغير Prefix حتى لا نخرب المحركات التي تقرأ engine22_
+# مهم جدًا:
+# لا نغير Prefix لأن المحركات الأخرى تقرأ engine22_
 ENGINE_PREFIX = "engine22_"
 
 MIN_DATA_CONFIDENCE = 60.0
 
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 2.0
+
 
 # ============================================================
-# إعدادات النماذج
+# النماذج
 # ============================================================
+
+SUPPORTED_SIGNAL_MODELS = {
+    "standard",
+    "reit"
+}
+
+SPECIALIZED_MODELS = {
+    "bank",
+    "insurance"
+}
+
 
 MODEL_QUARTER_PREFIX = {
-    "standard": "q_",
-    "reit": "reit_q_",
-    "bank": "bank_q_",
-    "insurance": "insurance_q_"
+
+    "standard":
+        "q_",
+
+    "reit":
+        "reit_q_",
+
+    "bank":
+        "bank_q_",
+
+    "insurance":
+        "insurance_q_"
 }
 
 
 MODEL_CONFIDENCE_METRIC = {
-    "standard": "data_confidence_score",
-    "reit": "reit_data_confidence_score",
-    "bank": "bank_data_confidence_score",
-    "insurance": "insurance_data_confidence_score"
+
+    "standard":
+        "data_confidence_score",
+
+    "reit":
+        "reit_data_confidence_score",
+
+    "bank":
+        "bank_data_confidence_score",
+
+    "insurance":
+        "insurance_data_confidence_score"
 }
 
 
 # ============================================================
-# REIT -> Generic aliases
+# الوزن النظري الكامل
 #
-# لا يتم تعديل Supabase.
-# هذه الخريطة فقط حتى يقرأ Signal Engine مؤشرات REIT
-# بالأسماء العامة التي يفهمها.
+# Standard:
+# 27 Growth
+# 20 Margins
+# 10 Profit Conversion
+# 23 Cash Quality
+# 13 Balance Sheet
+# 7 Working Capital
+# = 100
+#
+# REIT:
+# Working Capital غير مطبق
+# = 93
+# ============================================================
+
+MODEL_TOTAL_WEIGHT = {
+
+    "standard":
+        100.0,
+
+    "reit":
+        93.0
+}
+
+
+# ============================================================
+# REIT -> Generic Aliases
+#
+# لا نعدل أسماء المؤشرات في Supabase.
+# فقط نترجمها داخل Signal Engine.
 # ============================================================
 
 REIT_ALIASES = {
@@ -82,7 +140,7 @@ REIT_ALIASES = {
         "reit_q_net_income_growth_qoq",
 
     # --------------------------------------------------------
-    # Operating income
+    # Operating Income
     # --------------------------------------------------------
 
     "q_operating_income_growth_yoy":
@@ -93,7 +151,6 @@ REIT_ALIASES = {
 
     # --------------------------------------------------------
     # Margins
-    # REIT لا يحتاج Gross Margin بالضرورة
     # --------------------------------------------------------
 
     "q_operating_margin_change_yoy":
@@ -174,7 +231,7 @@ REIT_ALIASES = {
         "reit_q_assets_growth_yoy",
 
     # --------------------------------------------------------
-    # Raw quarterly values
+    # Raw Quarterly Values
     # --------------------------------------------------------
 
     "q_revenue":
@@ -215,13 +272,22 @@ def safe_number(value):
     try:
         return float(value)
 
-    except (TypeError, ValueError):
+    except (
+        TypeError,
+        ValueError
+    ):
         return None
 
 
-def clamp(value, minimum=0.0, maximum=100.0):
+def clamp(
+    value,
+    minimum=0.0,
+    maximum=100.0
+):
 
-    value = safe_number(value)
+    value = safe_number(
+        value
+    )
 
     if value is None:
         return None
@@ -242,8 +308,13 @@ def weighted_average(items):
 
     for value, weight in items:
 
-        value = safe_number(value)
-        weight = safe_number(weight)
+        value = safe_number(
+            value
+        )
+
+        weight = safe_number(
+            weight
+        )
 
         if (
             value is None
@@ -259,7 +330,7 @@ def weighted_average(items):
 
         total_weight += weight
 
-    if total_weight == 0:
+    if total_weight <= 0:
         return None
 
     return (
@@ -272,15 +343,15 @@ def average(values):
 
     clean = []
 
-    for item in values:
+    for value in values:
 
-        item = safe_number(
-            item
+        value = safe_number(
+            value
         )
 
-        if item is not None:
+        if value is not None:
             clean.append(
-                item
+                value
             )
 
     if not clean:
@@ -292,40 +363,174 @@ def average(values):
     )
 
 
+def fmt(value):
+
+    value = safe_number(
+        value
+    )
+
+    if value is None:
+        return "N/A"
+
+    return f"{value:.2f}"
+
+
+def print_separator(
+    character="=",
+    length=72
+):
+
+    print(
+        character * length,
+        flush=True
+    )
+
+
 # ============================================================
-# جلب معلومات الشركة
+# Retry
+#
+# لحماية GitHub Actions من أخطاء اتصال مؤقتة مثل:
+#
+# RemoteProtocolError
+# Server disconnected
+# ============================================================
+
+def execute_with_retry(
+    operation,
+    description
+):
+
+    last_error = None
+
+    for attempt in range(
+        1,
+        MAX_RETRIES + 1
+    ):
+
+        try:
+
+            return operation()
+
+        except Exception as error:
+
+            last_error = error
+
+            if attempt >= MAX_RETRIES:
+                break
+
+            wait_seconds = (
+                RETRY_DELAY_SECONDS
+                * attempt
+            )
+
+            print(
+                f"🟠 اتصال مؤقت أثناء "
+                f"{description} | "
+                f"المحاولة "
+                f"{attempt}/{MAX_RETRIES} | "
+                f"{type(error).__name__}: "
+                f"{error}",
+                flush=True
+            )
+
+            print(
+                f"🔁 إعادة المحاولة بعد "
+                f"{wait_seconds:.0f} ثانية...",
+                flush=True
+            )
+
+            time.sleep(
+                wait_seconds
+            )
+
+    raise last_error
+
+
+# ============================================================
+# جلب الشركات النشطة
+# ============================================================
+
+def get_active_stocks():
+
+    def operation():
+
+        response = (
+            supabase
+            .table(
+                "stocks"
+            )
+            .select(
+                "id,"
+                "symbol,"
+                "company_name,"
+                "analysis_model,"
+                "data_status,"
+                "is_active"
+            )
+            .eq(
+                "is_active",
+                True
+            )
+            .order(
+                "id"
+            )
+            .execute()
+        )
+
+        return (
+            response.data
+            or []
+        )
+
+    return execute_with_retry(
+        operation,
+        "جلب الشركات النشطة"
+    )
+
+
+# ============================================================
+# جلب معلومات شركة
 # ============================================================
 
 def get_stock_info(stock_id):
 
-    response = (
-        supabase
-        .table("stocks")
-        .select(
-            "id,"
-            "symbol,"
-            "company_name,"
-            "analysis_model,"
-            "data_status,"
-            "is_active"
+    def operation():
+
+        response = (
+            supabase
+            .table(
+                "stocks"
+            )
+            .select(
+                "id,"
+                "symbol,"
+                "company_name,"
+                "analysis_model,"
+                "data_status,"
+                "is_active"
+            )
+            .eq(
+                "id",
+                stock_id
+            )
+            .limit(1)
+            .execute()
         )
-        .eq(
-            "id",
-            stock_id
+
+        rows = (
+            response.data
+            or []
         )
-        .limit(1)
-        .execute()
+
+        if not rows:
+            return None
+
+        return rows[0]
+
+    return execute_with_retry(
+        operation,
+        f"جلب Stock ID {stock_id}"
     )
-
-    rows = (
-        response.data
-        or []
-    )
-
-    if not rows:
-        return None
-
-    return rows[0]
 
 
 # ============================================================
@@ -334,25 +539,34 @@ def get_stock_info(stock_id):
 
 def get_financial_metrics(stock_id):
 
-    response = (
-        supabase
-        .table("financial_metrics")
-        .select(
-            "stock_id,"
-            "period_end,"
-            "metric_name,"
-            "metric_value"
-        )
-        .eq(
-            "stock_id",
-            stock_id
-        )
-        .execute()
-    )
+    def operation():
 
-    return (
-        response.data
-        or []
+        response = (
+            supabase
+            .table(
+                "financial_metrics"
+            )
+            .select(
+                "stock_id,"
+                "period_end,"
+                "metric_name,"
+                "metric_value"
+            )
+            .eq(
+                "stock_id",
+                stock_id
+            )
+            .execute()
+        )
+
+        return (
+            response.data
+            or []
+        )
+
+    return execute_with_retry(
+        operation,
+        f"جلب Financial Metrics للشركة {stock_id}"
     )
 
 
@@ -406,7 +620,7 @@ def organize_metrics(rows):
 
 
 # ============================================================
-# تحويل Metrics إلى الواجهة العامة للمحرك
+# Normalization
 # ============================================================
 
 def normalize_metrics(
@@ -414,17 +628,15 @@ def normalize_metrics(
     analysis_model
 ):
 
+    normalized = dict(
+        metrics
+    )
+
     if analysis_model == "standard":
 
-        return dict(
-            metrics
-        )
+        return normalized
 
     if analysis_model == "reit":
-
-        normalized = dict(
-            metrics
-        )
 
         for (
             generic_name,
@@ -443,7 +655,6 @@ def normalize_metrics(
                     generic_name
                 ] = metric_value
 
-        # Confidence alias
         reit_confidence = safe_number(
             metrics.get(
                 "reit_data_confidence_score"
@@ -458,11 +669,7 @@ def normalize_metrics(
 
         return normalized
 
-    # Bank / Insurance:
-    # لا نحولها إلى Standard لأن طبيعتها المالية مختلفة.
-    return dict(
-        metrics
-    )
+    return normalized
 
 
 # ============================================================
@@ -478,34 +685,35 @@ def get_quarter_dates(
         analysis_model
     )
 
-    if prefix is None:
+    if not prefix:
         return []
 
     quarter_dates = []
 
-    for (
-        period_end,
-        metrics
-    ) in periods.items():
+    for period_end, metrics in periods.items():
 
-        if any(
+        has_model_metric = any(
             metric_name.startswith(
                 prefix
             )
             for metric_name in metrics
-        ):
+        )
+
+        if has_model_metric:
 
             quarter_dates.append(
                 period_end
             )
 
     return sorted(
-        quarter_dates
+        set(
+            quarter_dates
+        )
     )
 
 
 # ============================================================
-# جلب Data Confidence حسب النموذج
+# Data Confidence
 # ============================================================
 
 def get_data_confidence(
@@ -530,7 +738,6 @@ def get_data_confidence(
         if value is not None:
             return value
 
-    # Fallback
     return safe_number(
         metrics.get(
             "data_confidence_score"
@@ -539,10 +746,12 @@ def get_data_confidence(
 
 
 # ============================================================
-# حالة التقييم
+# State
 # ============================================================
 
-def new_state():
+def new_state(
+    total_possible_weight
+):
 
     return {
 
@@ -555,8 +764,11 @@ def new_state():
         "available_weight":
             0.0,
 
+        # مهم:
+        # هذا الآن الوزن النظري الكامل للنموذج
+        # وليس فقط Components التي ظهرت.
         "possible_weight":
-            0.0,
+            total_possible_weight,
 
         "positive_reasons":
             [],
@@ -584,6 +796,10 @@ def add_component(
     negative_reasons=None
 ):
 
+    weight = safe_number(
+        weight
+    )
+
     improvement = clamp(
         improvement
     )
@@ -597,7 +813,9 @@ def add_component(
     )
 
     if (
-        improvement is None
+        weight is None
+        or weight <= 0
+        or improvement is None
         or risk is None
         or coverage is None
     ):
@@ -608,10 +826,6 @@ def add_component(
         * coverage
         / 100
     )
-
-    state[
-        "possible_weight"
-    ] += weight
 
     state[
         "available_weight"
@@ -644,7 +858,13 @@ def add_component(
             risk,
 
         "coverage":
-            coverage
+            coverage,
+
+        "weight":
+            weight,
+
+        "usable_weight":
+            usable_weight
     }
 
     if positive_reasons:
@@ -677,7 +897,7 @@ def add_component(
 
 
 # ============================================================
-# تحويل النمو إلى Score
+# Growth Score
 # ============================================================
 
 def score_growth(value):
@@ -717,7 +937,7 @@ def score_growth(value):
 
 
 # ============================================================
-# تغير الهامش
+# Margin Change Score
 # ============================================================
 
 def score_margin_change(value):
@@ -754,7 +974,7 @@ def score_margin_change(value):
 
 
 # ============================================================
-# النمو
+# Growth Component
 # ============================================================
 
 def evaluate_growth_component(metrics):
@@ -884,7 +1104,7 @@ def evaluate_growth_component(metrics):
             score,
 
         "risk":
-            100 - score,
+            100.0 - score,
 
         "coverage":
             (
@@ -1071,7 +1291,8 @@ def evaluate_margin_pressure(metrics):
 
         negative.append(
             f"ضغط جماعي على الهوامش "
-            f"بمتوسط {pressure_magnitude:.2f} نقطة"
+            f"بمتوسط "
+            f"{pressure_magnitude:.2f} نقطة"
         )
 
     if cascade_pressure >= 1:
@@ -1095,7 +1316,7 @@ def evaluate_margin_pressure(metrics):
     )
 
     risk = clamp(
-        100
+        100.0
         - score
         + pressure_penalty
     )
@@ -1173,7 +1394,8 @@ def evaluate_profit_conversion_gap(metrics):
         score = 100.0
 
         positive.append(
-            f"الأرباح تنمو أسرع بكثير من الإيرادات "
+            f"الأرباح تنمو أسرع بكثير "
+            f"من الإيرادات "
             f"(Gap {gap:.2f})"
         )
 
@@ -1202,7 +1424,8 @@ def evaluate_profit_conversion_gap(metrics):
         score = 20.0
 
         negative.append(
-            f"نمو المبيعات لا يتحول بالكامل إلى الأرباح "
+            f"نمو المبيعات لا يتحول بالكامل "
+            f"إلى الأرباح "
             f"(Gap {gap:.2f} نقطة)"
         )
 
@@ -1211,7 +1434,8 @@ def evaluate_profit_conversion_gap(metrics):
         score = 5.0
 
         negative.append(
-            f"فجوة كبيرة جدًا بين نمو الإيرادات والأرباح "
+            f"فجوة كبيرة جدًا بين نمو "
+            f"الإيرادات والأرباح "
             f"({gap:.2f} نقطة)"
         )
 
@@ -1221,7 +1445,7 @@ def evaluate_profit_conversion_gap(metrics):
             score,
 
         "risk":
-            100 - score,
+            100.0 - score,
 
         "coverage":
             100.0,
@@ -1238,7 +1462,7 @@ def evaluate_profit_conversion_gap(metrics):
 
 
 # ============================================================
-# جودة الأرباح والنقد
+# Cash Quality
 # ============================================================
 
 def evaluate_cash_quality(metrics):
@@ -1313,7 +1537,8 @@ def evaluate_cash_quality(metrics):
         if q_conversion >= 1:
 
             positive.append(
-                f"تحويل الأرباح الربعية إلى نقد جيد "
+                f"تحويل الأرباح الربعية "
+                f"إلى نقد جيد "
                 f"({q_conversion:.2f})"
             )
 
@@ -1415,7 +1640,7 @@ def evaluate_cash_quality(metrics):
             score,
 
         "risk":
-            100 - score,
+            100.0 - score,
 
         "coverage":
             (
@@ -1432,7 +1657,7 @@ def evaluate_cash_quality(metrics):
 
 
 # ============================================================
-# المركز المالي
+# Balance Sheet
 # ============================================================
 
 def evaluate_balance_sheet(metrics):
@@ -1597,7 +1822,7 @@ def evaluate_balance_sheet(metrics):
             score,
 
         "risk":
-            100 - score,
+            100.0 - score,
 
         "coverage":
             (
@@ -1614,7 +1839,8 @@ def evaluate_balance_sheet(metrics):
 
 
 # ============================================================
-# رأس المال العامل
+# Working Capital
+#
 # Standard فقط
 # ============================================================
 
@@ -1741,7 +1967,7 @@ def evaluate_working_capital(metrics):
             score,
 
         "risk":
-            100 - score,
+            100.0 - score,
 
         "coverage":
             (
@@ -1768,8 +1994,7 @@ def calculate_history_sufficiency(
 ):
 
     quarter_count = (
-        index
-        + 1
+        index + 1
     )
 
     score = 0.0
@@ -1828,6 +2053,7 @@ def calculate_history_sufficiency(
     ) * 35
 
     if index >= 2:
+
         score += 15
 
     return clamp(
@@ -1945,17 +2171,17 @@ def calculate_trend_reliability(
 
     history_factor = min(
         (
-            index
-            + 1
+            index + 1
         ) / 8,
         1
     )
 
     reliability = (
+
         reliability
         * 0.70
-        +
-        (
+
+        + (
             history_factor
             * 100
         )
@@ -2044,10 +2270,7 @@ def calculate_acceleration(
                 metric_value
             )
 
-        if len(
-            values
-        ) != 3:
-
+        if len(values) != 3:
             continue
 
         yoy_available += 1
@@ -2094,10 +2317,7 @@ def calculate_acceleration(
                     metric_value
                 )
 
-            if len(
-                values
-            ) != 3:
-
+            if len(values) != 3:
                 continue
 
             fallback_available += 1
@@ -2283,10 +2503,7 @@ def calculate_persistence(
                 metric_value
             )
 
-        if len(
-            values
-        ) != 3:
-
+        if len(values) != 3:
             continue
 
         available += 1
@@ -2343,7 +2560,7 @@ def calculate_persistence(
 
 
 # ============================================================
-# التقييم النهائي
+# Finalize
 # ============================================================
 
 def finalize_engine(
@@ -2357,16 +2574,22 @@ def finalize_engine(
     profit_gap
 ):
 
-    available_weight = state[
-        "available_weight"
-    ]
+    available_weight = safe_number(
+        state.get(
+            "available_weight"
+        )
+    )
 
-    possible_weight = state[
-        "possible_weight"
-    ]
+    possible_weight = safe_number(
+        state.get(
+            "possible_weight"
+        )
+    )
 
     if (
-        available_weight <= 0
+        available_weight is None
+        or possible_weight is None
+        or available_weight <= 0
         or possible_weight <= 0
     ):
         return None
@@ -2390,6 +2613,14 @@ def finalize_engine(
         / possible_weight
     ) * 100
 
+    signal_coverage = clamp(
+        signal_coverage
+    )
+
+    # --------------------------------------------------------
+    # نقص التغطية يخفض قوة النتيجة
+    # --------------------------------------------------------
+
     coverage_factor = (
         0.30
         + (
@@ -2408,6 +2639,10 @@ def finalize_engine(
         raw_risk
         * coverage_factor
     )
+
+    # --------------------------------------------------------
+    # Persistence
+    # --------------------------------------------------------
 
     if (
         persistence[
@@ -2431,6 +2666,10 @@ def finalize_engine(
             risk += abs(
                 adjustment
             )
+
+    # --------------------------------------------------------
+    # Acceleration
+    # --------------------------------------------------------
 
     if (
         acceleration[
@@ -2480,6 +2719,20 @@ def finalize_engine(
     data_confidence = (
         safe_number(
             data_confidence
+        )
+        or 0.0
+    )
+
+    history = (
+        safe_number(
+            history
+        )
+        or 0.0
+    )
+
+    trend_reliability = (
+        safe_number(
+            trend_reliability
         )
         or 0.0
     )
@@ -2560,7 +2813,7 @@ def finalize_engine(
 
 
 # ============================================================
-# تصنيف النتيجة
+# Classification
 # ============================================================
 
 def classify_result(scores):
@@ -2641,7 +2894,7 @@ def classify_result(scores):
 
 
 # ============================================================
-# الحفظ
+# Save
 # ============================================================
 
 def save_engine_metrics(
@@ -2656,10 +2909,7 @@ def save_engine_metrics(
 
     records = []
 
-    for (
-        name,
-        metric_value
-    ) in values.items():
+    for name, metric_value in values.items():
 
         metric_value = safe_number(
             metric_value
@@ -2691,20 +2941,31 @@ def save_engine_metrics(
     if not records:
         return 0
 
-    (
-        supabase
-        .table(
-            "financial_metrics"
-        )
-        .upsert(
-            records,
-            on_conflict=(
-                "stock_id,"
-                "metric_name,"
-                "period_end"
+    def operation():
+
+        return (
+            supabase
+            .table(
+                "financial_metrics"
             )
+            .upsert(
+                records,
+                on_conflict=(
+                    "stock_id,"
+                    "metric_name,"
+                    "period_end"
+                )
+            )
+            .execute()
         )
-        .execute()
+
+    execute_with_retry(
+        operation,
+        (
+            f"حفظ Signal Metrics | "
+            f"Stock={stock_id} | "
+            f"Period={period_end}"
+        )
     )
 
     print(
@@ -2720,7 +2981,7 @@ def save_engine_metrics(
 
 
 # ============================================================
-# طباعة الأسباب
+# Reasons
 # ============================================================
 
 def print_reasons(state):
@@ -2753,11 +3014,7 @@ def print_reasons(state):
             flush=True
         )
 
-    for (
-        _,
-        component,
-        reason
-    ) in positive[:6]:
+    for _, component, reason in positive[:6]:
 
         print(
             f"- [{component}] "
@@ -2777,11 +3034,7 @@ def print_reasons(state):
             flush=True
         )
 
-    for (
-        _,
-        component,
-        reason
-    ) in negative[:6]:
+    for _, component, reason in negative[:6]:
 
         print(
             f"- [{component}] "
@@ -2791,13 +3044,20 @@ def print_reasons(state):
 
 
 # ============================================================
-# تشغيل Signal Engine
+# تشغيل شركة واحدة
 # ============================================================
 
-def run_signal_engine(stock_id):
+def run_signal_engine(
+    stock_id,
+    stock_info=None
+):
 
-    stock = get_stock_info(
-        stock_id
+    stock = (
+        stock_info
+        if stock_info is not None
+        else get_stock_info(
+            stock_id
+        )
     )
 
     if not stock:
@@ -2808,7 +3068,23 @@ def run_signal_engine(stock_id):
             flush=True
         )
 
-        return
+        return {
+
+            "stock_id":
+                stock_id,
+
+            "status":
+                "NOT_FOUND",
+
+            "evaluated_periods":
+                0,
+
+            "limited_periods":
+                0,
+
+            "metrics_saved":
+                0
+        }
 
     symbol = (
         stock.get(
@@ -2833,6 +3109,13 @@ def run_signal_engine(stock_id):
         or "standard"
     )
 
+    data_status = (
+        stock.get(
+            "data_status"
+        )
+        or "UNKNOWN"
+    )
+
     print(
         "\n"
         + "=" * 72,
@@ -2840,12 +3123,14 @@ def run_signal_engine(stock_id):
     )
 
     print(
-        f"🧠 SIGNAL ENGINE {ENGINE_VERSION}",
+        f"🧠 SIGNAL ENGINE "
+        f"{ENGINE_VERSION}",
         flush=True
     )
 
     print(
-        f"🏢 {symbol} | {company_name}",
+        f"🏢 {symbol} | "
+        f"{company_name}",
         flush=True
     )
 
@@ -2856,32 +3141,59 @@ def run_signal_engine(stock_id):
     )
 
     print(
-        "=" * 72,
+        f"🗄️ Data Status: "
+        f"{data_status}",
         flush=True
     )
 
+    print_separator()
+
     # --------------------------------------------------------
-    # Bank / Insurance لا نطبق عليها Standard Signal Engine
+    # Bank / Insurance
     # --------------------------------------------------------
 
-    if analysis_model in [
-        "bank",
-        "insurance"
-    ]:
+    if analysis_model in SPECIALIZED_MODELS:
 
         print(
             f"🟡 {analysis_model.upper()} "
-            "يحتاج Signal Logic متخصص "
-            "ولا سيتم إجباره على نموذج Standard.",
+            "له طبيعة مالية متخصصة.",
             flush=True
         )
 
-        return
+        print(
+            "⏭️ لن يتم إجباره على "
+            "Standard Signal Logic.",
+            flush=True
+        )
 
-    if analysis_model not in [
-        "standard",
-        "reit"
-    ]:
+        return {
+
+            "stock_id":
+                stock_id,
+
+            "symbol":
+                symbol,
+
+            "company_name":
+                company_name,
+
+            "analysis_model":
+                analysis_model,
+
+            "status":
+                "SPECIALIZED_MODEL_SKIPPED",
+
+            "evaluated_periods":
+                0,
+
+            "limited_periods":
+                0,
+
+            "metrics_saved":
+                0
+        }
+
+    if analysis_model not in SUPPORTED_SIGNAL_MODELS:
 
         print(
             f"🔴 Analysis Model غير مدعوم: "
@@ -2889,7 +3201,32 @@ def run_signal_engine(stock_id):
             flush=True
         )
 
-        return
+        return {
+
+            "stock_id":
+                stock_id,
+
+            "symbol":
+                symbol,
+
+            "company_name":
+                company_name,
+
+            "analysis_model":
+                analysis_model,
+
+            "status":
+                "UNSUPPORTED_MODEL",
+
+            "evaluated_periods":
+                0,
+
+            "limited_periods":
+                0,
+
+            "metrics_saved":
+                0
+        }
 
     rows = get_financial_metrics(
         stock_id
@@ -2902,7 +3239,32 @@ def run_signal_engine(stock_id):
             flush=True
         )
 
-        return
+        return {
+
+            "stock_id":
+                stock_id,
+
+            "symbol":
+                symbol,
+
+            "company_name":
+                company_name,
+
+            "analysis_model":
+                analysis_model,
+
+            "status":
+                "NO_METRICS",
+
+            "evaluated_periods":
+                0,
+
+            "limited_periods":
+                0,
+
+            "metrics_saved":
+                0
+        }
 
     periods = organize_metrics(
         rows
@@ -2920,12 +3282,38 @@ def run_signal_engine(stock_id):
         )
 
         print(
-            "🔴 لم يتم العثور على فترات ربعية "
+            "🔴 لم يتم العثور على فترات "
+            "ربعية صالحة "
             f"بـ Prefix: {prefix}",
             flush=True
         )
 
-        return
+        return {
+
+            "stock_id":
+                stock_id,
+
+            "symbol":
+                symbol,
+
+            "company_name":
+                company_name,
+
+            "analysis_model":
+                analysis_model,
+
+            "status":
+                "NO_QUARTERS",
+
+            "evaluated_periods":
+                0,
+
+            "limited_periods":
+                0,
+
+            "metrics_saved":
+                0
+        }
 
     print(
         f"📅 Quarterly Periods Found: "
@@ -2940,10 +3328,6 @@ def run_signal_engine(stock_id):
         ),
         flush=True
     )
-
-    # --------------------------------------------------------
-    # نبني نسخة Normalized لكل الفترات
-    # --------------------------------------------------------
 
     normalized_periods = {}
 
@@ -2961,6 +3345,12 @@ def run_signal_engine(stock_id):
     evaluated_periods = 0
     limited_periods = 0
     total_saved = 0
+
+    total_possible_weight = (
+        MODEL_TOTAL_WEIGHT[
+            analysis_model
+        ]
+    )
 
     for index, period_end in enumerate(
         quarter_dates
@@ -2995,16 +3385,9 @@ def run_signal_engine(stock_id):
 
         print(
             f"🎯 Data Confidence: "
-            f"{data_confidence:.2f}"
-            if data_confidence is not None
-            else
-            "🎯 Data Confidence: N/A",
+            f"{fmt(data_confidence)}",
             flush=True
         )
-
-        # ----------------------------------------------------
-        # البيانات موجودة لكن الثقة منخفضة
-        # ----------------------------------------------------
 
         if data_confidence is None:
 
@@ -3012,8 +3395,12 @@ def run_signal_engine(stock_id):
 
             print(
                 "🟡 LIMITED DATA | "
-                "بيانات الفترة موجودة ولكن "
                 "Data Confidence غير متوفرة.",
+                flush=True
+            )
+
+            print(
+                "⏭️ لن يصدر Signal Score.",
                 flush=True
             )
 
@@ -3028,7 +3415,8 @@ def run_signal_engine(stock_id):
 
             print(
                 f"🟡 LIMITED DATA | "
-                f"Confidence={data_confidence:.2f}% "
+                f"Confidence="
+                f"{data_confidence:.2f}% "
                 f"أقل من الحد "
                 f"{MIN_DATA_CONFIDENCE:.2f}%",
                 flush=True
@@ -3042,7 +3430,9 @@ def run_signal_engine(stock_id):
 
             continue
 
-        state = new_state()
+        state = new_state(
+            total_possible_weight
+        )
 
         margin_pressure_score = 0.0
         profit_gap_value = 0.0
@@ -3226,8 +3616,7 @@ def run_signal_engine(stock_id):
 
         # ====================================================
         # Working Capital
-        #
-        # REIT مستبعد عمدًا
+        # Standard فقط
         # ====================================================
 
         if analysis_model == "standard":
@@ -3262,7 +3651,7 @@ def run_signal_engine(stock_id):
                 )
 
         # ====================================================
-        # Historical Quality
+        # Historical Layer
         # ====================================================
 
         history = (
@@ -3316,8 +3705,8 @@ def run_signal_engine(stock_id):
 
             print(
                 "🟡 LIMITED DATA | "
-                "الثقة مناسبة لكن لا توجد "
-                "Components مالية كافية للحساب.",
+                "لا توجد Components مالية "
+                "كافية للحساب.",
                 flush=True
             )
 
@@ -3424,7 +3813,7 @@ def run_signal_engine(stock_id):
         )
 
     # ========================================================
-    # Summary
+    # Company Summary
     # ========================================================
 
     print(
@@ -3434,14 +3823,12 @@ def run_signal_engine(stock_id):
     )
 
     print(
-        f"📊 SIGNAL ENGINE {ENGINE_VERSION} SUMMARY",
+        f"📊 SIGNAL ENGINE "
+        f"{ENGINE_VERSION} SUMMARY",
         flush=True
     )
 
-    print(
-        "=" * 72,
-        flush=True
-    )
+    print_separator()
 
     print(
         f"🏢 {symbol} | "
@@ -3487,8 +3874,8 @@ def run_signal_engine(stock_id):
         print(
             "🟡 REIT DATA STATUS: "
             "البيانات الربعية موجودة، "
-            "لكنها غير كافية حاليًا لإصدار "
-            "Signal موثوق.",
+            "لكنها غير كافية حاليًا "
+            "لإصدار Signal موثوق.",
             flush=True
         )
 
@@ -3498,25 +3885,422 @@ def run_signal_engine(stock_id):
             flush=True
         )
 
+    print_separator()
+
+    if evaluated_periods > 0:
+
+        final_status = "EVALUATED"
+
+    elif limited_periods > 0:
+
+        final_status = "LIMITED_DATA"
+
+    else:
+
+        final_status = "NO_EVALUATION"
+
+    return {
+
+        "stock_id":
+            stock_id,
+
+        "symbol":
+            symbol,
+
+        "company_name":
+            company_name,
+
+        "analysis_model":
+            analysis_model,
+
+        "status":
+            final_status,
+
+        "quarterly_periods":
+            len(
+                quarter_dates
+            ),
+
+        "evaluated_periods":
+            evaluated_periods,
+
+        "limited_periods":
+            limited_periods,
+
+        "metrics_saved":
+            total_saved
+    }
+
+
+# ============================================================
+# تشغيل جميع الشركات النشطة
+# ============================================================
+
+def run_all_active_stocks():
+
+    stocks = get_active_stocks()
+
     print(
-        "=" * 72,
+        "\n"
+        + "=" * 88,
+        flush=True
+    )
+
+    print(
+        f"🌐 SIGNAL ENGINE "
+        f"{ENGINE_VERSION} | "
+        f"ALL ACTIVE COMPANIES",
+        flush=True
+    )
+
+    print(
+        f"🏢 Active Companies: "
+        f"{len(stocks)}",
+        flush=True
+    )
+
+    print(
+        "=" * 88,
+        flush=True
+    )
+
+    results = []
+
+    for index, stock in enumerate(
+        stocks,
+        start=1
+    ):
+
+        stock_id = stock.get(
+            "id"
+        )
+
+        symbol = (
+            stock.get(
+                "symbol"
+            )
+            or stock_id
+        )
+
+        print(
+            "\n"
+            + "#" * 88,
+            flush=True
+        )
+
+        print(
+            f"🔍 Company "
+            f"{index}/{len(stocks)} | "
+            f"{symbol}",
+            flush=True
+        )
+
+        print(
+            "#" * 88,
+            flush=True
+        )
+
+        try:
+
+            result = run_signal_engine(
+                stock_id,
+                stock_info=stock
+            )
+
+        except Exception as error:
+
+            print(
+                f"🔴 فشل Signal Engine "
+                f"للشركة {symbol}",
+                flush=True
+            )
+
+            print(
+                f"🔴 "
+                f"{type(error).__name__}: "
+                f"{error}",
+                flush=True
+            )
+
+            result = {
+
+                "stock_id":
+                    stock_id,
+
+                "symbol":
+                    symbol,
+
+                "company_name":
+                    stock.get(
+                        "company_name"
+                    ),
+
+                "analysis_model":
+                    stock.get(
+                        "analysis_model"
+                    ),
+
+                "status":
+                    "ERROR",
+
+                "quarterly_periods":
+                    0,
+
+                "evaluated_periods":
+                    0,
+
+                "limited_periods":
+                    0,
+
+                "metrics_saved":
+                    0
+            }
+
+        results.append(
+            result
+        )
+
+    # ========================================================
+    # Master Summary
+    # ========================================================
+
+    print(
+        "\n"
+        + "=" * 88,
+        flush=True
+    )
+
+    print(
+        f"🏆 SIGNAL ENGINE "
+        f"{ENGINE_VERSION} "
+        f"MASTER SUMMARY",
+        flush=True
+    )
+
+    print(
+        "=" * 88,
+        flush=True
+    )
+
+    for index, result in enumerate(
+        results,
+        start=1
+    ):
+
+        print(
+            f"{index:02d}. "
+            f"{result.get('symbol')} | "
+            f"{result.get('analysis_model')} | "
+            f"Status="
+            f"{result.get('status')} | "
+            f"Periods="
+            f"{result.get('quarterly_periods', 0)} | "
+            f"Evaluated="
+            f"{result.get('evaluated_periods', 0)} | "
+            f"Limited="
+            f"{result.get('limited_periods', 0)} | "
+            f"Saved="
+            f"{result.get('metrics_saved', 0)}",
+            flush=True
+        )
+
+    evaluated_companies = sum(
+
+        1
+        for result in results
+        if result.get(
+            "status"
+        ) == "EVALUATED"
+    )
+
+    limited_companies = sum(
+
+        1
+        for result in results
+        if result.get(
+            "status"
+        ) == "LIMITED_DATA"
+    )
+
+    specialized_companies = sum(
+
+        1
+        for result in results
+        if result.get(
+            "status"
+        ) == "SPECIALIZED_MODEL_SKIPPED"
+    )
+
+    error_companies = sum(
+
+        1
+        for result in results
+        if result.get(
+            "status"
+        ) == "ERROR"
+    )
+
+    unsupported_companies = sum(
+
+        1
+        for result in results
+        if result.get(
+            "status"
+        ) == "UNSUPPORTED_MODEL"
+    )
+
+    total_saved = sum(
+
+        result.get(
+            "metrics_saved",
+            0
+        )
+        for result in results
+    )
+
+    print(
+        "-" * 88,
+        flush=True
+    )
+
+    print(
+        f"🏢 Total Companies: "
+        f"{len(results)}",
+        flush=True
+    )
+
+    print(
+        f"🟢 Evaluated Companies: "
+        f"{evaluated_companies}",
+        flush=True
+    )
+
+    print(
+        f"🟡 Limited Data Companies: "
+        f"{limited_companies}",
+        flush=True
+    )
+
+    print(
+        f"🧩 Specialized Models Skipped: "
+        f"{specialized_companies}",
+        flush=True
+    )
+
+    print(
+        f"🟠 Unsupported Models: "
+        f"{unsupported_companies}",
+        flush=True
+    )
+
+    print(
+        f"🔴 Errors: "
+        f"{error_companies}",
+        flush=True
+    )
+
+    print(
+        f"💾 Total Metrics Saved: "
+        f"{total_saved}",
+        flush=True
+    )
+
+    if error_companies == 0:
+
+        print(
+            "✅ Batch completed without "
+            "runtime errors.",
+            flush=True
+        )
+
+    else:
+
+        print(
+            "⚠️ Batch completed with "
+            f"{error_companies} runtime errors.",
+            flush=True
+        )
+
+    print(
+        "=" * 88,
         flush=True
     )
 
 
 # ============================================================
 # START
+#
+# طرق التشغيل:
+#
+# 1) شركة واحدة:
+#    STOCK_ID=1
+#
+# 2) جميع الشركات:
+#    STOCK_ID=ALL
+#
+# أو:
+#    RUN_ALL_STOCKS=true
+#
+# إذا لم يوجد STOCK_ID أصلًا:
+# سيعمل على جميع الشركات النشطة.
 # ============================================================
 
 if __name__ == "__main__":
 
-    stock_id = int(
-        os.environ.get(
-            "STOCK_ID",
-            "1"
-        )
+    stock_id_raw = os.environ.get(
+        "STOCK_ID"
     )
 
-    run_signal_engine(
-        stock_id
+    run_all_raw = (
+        os.environ.get(
+            "RUN_ALL_STOCKS",
+            ""
+        )
+        .strip()
+        .lower()
     )
+
+    run_all = (
+        run_all_raw
+        in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "all"
+        }
+    )
+
+    if stock_id_raw is not None:
+
+        stock_id_raw = (
+            stock_id_raw
+            .strip()
+        )
+
+    if (
+        run_all
+        or not stock_id_raw
+        or stock_id_raw.upper() == "ALL"
+    ):
+
+        run_all_active_stocks()
+
+    else:
+
+        try:
+
+            stock_id = int(
+                stock_id_raw
+            )
+
+        except ValueError:
+
+            raise RuntimeError(
+                "STOCK_ID يجب أن يكون رقمًا "
+                "أو القيمة ALL"
+            )
+
+        run_signal_engine(
+            stock_id
+        )
