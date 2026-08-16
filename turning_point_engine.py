@@ -4,15 +4,21 @@ from supabase import create_client
 
 
 # ============================================================
-# TURNING POINT ENGINE v2.0
+# TURNING POINT ENGINE v2.0.1
 #
 # الهدف:
 # - اكتشاف التحول المالي الحقيقي عبر عدة أرباع.
 # - التفريق بين Turning Point وبين استمرار القوة.
 # - دعم standard / bank / insurance / reit.
 # - حساب Rolling History لكل فترة وليس أحدث فترة فقط.
-# - حفظ turning_engine_score لكل فترة مؤهلة حتى تصبح
-#   المقارنة التاريخية في Validation Engine ممكنة.
+# - حفظ turning_engine_score لكل فترة مؤهلة.
+#
+# أهم إصلاحات v2.0.1:
+# 1) Comparability لا يعاقب المؤشرات التي ظهرت لاحقًا لأنها
+#    أصبحت قابلة للحساب لأول مرة.
+# 2) فصل Continuity عن Breadth.
+# 3) عدم القفز فوق ربع مفقود في delta / acceleration / streak.
+# 4) فصل مرشحي Turning عن الشركات المتدهورة في الترتيب.
 #
 # READ:
 #   stocks
@@ -53,13 +59,14 @@ supabase = create_client(
 # Settings
 # ============================================================
 
-ENGINE_VERSION = "2.0"
+ENGINE_VERSION = "2.0.1"
 
 MIN_HISTORY = 2
 PREFERRED_HISTORY = 4
 
 MIN_CONFIDENCE_FOR_DIRECTION = 55.0
 MIN_COMPARABILITY_FOR_DIRECTION = 50.0
+MIN_COMMON_INPUTS_FOR_DIRECTION = 3
 
 TURNING_SCORE_METRIC = "turning_engine_score"
 TURNING_PREFIX = "turning_engine_"
@@ -174,32 +181,6 @@ def average(values):
         return None
 
     return sum(cleaned) / len(cleaned)
-
-
-def weighted_average(items):
-
-    total_value = 0.0
-    total_weight = 0.0
-
-    for value, weight in items:
-
-        value = safe_number(value)
-        weight = safe_number(weight)
-
-        if (
-            value is None
-            or weight is None
-            or weight <= 0
-        ):
-            continue
-
-        total_value += value * weight
-        total_weight += weight
-
-    if total_weight <= 0:
-        return None
-
-    return total_value / total_weight
 
 
 def print_header(title):
@@ -376,11 +357,18 @@ def metric_series(
 
 
 def analyze_series(values):
+    """
+    v2.0.1:
+    لا نحذف None من السلسلة.
+    latest = قيمة الفترة الحالية فقط.
+    previous = الفترة السابقة مباشرة فقط.
+    acceleration = آخر 3 فترات متجاورة فقط.
+    streak ينقطع عند أي فجوة بيانات.
+    """
 
-    valid_values = [
+    values = [
         safe_number(value)
         for value in values
-        if safe_number(value) is not None
     ]
 
     result = {
@@ -392,33 +380,50 @@ def analyze_series(values):
         "negative_streak": 0,
         "rising_steps": 0,
         "falling_steps": 0,
-        "count": len(valid_values)
+        "count": sum(
+            value is not None
+            for value in values
+        )
     }
 
-    if not valid_values:
+    if not values:
         return result
 
-    result["latest"] = valid_values[-1]
+    latest = values[-1]
 
-    if len(valid_values) >= 2:
+    if latest is None:
+        return result
 
-        result["previous"] = valid_values[-2]
+    result["latest"] = latest
+
+    if (
+        len(values) >= 2
+        and values[-2] is not None
+    ):
+
+        previous = values[-2]
+
+        result["previous"] = previous
 
         result["delta"] = (
-            valid_values[-1]
-            - valid_values[-2]
+            latest
+            - previous
         )
 
-    if len(valid_values) >= 3:
+    if (
+        len(values) >= 3
+        and values[-2] is not None
+        and values[-3] is not None
+    ):
 
         previous_delta = (
-            valid_values[-2]
-            - valid_values[-3]
+            values[-2]
+            - values[-3]
         )
 
         current_delta = (
-            valid_values[-1]
-            - valid_values[-2]
+            values[-1]
+            - values[-2]
         )
 
         result["acceleration"] = (
@@ -428,7 +433,10 @@ def analyze_series(values):
 
     positive_streak = 0
 
-    for value in reversed(valid_values):
+    for value in reversed(values):
+
+        if value is None:
+            break
 
         if value > 0:
             positive_streak += 1
@@ -437,7 +445,10 @@ def analyze_series(values):
 
     negative_streak = 0
 
-    for value in reversed(valid_values):
+    for value in reversed(values):
+
+        if value is None:
+            break
 
         if value < 0:
             negative_streak += 1
@@ -449,19 +460,27 @@ def analyze_series(values):
 
     for index in range(
         1,
-        len(valid_values)
+        len(values)
     ):
 
+        previous_value = values[
+            index - 1
+        ]
+
+        current_value = values[
+            index
+        ]
+
         if (
-            valid_values[index]
-            > valid_values[index - 1]
+            previous_value is None
+            or current_value is None
         ):
+            continue
+
+        if current_value > previous_value:
             rising_steps += 1
 
-        elif (
-            valid_values[index]
-            < valid_values[index - 1]
-        ):
+        elif current_value < previous_value:
             falling_steps += 1
 
     result["positive_streak"] = positive_streak
@@ -554,10 +573,6 @@ def evaluate_growth_metric(
     if latest is None:
         return
 
-    # --------------------------------------------------------
-    # True reversal
-    # --------------------------------------------------------
-
     if (
         previous is not None
         and previous < 0
@@ -571,10 +586,6 @@ def evaluate_growth_metric(
             12 * weight,
             f"{label}: تحول من انكماش إلى نمو"
         )
-
-    # --------------------------------------------------------
-    # Current strength
-    # --------------------------------------------------------
 
     if latest >= 15:
 
@@ -597,10 +608,6 @@ def evaluate_growth_metric(
             f"{label}: نمو حالي إيجابي "
             f"({signed_fmt(latest)}%)"
         )
-
-    # --------------------------------------------------------
-    # Momentum
-    # --------------------------------------------------------
 
     if (
         delta is not None
@@ -629,10 +636,6 @@ def evaluate_growth_metric(
             f"{label}: الزخم يتحسن"
         )
 
-    # --------------------------------------------------------
-    # Acceleration
-    # --------------------------------------------------------
-
     if (
         acceleration is not None
         and acceleration >= 5
@@ -646,10 +649,6 @@ def evaluate_growth_metric(
             f"{label}: يوجد تسارع في التحسن"
         )
 
-    # --------------------------------------------------------
-    # Persistence
-    # --------------------------------------------------------
-
     if trend["positive_streak"] >= 2:
 
         add_signal(
@@ -660,10 +659,6 @@ def evaluate_growth_metric(
             f"{label}: نمو إيجابي مستمر "
             f"{trend['positive_streak']} فترات"
         )
-
-    # --------------------------------------------------------
-    # Deterioration
-    # --------------------------------------------------------
 
     if latest <= -10:
 
@@ -1439,7 +1434,6 @@ def evaluate_signal_confirmation(
         )
     )
 
-    # لا نستخدم Signal Engine إذا كانت ثقته منخفضة
     if (
         latest_confidence is not None
         and latest_confidence < 55
@@ -1513,7 +1507,6 @@ def history_confidence(
     if not history:
         return 0.0
 
-    # نصف الثقة من طول التاريخ
     history_score = min(
         len(history)
         / PREFERRED_HISTORY,
@@ -1640,20 +1633,48 @@ def financial_comparability(
     history,
     analysis_model
 ):
+    """
+    v2.0.1
 
-    if len(history) < 2:
+    continuity_score:
+        هل المؤشرات التي كانت متاحة في الربع السابق استمرت
+        إلى الربع الحالي؟
 
-        return {
-            "score": 0.0,
-            "latest_inputs": 0,
-            "previous_inputs": 0,
-            "common_inputs": 0,
-            "union_inputs": 0
-        }
+    breadth_score:
+        كم نسبة المؤشرات المتوقعة التي يمكن مقارنتها فعليًا
+        في الربعين؟
+
+    newly_available:
+        مؤشرات ظهرت الآن ولم تكن متاحة سابقًا.
+        لا تعتبر مشكلة ولا تخفض continuity.
+
+    dropped:
+        مؤشرات كانت متاحة سابقًا ثم اختفت الآن.
+        هذه مشكلة حقيقية وتخفض continuity.
+    """
 
     watched = model_watchlist(
         analysis_model
     )
+
+    if (
+        len(history) < 2
+        or not watched
+    ):
+
+        return {
+            "score": 0.0,
+            "continuity_score": 0.0,
+            "breadth_score": 0.0,
+            "latest_inputs": 0,
+            "previous_inputs": 0,
+            "common_inputs": 0,
+            "newly_available_inputs": 0,
+            "dropped_inputs": 0,
+            "union_inputs": 0,
+            "watched_inputs": len(watched),
+            "direction_ready": False
+        }
 
     latest = history[-1]
     previous = history[-2]
@@ -1679,32 +1700,76 @@ def financial_comparability(
         & previous_available
     )
 
+    newly_available = (
+        latest_available
+        - previous_available
+    )
+
+    dropped = (
+        previous_available
+        - latest_available
+    )
+
     union = (
         latest_available
         | previous_available
     )
 
-    if not union:
+    if previous_available:
 
-        score = 0.0
+        continuity_score = (
+            len(common)
+            / len(previous_available)
+        ) * 100
+
+    elif latest_available:
+
+        # أول فترة تصبح فيها المقاييس قابلة للحساب.
+        # ليست مقارنة تاريخية كاملة، لكن لا نعاقبها كـ 0.
+        continuity_score = 70.0
 
     else:
 
-        score = (
-            len(common)
-            / len(union)
-        ) * 100
+        continuity_score = 0.0
+
+    breadth_score = (
+        len(common)
+        / len(watched)
+    ) * 100
+
+    # score الأساسي يركز على الاستمرارية لا على عدد المؤشرات
+    # الجديدة التي ظهرت للتو.
+    score = continuity_score
+
+    direction_ready = (
+        score
+        >= MIN_COMPARABILITY_FOR_DIRECTION
+        and len(common)
+        >= MIN_COMMON_INPUTS_FOR_DIRECTION
+    )
 
     return {
         "score": clamp(score),
-        "latest_inputs": len(
-            latest_available
-        ),
-        "previous_inputs": len(
-            previous_available
-        ),
-        "common_inputs": len(common),
-        "union_inputs": len(union)
+        "continuity_score":
+            clamp(continuity_score),
+        "breadth_score":
+            clamp(breadth_score),
+        "latest_inputs":
+            len(latest_available),
+        "previous_inputs":
+            len(previous_available),
+        "common_inputs":
+            len(common),
+        "newly_available_inputs":
+            len(newly_available),
+        "dropped_inputs":
+            len(dropped),
+        "union_inputs":
+            len(union),
+        "watched_inputs":
+            len(watched),
+        "direction_ready":
+            direction_ready
     }
 
 
@@ -1825,8 +1890,6 @@ def calculate_turning_score(
         if value < 0:
             negative_points += abs(value)
 
-    # Raw base intentionally lower than v1.
-    # The score must be earned by evidence.
     raw_score = (
         25
         + positive_points
@@ -1883,7 +1946,18 @@ def classify_turning_point(
 
     score = safe_number(score)
     confidence = safe_number(confidence)
-    comparability = safe_number(comparability)
+
+    comparability_score = safe_number(
+        comparability.get("score")
+    )
+
+    common_inputs = (
+        comparability.get(
+            "common_inputs",
+            0
+        )
+        or 0
+    )
 
     reversal = (
         safe_number(
@@ -1937,14 +2011,6 @@ def classify_turning_point(
         )
     )
 
-    opportunity = safe_number(
-        context.get("opportunity")
-    )
-
-    risk = safe_number(
-        context.get("risk")
-    )
-
     previous_opportunity = safe_number(
         context.get(
             "previous_opportunity"
@@ -1957,27 +2023,35 @@ def classify_turning_point(
         )
     )
 
-    # --------------------------------------------------------
-    # Quality Gate
-    # --------------------------------------------------------
-
     gate_failures = []
 
     if (
         confidence is None
-        or confidence < MIN_CONFIDENCE_FOR_DIRECTION
+        or confidence
+        < MIN_CONFIDENCE_FOR_DIRECTION
     ):
         gate_failures.append(
             f"Confidence {fmt(confidence)}"
         )
 
     if (
-        comparability is None
-        or comparability
+        comparability_score is None
+        or comparability_score
         < MIN_COMPARABILITY_FOR_DIRECTION
     ):
         gate_failures.append(
-            f"Comparability {fmt(comparability)}"
+            f"Comparability "
+            f"{fmt(comparability_score)}"
+        )
+
+    if (
+        common_inputs
+        < MIN_COMMON_INPUTS_FOR_DIRECTION
+    ):
+        gate_failures.append(
+            f"CommonInputs "
+            f"{common_inputs}"
+            f"<{MIN_COMMON_INPUTS_FOR_DIRECTION}"
         )
 
     if gate_failures:
@@ -1987,11 +2061,6 @@ def classify_turning_point(
             "لا يصدر حكم Turning قوي بسبب: "
             + " | ".join(gate_failures)
         )
-
-    # --------------------------------------------------------
-    # Strong continuation:
-    # الشركة كانت قوية أصلًا في الفترة السابقة.
-    # --------------------------------------------------------
 
     already_strong = (
         previous_opportunity is not None
@@ -2014,12 +2083,6 @@ def classify_turning_point(
             "قوة مستمرة؛ الشركة كانت قوية أصلًا "
             "وليست Turning Point جديدة"
         )
-
-    # --------------------------------------------------------
-    # True turning:
-    # يحتاج reversal أو تغير قوي من scoring/signal
-    # مع تحسن فعلي من baseline أضعف.
-    # --------------------------------------------------------
 
     baseline_was_weak_or_mixed = (
         previous_opportunity is None
@@ -2070,10 +2133,6 @@ def classify_turning_point(
             "من قاعدة أضعف"
         )
 
-    # --------------------------------------------------------
-    # Improving without true turning
-    # --------------------------------------------------------
-
     if (
         score is not None
         and score >= 55
@@ -2090,10 +2149,6 @@ def classify_turning_point(
             "تحسن مستمر لكنه لا يحقق شروط "
             "Turning Point الحقيقي"
         )
-
-    # --------------------------------------------------------
-    # Deterioration
-    # --------------------------------------------------------
 
     if deterioration >= 15:
 
@@ -2309,7 +2364,7 @@ def evaluate_period(
             turning_score,
             signals,
             confidence,
-            comparability["score"],
+            comparability,
             context
         )
     )
@@ -2360,6 +2415,31 @@ def evaluate_period(
 
         f"{TURNING_PREFIX}comparability_score":
             comparability["score"],
+
+        f"{TURNING_PREFIX}comparability_continuity_score":
+            comparability[
+                "continuity_score"
+            ],
+
+        f"{TURNING_PREFIX}comparability_breadth_score":
+            comparability[
+                "breadth_score"
+            ],
+
+        f"{TURNING_PREFIX}common_inputs":
+            comparability[
+                "common_inputs"
+            ],
+
+        f"{TURNING_PREFIX}newly_available_inputs":
+            comparability[
+                "newly_available_inputs"
+            ],
+
+        f"{TURNING_PREFIX}dropped_inputs":
+            comparability[
+                "dropped_inputs"
+            ],
 
         f"{TURNING_PREFIX}reversal_score":
             signals.get("reversal"),
@@ -2605,9 +2685,22 @@ def print_stock_result(result):
         flush=True
     )
 
+    comp = latest[
+        "comparability"
+    ]
+
     print(
         f"🧬 Comparability: "
-        f"{fmt(latest['comparability']['score'])}%",
+        f"{fmt(comp['score'])}%",
+        flush=True
+    )
+
+    print(
+        f"📐 Breadth: "
+        f"{fmt(comp['breadth_score'])}% | "
+        f"Common={comp['common_inputs']} | "
+        f"New={comp['newly_available_inputs']} | "
+        f"Dropped={comp['dropped_inputs']}",
         flush=True
     )
 
@@ -2680,6 +2773,60 @@ def print_stock_result(result):
 
 
 # ============================================================
+# Summary Helpers
+# ============================================================
+
+def print_ranked_group(
+    title,
+    results
+):
+
+    print_header(title)
+
+    if not results:
+
+        print(
+            "- لا توجد شركات في هذه المجموعة",
+            flush=True
+        )
+        return
+
+    ranked = sorted(
+        results,
+        key=lambda result:
+            result["latest"].get(
+                "turning_score"
+            )
+            if result["latest"].get(
+                "turning_score"
+            ) is not None
+            else -1,
+        reverse=True
+    )
+
+    for index, result in enumerate(
+        ranked,
+        start=1
+    ):
+
+        latest = result["latest"]
+        comp = latest["comparability"]
+
+        print(
+            f"{index:02d}. "
+            f"{result['symbol']} | "
+            f"{result['company_name']} | "
+            f"{result['analysis_model']} | "
+            f"Turning={fmt(latest['turning_score'])} | "
+            f"Confidence={fmt(latest['confidence'])} | "
+            f"Comparable={fmt(comp['score'])}% | "
+            f"Breadth={fmt(comp['breadth_score'])}% | "
+            f"{latest['state']}",
+            flush=True
+        )
+
+
+# ============================================================
 # Summary
 # ============================================================
 
@@ -2692,54 +2839,68 @@ def print_summary(results):
         == "success"
     ]
 
-    successful.sort(
-        key=lambda result:
-            result["latest"].get(
-                "turning_score"
-            )
-            if result["latest"].get(
-                "turning_score"
-            ) is not None
-            else -1,
-        reverse=True
-    )
-
-    print_header(
-        f"🏆 TURNING POINT ENGINE v{ENGINE_VERSION} RANKING"
-    )
-
-    for index, result in enumerate(
-        successful,
-        start=1
-    ):
-
-        latest = result["latest"]
-
-        print(
-            f"{index:02d}. "
-            f"{result['symbol']} | "
-            f"{result['company_name']} | "
-            f"{result['analysis_model']} | "
-            f"Turning="
-            f"{fmt(latest['turning_score'])} | "
-            f"Confidence="
-            f"{fmt(latest['confidence'])} | "
-            f"Comparable="
-            f"{fmt(latest['comparability']['score'])}% | "
-            f"{latest['state']} | "
-            f"Periods="
-            f"{result['period_count']} | "
-            f"Evaluated="
-            f"{result['evaluated_periods']}",
-            flush=True
-        )
-
     skipped = [
         result
         for result in results
         if result.get("status")
         != "success"
     ]
+
+    turning_candidates = [
+        result
+        for result in successful
+        if result["latest"]["state"]
+        in [
+            "STRONG_TURNING_POINT",
+            "EARLY_TURNING_POINT",
+            "IMPROVING"
+        ]
+    ]
+
+    continuations = [
+        result
+        for result in successful
+        if result["latest"]["state"]
+        == "STRONG_CONTINUATION"
+    ]
+
+    monitoring = [
+        result
+        for result in successful
+        if result["latest"]["state"]
+        in [
+            "NEUTRAL",
+            "WEAK",
+            "LOW_CONFIDENCE"
+        ]
+    ]
+
+    deteriorating = [
+        result
+        for result in successful
+        if result["latest"]["state"]
+        == "DETERIORATING"
+    ]
+
+    print_ranked_group(
+        f"🏆 TURNING CANDIDATES v{ENGINE_VERSION}",
+        turning_candidates
+    )
+
+    print_ranked_group(
+        "💪 STRONG CONTINUATIONS",
+        continuations
+    )
+
+    print_ranked_group(
+        "👀 MONITORING / LOW CONFIDENCE",
+        monitoring
+    )
+
+    print_ranked_group(
+        "🔴 DETERIORATING / NOT TURNING CANDIDATES",
+        deteriorating
+    )
 
     strong_turning = sum(
         1
@@ -2755,18 +2916,15 @@ def print_summary(results):
         == "EARLY_TURNING_POINT"
     )
 
-    continuation = sum(
-        1
-        for result in successful
-        if result["latest"]["state"]
-        == "STRONG_CONTINUATION"
-    )
-
     improving = sum(
         1
         for result in successful
         if result["latest"]["state"]
         == "IMPROVING"
+    )
+
+    continuation = len(
+        continuations
     )
 
     low_confidence = sum(
@@ -2785,7 +2943,9 @@ def print_summary(results):
         for result in successful
     )
 
-    print_separator()
+    print_header(
+        f"📊 TURNING POINT ENGINE v{ENGINE_VERSION} SUMMARY"
+    )
 
     print(
         f"🏢 Total Companies: "
@@ -2818,20 +2978,26 @@ def print_summary(results):
     )
 
     print(
-        f"💪 Strong Continuations: "
-        f"{continuation}",
-        flush=True
-    )
-
-    print(
         f"📈 Improving: "
         f"{improving}",
         flush=True
     )
 
     print(
+        f"💪 Strong Continuations: "
+        f"{continuation}",
+        flush=True
+    )
+
+    print(
         f"🟡 Low Confidence: "
         f"{low_confidence}",
+        flush=True
+    )
+
+    print(
+        f"🔴 Deteriorating: "
+        f"{len(deteriorating)}",
         flush=True
     )
 
@@ -2858,21 +3024,26 @@ def print_summary(results):
             )
 
     print(
-        "\n✅ Rolling backfill enabled: "
-        "يتم الآن حفظ Turning Engine لكل فترة مؤهلة، "
-        "وليس أحدث فترة فقط.",
+        "\n✅ v2.0.1 Comparability Fix: "
+        "المؤشرات الجديدة لا تخفض المقارنة لمجرد أنها لم تكن "
+        "قابلة للحساب في الفترة السابقة.",
         flush=True
     )
 
     print(
-        "✅ Specialized confirmation enabled: "
-        "Standard / Bank / Insurance / REIT.",
+        "✅ Gap-safe Series: "
+        "لا تتم مقارنة أرباع غير متجاورة عند وجود فجوة بيانات.",
         flush=True
     )
 
     print(
-        "✅ Strong Continuation منفصل عن "
-        "Turning Point الحقيقي.",
+        "✅ Ranking Safety: "
+        "الشركات المتدهورة منفصلة عن Turning Candidates.",
+        flush=True
+    )
+
+    print(
+        "✅ Rolling backfill enabled.",
         flush=True
     )
 
@@ -2916,7 +3087,9 @@ def run_turning_point_engine():
         f"Confidence >= "
         f"{MIN_CONFIDENCE_FOR_DIRECTION:.0f} | "
         f"Comparability >= "
-        f"{MIN_COMPARABILITY_FOR_DIRECTION:.0f}",
+        f"{MIN_COMPARABILITY_FOR_DIRECTION:.0f} | "
+        f"Common Inputs >= "
+        f"{MIN_COMMON_INPUTS_FOR_DIRECTION}",
         flush=True
     )
 
