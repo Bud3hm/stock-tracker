@@ -4,19 +4,18 @@ from supabase import create_client
 
 
 # ============================================================
-# HISTORICAL SCORING ENGINE v3
+# HISTORICAL SCORING ENGINE v3.1
 #
 # SAFE DATA GATE
 #
 # أهم التغييرات:
 #
 # 1) نقص البيانات لا يتحول إلى Opportunity وهمي.
-# 2) REIT لديه Data Gate مستقل.
-# 3) لا يعاد توزيع الأوزان بشكل مضلل عند غياب معظم المكونات.
-# 4) تنظيف درجات Scoring القديمة باستخدام UPSERT + NULL
-#    بدل DELETE.
+# 2) REIT لديه Data Gate صارم.
+# 3) REIT يحتاج بيانات تشغيلية وربحية فعلية، لا Balance فقط.
+# 4) تنظيف Scoring القديم باستخدام UPSERT + NULL بدل DELETE.
 # 5) Missing data = NOT SCORED وليس Score=0.
-# 6) Standard / Bank / Insurance تبقى تعمل بنفس المنطق.
+# 6) Standard / Bank / Insurance تبقى بنفس المنطق.
 # ============================================================
 
 
@@ -43,14 +42,12 @@ supabase = create_client(
 
 
 ENGINE_NAME = (
-    "HISTORICAL SCORING ENGINE v3 | SAFE DATA GATE"
+    "HISTORICAL SCORING ENGINE v3.1 | STRICT REIT DATA GATE"
 )
 
 
 # ============================================================
 # Scoring metric names
-#
-# تستخدم لتنظيف النتائج القديمة قبل إعادة الحساب.
 # ============================================================
 
 
@@ -337,7 +334,9 @@ def get_active_stocks():
             "priority",
             desc=True
         )
-        .order("id")
+        .order(
+            "id"
+        )
         .execute()
     )
 
@@ -369,8 +368,6 @@ def get_stock_metrics(stock_id):
 #
 # لا نستخدم DELETE.
 # نكتب NULL فوق القيم القديمة عبر UPSERT.
-#
-# organize_metrics يتجاهل NULL لاحقًا.
 # ============================================================
 
 
@@ -983,7 +980,20 @@ def score_insurance(metrics):
 
 
 # ============================================================
-# REIT SAFE DATA GATE
+# REIT STRICT DATA GATE
+#
+# REIT لا يمر إلا إذا:
+#
+# 1) يوجد usable flag مقبول
+# 2) Current Coverage >= 60%
+# 3) Confidence >= 50%
+# 4) يوجد اثنان على الأقل من:
+#    Revenue YoY
+#    Operating Income YoY
+#    Net Income YoY
+#
+# الهدف:
+# منع Balance Sheet فقط من تكوين Opportunity.
 # ============================================================
 
 
@@ -1001,23 +1011,62 @@ def reit_data_gate(metrics):
         )
     )
 
-    if usable_flag is not None:
+    confidence = safe_number(
+        metrics.get(
+            "reit_data_confidence_score"
+        )
+    )
 
-        return (
-            usable_flag >= 1.0
-            and (
-                current_coverage is None
-                or current_coverage >= 50.0
+
+    core_metrics = [
+        "reit_q_revenue_growth_yoy",
+        "reit_q_operating_income_growth_yoy",
+        "reit_q_net_income_growth_yoy"
+    ]
+
+
+    core_available = sum(
+        1
+
+        for metric_name in core_metrics
+
+        if safe_number(
+            metrics.get(
+                metric_name
             )
-        )
+        ) is not None
+    )
 
-    if current_coverage is not None:
 
-        return (
-            current_coverage >= 50.0
-        )
+    core_gate = (
+        core_available >= 2
+    )
 
-    return False
+
+    coverage_gate = (
+        current_coverage is not None
+        and current_coverage >= 60.0
+    )
+
+
+    confidence_gate = (
+        confidence is not None
+        and confidence >= 50.0
+    )
+
+
+    usable_gate = (
+        usable_flag is None
+        or usable_flag >= 1.0
+    )
+
+
+    return (
+        usable_gate
+        and coverage_gate
+        and confidence_gate
+        and core_gate
+    )
 
 
 # ============================================================
@@ -1036,9 +1085,11 @@ def score_reit(metrics):
         or 0.0
     )
 
+
     gate_passed = reit_data_gate(
         metrics
     )
+
 
     if not gate_passed:
 
@@ -1061,6 +1112,7 @@ def score_reit(metrics):
             "data_gate_passed":
                 0.0
         }
+
 
     growth = weighted_average([
         (
@@ -1097,6 +1149,7 @@ def score_reit(metrics):
         )
     ])
 
+
     quality = weighted_average([
         (
             score_margin_change(
@@ -1124,6 +1177,7 @@ def score_reit(metrics):
         )
     ])
 
+
     cash = weighted_average([
         (
             score_cash_conversion(
@@ -1142,6 +1196,7 @@ def score_reit(metrics):
             40
         )
     ])
+
 
     balance = weighted_average([
         (
@@ -1164,6 +1219,7 @@ def score_reit(metrics):
             40
         )
     ])
+
 
     return {
         "growth_score":
@@ -1237,7 +1293,9 @@ def count_available_components(
 
     return sum(
         1
+
         for name in names
+
         if safe_number(
             components.get(
                 name
@@ -1298,11 +1356,17 @@ def calculate_final_scores(
         or 0.0
     )
 
+
     available_components = (
         count_available_components(
             components
         )
     )
+
+
+    # ========================================================
+    # REIT Safety Gate
+    # ========================================================
 
     if (
         analysis_model == "reit"
@@ -1325,7 +1389,13 @@ def calculate_final_scores(
                 )
         }
 
+
+    # ========================================================
+    # Opportunity
+    # ========================================================
+
     opportunity_raw = None
+
 
     if available_components >= 2:
 
@@ -1348,17 +1418,26 @@ def calculate_final_scores(
             )
         ])
 
+
+    # ========================================================
+    # Risk
+    # ========================================================
+
     risk_inputs = sum(
         1
+
         for item in [
             quality,
             cash,
             balance
         ]
+
         if item is not None
     )
 
+
     risk_raw = None
+
 
     if risk_inputs >= 2:
 
@@ -1389,7 +1468,13 @@ def calculate_final_scores(
             )
         ])
 
+
+    # ========================================================
+    # Turning Point
+    # ========================================================
+
     turning_raw = None
+
 
     if (
         growth is not None
@@ -1411,12 +1496,18 @@ def calculate_final_scores(
             )
         ])
 
+
+    # ========================================================
+    # Confidence adjustment
+    # ========================================================
+
     confidence_clamped = (
         clamp(
             confidence
         )
         or 0.0
     )
+
 
     confidence_factor = (
         0.50
@@ -1426,19 +1517,26 @@ def calculate_final_scores(
         )
     )
 
+
     opportunity = (
         opportunity_raw
         * confidence_factor
+
         if opportunity_raw is not None
+
         else None
     )
+
 
     turning_point = (
         turning_raw
         * confidence_factor
+
         if turning_raw is not None
+
         else None
     )
+
 
     return {
         "opportunity_score":
@@ -1478,7 +1576,9 @@ def save_scoring_metrics(
         timezone.utc
     ).isoformat()
 
+
     records = []
+
 
     for (
         metric_name,
@@ -1489,8 +1589,10 @@ def save_scoring_metrics(
             metric_value
         )
 
+
         if metric_value is None:
             continue
+
 
         records.append({
             "stock_id":
@@ -1509,8 +1611,10 @@ def save_scoring_metrics(
                 period_end
         })
 
+
     if not records:
         return 0
+
 
     (
         supabase
@@ -1525,6 +1629,7 @@ def save_scoring_metrics(
         )
         .execute()
     )
+
 
     return len(
         records
@@ -1546,12 +1651,14 @@ def score_stock_history(stock):
         "symbol"
     ]
 
+
     company_name = (
         stock.get(
             "company_name"
         )
         or symbol
     )
+
 
     analysis_model = (
         stock.get(
@@ -1560,18 +1667,22 @@ def score_stock_history(stock):
         or "standard"
     )
 
+
     rows = get_stock_metrics(
         stock_id
     )
+
 
     periods = organize_metrics(
         rows
     )
 
+
     valid_periods = get_valid_periods(
         periods,
         analysis_model
     )
+
 
     if not valid_periods:
 
@@ -1595,14 +1706,18 @@ def score_stock_history(stock):
                 0
         }
 
+
     history = []
+
     total_saved = 0
+
 
     for period_end in valid_periods:
 
         metrics = periods[
             period_end
         ]
+
 
         # ====================================================
         # تنظيف النتائج القديمة بدون DELETE
@@ -1613,6 +1728,7 @@ def score_stock_history(stock):
             period_end
         )
 
+
         components = (
             calculate_component_scores(
                 analysis_model,
@@ -1620,23 +1736,29 @@ def score_stock_history(stock):
             )
         )
 
+
         if components is None:
             continue
+
 
         final_scores = calculate_final_scores(
             components,
             analysis_model
         )
 
+
         all_scores = {}
+
 
         all_scores.update(
             components
         )
 
+
         all_scores.update(
             final_scores
         )
+
 
         saved = save_scoring_metrics(
             stock_id,
@@ -1644,7 +1766,9 @@ def score_stock_history(stock):
             all_scores
         )
 
+
         total_saved += saved
+
 
         history.append({
             "period_end":
@@ -1701,6 +1825,7 @@ def score_stock_history(stock):
                 )
         })
 
+
     if not history:
 
         return {
@@ -1723,9 +1848,11 @@ def score_stock_history(stock):
                 total_saved
         }
 
+
     latest = history[
         -1
     ]
+
 
     if (
         analysis_model == "reit"
@@ -1745,6 +1872,7 @@ def score_stock_history(stock):
         status = (
             "success"
         )
+
 
     return {
         "symbol":
@@ -1797,6 +1925,7 @@ def calculate_history_momentum(
                 None
         }
 
+
     current = history[
         -1
     ]
@@ -1804,6 +1933,7 @@ def calculate_history_momentum(
     previous = history[
         -2
     ]
+
 
     def delta(key):
 
@@ -1819,16 +1949,19 @@ def calculate_history_momentum(
             )
         )
 
+
         if (
             current_value is None
             or previous_value is None
         ):
             return None
 
+
         return (
             current_value
             - previous_value
         )
+
 
     return {
         "opportunity_delta":
@@ -1870,11 +2003,16 @@ def calculate_trend(
     if len(
         history
     ) < 3:
-        return "INSUFFICIENT_HISTORY"
+
+        return (
+            "INSUFFICIENT_HISTORY"
+        )
+
 
     recent = history[
         -3:
     ]
+
 
     opportunities = [
         safe_number(
@@ -1882,8 +2020,10 @@ def calculate_trend(
                 "opportunity"
             )
         )
+
         for item in recent
     ]
+
 
     risks = [
         safe_number(
@@ -1891,15 +2031,20 @@ def calculate_trend(
                 "risk"
             )
         )
+
         for item in recent
     ]
+
 
     if any(
         value is None
         for value in opportunities
     ):
 
-        return "INSUFFICIENT_DATA"
+        return (
+            "INSUFFICIENT_DATA"
+        )
+
 
     if (
         opportunities[
@@ -1930,7 +2075,11 @@ def calculate_trend(
                 "IMPROVING_PERSISTENT"
             )
 
-        return "IMPROVING"
+
+        return (
+            "IMPROVING"
+        )
+
 
     if (
         opportunities[
@@ -1944,9 +2093,14 @@ def calculate_trend(
         ]
     ):
 
-        return "DETERIORATING"
+        return (
+            "DETERIORATING"
+        )
 
-    return "MIXED"
+
+    return (
+        "MIXED"
+    )
 
 
 # ============================================================
@@ -1958,26 +2112,31 @@ def run_scoring_engine():
 
     stocks = get_active_stocks()
 
+
     print(
         "\n"
         + "=" * 84,
         flush=True
     )
 
+
     print(
         f"🎯 {ENGINE_NAME}",
         flush=True
     )
+
 
     print(
         "=" * 84,
         flush=True
     )
 
+
     print(
         "🛡 Missing data does not generate investment scores",
         flush=True
     )
+
 
     print(
         f"🏢 Total Stocks: "
@@ -1985,7 +2144,9 @@ def run_scoring_engine():
         flush=True
     )
 
+
     results = []
+
 
     for index, stock in enumerate(
         stocks,
@@ -1998,6 +2159,7 @@ def run_scoring_engine():
             flush=True
         )
 
+
         print(
             f"🚦 Scoring "
             f"{index}/{len(stocks)} | "
@@ -2005,11 +2167,13 @@ def run_scoring_engine():
             flush=True
         )
 
+
         try:
 
             result = score_stock_history(
                 stock
             )
+
 
         except Exception as error:
 
@@ -2044,6 +2208,7 @@ def run_scoring_engine():
                     )
             }
 
+
             print(
                 f"🔴 "
                 f"{stock['symbol']} | "
@@ -2051,6 +2216,7 @@ def run_scoring_engine():
                 f"{error}",
                 flush=True
             )
+
 
         if result.get(
             "status"
@@ -2063,9 +2229,11 @@ def run_scoring_engine():
                 "history"
             ]
 
+
             latest = history[
                 -1
             ]
+
 
             momentum = (
                 calculate_history_momentum(
@@ -2073,21 +2241,26 @@ def run_scoring_engine():
                 )
             )
 
+
             trend = calculate_trend(
                 history
             )
+
 
             result[
                 "latest"
             ] = latest
 
+
             result[
                 "momentum"
             ] = momentum
 
+
             result[
                 "trend"
             ] = trend
+
 
             print(
                 f"📚 Historical Periods: "
@@ -2095,11 +2268,13 @@ def run_scoring_engine():
                 flush=True
             )
 
+
             print(
                 f"📅 Latest: "
                 f"{latest['period_end']}",
                 flush=True
             )
+
 
             print(
                 f"🛡 Data Gate: "
@@ -2107,11 +2282,13 @@ def run_scoring_engine():
                 flush=True
             )
 
+
             print(
                 f"📦 Components Available: "
                 f"{fmt(latest['components_available'])}",
                 flush=True
             )
+
 
             print(
                 f"🎯 Opportunity: "
@@ -2119,11 +2296,13 @@ def run_scoring_engine():
                 flush=True
             )
 
+
             print(
                 f"🔴 Risk: "
                 f"{fmt(latest['risk'])}",
                 flush=True
             )
+
 
             print(
                 f"🧭 Turning: "
@@ -2131,15 +2310,25 @@ def run_scoring_engine():
                 flush=True
             )
 
+
             print(
                 f"🧬 Trend: "
                 f"{trend}",
                 flush=True
             )
 
+
         results.append(
             result
         )
+
+
+    # ========================================================
+    # Ranking
+    #
+    # limited_data لا يدخل الترتيب.
+    # ========================================================
+
 
     successful = [
         result
@@ -2164,6 +2353,7 @@ def run_scoring_engine():
         )
     ]
 
+
     successful.sort(
         key=lambda result:
             safe_number(
@@ -2176,21 +2366,25 @@ def run_scoring_engine():
         reverse=True
     )
 
+
     print(
         "\n"
         + "=" * 84,
         flush=True
     )
 
+
     print(
         "🏆 LATEST OPPORTUNITY RANKING",
         flush=True
     )
 
+
     print(
         "=" * 84,
         flush=True
     )
+
 
     for rank, result in enumerate(
         successful,
@@ -2201,9 +2395,11 @@ def run_scoring_engine():
             "latest"
         ]
 
+
         momentum = result[
             "momentum"
         ]
+
 
         print(
             f"{rank:02d}. "
@@ -2225,6 +2421,7 @@ def run_scoring_engine():
             flush=True
         )
 
+
     limited = [
         result
 
@@ -2235,6 +2432,7 @@ def run_scoring_engine():
         )
         == "limited_data"
     ]
+
 
     failures = [
         result
@@ -2250,13 +2448,16 @@ def run_scoring_engine():
         ]
     ]
 
+
     total_saved = sum(
         result.get(
             "saved",
             0
         )
+
         for result in results
     )
+
 
     print(
         "\n"
@@ -2264,15 +2465,18 @@ def run_scoring_engine():
         flush=True
     )
 
+
     print(
-        "📊 HISTORICAL SCORING SUMMARY v3",
+        "📊 HISTORICAL SCORING SUMMARY v3.1",
         flush=True
     )
+
 
     print(
         "=" * 84,
         flush=True
     )
+
 
     print(
         f"🟢 Scored: "
@@ -2280,11 +2484,13 @@ def run_scoring_engine():
         flush=True
     )
 
+
     print(
         f"🟡 Limited Data: "
         f"{len(limited)}",
         flush=True
     )
+
 
     print(
         f"🔴 Failed/Skipped: "
@@ -2292,11 +2498,13 @@ def run_scoring_engine():
         flush=True
     )
 
+
     print(
         f"💾 Score Records Saved: "
         f"{total_saved}",
         flush=True
     )
+
 
     if limited:
 
@@ -2305,6 +2513,7 @@ def run_scoring_engine():
             flush=True
         )
 
+
         for result in limited:
 
             latest = result.get(
@@ -2312,15 +2521,21 @@ def run_scoring_engine():
                 {}
             )
 
+
             print(
                 f"{result.get('symbol')} | "
                 f"{result.get('company_name')} | "
                 f"{result.get('analysis_model')} | "
+                f"DataGate="
+                f"{fmt(latest.get('data_gate'))} | "
                 f"Confidence="
                 f"{fmt(latest.get('confidence'))} | "
-                f"Opportunity=N/A",
+                f"Opportunity=N/A | "
+                f"Risk=N/A | "
+                f"Turning=N/A",
                 flush=True
             )
+
 
     if failures:
 
@@ -2328,6 +2543,7 @@ def run_scoring_engine():
             "\n⚠️ Failed / Skipped:",
             flush=True
         )
+
 
         for result in failures:
 
@@ -2338,6 +2554,7 @@ def run_scoring_engine():
                 f"{result.get('error', '')}",
                 flush=True
             )
+
 
     print(
         "=" * 84,
