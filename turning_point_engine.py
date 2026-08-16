@@ -4,7 +4,7 @@ from supabase import create_client
 
 
 # ============================================================
-# TURNING POINT ENGINE v2.0.1
+# TURNING POINT ENGINE v2.0.2
 #
 # الهدف:
 # - اكتشاف التحول المالي الحقيقي عبر عدة أرباع.
@@ -59,7 +59,7 @@ supabase = create_client(
 # Settings
 # ============================================================
 
-ENGINE_VERSION = "2.0.1"
+ENGINE_VERSION = "2.0.2"
 
 MIN_HISTORY = 2
 PREFERRED_HISTORY = 4
@@ -67,6 +67,8 @@ PREFERRED_HISTORY = 4
 MIN_CONFIDENCE_FOR_DIRECTION = 55.0
 MIN_COMPARABILITY_FOR_DIRECTION = 50.0
 MIN_COMMON_INPUTS_FOR_DIRECTION = 3
+MIN_BREADTH_FOR_EARLY_TURNING = 35.0
+MIN_BREADTH_FOR_STRONG_TURNING = 60.0
 
 TURNING_SCORE_METRIC = "turning_engine_score"
 TURNING_PREFIX = "turning_engine_"
@@ -98,9 +100,10 @@ STATE_CODE = {
     "DETERIORATING": 2,
     "NEUTRAL": 3,
     "IMPROVING": 4,
-    "EARLY_TURNING_POINT": 5,
-    "STRONG_TURNING_POINT": 6,
-    "STRONG_CONTINUATION": 7
+    "IMPROVING_LIMITED_HISTORY": 5,
+    "EARLY_TURNING_POINT": 6,
+    "STRONG_TURNING_POINT": 7,
+    "STRONG_CONTINUATION": 8
 }
 
 
@@ -1959,6 +1962,15 @@ def classify_turning_point(
         or 0
     )
 
+    breadth_score = (
+        safe_number(
+            comparability.get(
+                "breadth_score"
+            )
+        )
+        or 0.0
+    )
+
     reversal = (
         safe_number(
             signals.get("reversal")
@@ -2114,9 +2126,21 @@ def classify_turning_point(
         and deterioration < 15
     ):
 
+        if (
+            breadth_score
+            >= MIN_BREADTH_FOR_STRONG_TURNING
+        ):
+
+            return (
+                "STRONG_TURNING_POINT",
+                "تحول مالي قوي ومتعدد الإشارات"
+            )
+
         return (
-            "STRONG_TURNING_POINT",
-            "تحول مالي قوي ومتعدد الإشارات"
+            "IMPROVING_LIMITED_HISTORY",
+            "إشارات التحول قوية لكن Breadth التاريخي "
+            f"{fmt(breadth_score)}% أقل من حد Strong "
+            f"{MIN_BREADTH_FOR_STRONG_TURNING:.0f}%"
         )
 
     if (
@@ -2127,10 +2151,22 @@ def classify_turning_point(
         and deterioration < 18
     ):
 
+        if (
+            breadth_score
+            >= MIN_BREADTH_FOR_EARLY_TURNING
+        ):
+
+            return (
+                "EARLY_TURNING_POINT",
+                "بوادر تحول مالي حقيقية "
+                "من قاعدة أضعف"
+            )
+
         return (
-            "EARLY_TURNING_POINT",
-            "بوادر تحول مالي حقيقية "
-            "من قاعدة أضعف"
+            "IMPROVING_LIMITED_HISTORY",
+            "إشارات التحول إيجابية لكن Breadth التاريخي "
+            f"{fmt(breadth_score)}% أقل من حد Early "
+            f"{MIN_BREADTH_FOR_EARLY_TURNING:.0f}%"
         )
 
     if (
@@ -2143,6 +2179,17 @@ def classify_turning_point(
         )
         and deterioration < 18
     ):
+
+        if (
+            breadth_score
+            < MIN_BREADTH_FOR_EARLY_TURNING
+        ):
+
+            return (
+                "IMPROVING_LIMITED_HISTORY",
+                "تحسن ظاهر لكن Breadth التاريخي محدود "
+                f"({fmt(breadth_score)}%)"
+            )
 
         return (
             "IMPROVING",
@@ -2871,7 +2918,8 @@ def print_summary(results):
         in [
             "NEUTRAL",
             "WEAK",
-            "LOW_CONFIDENCE"
+            "LOW_CONFIDENCE",
+            "IMPROVING_LIMITED_HISTORY"
         ]
     ]
 
@@ -2921,6 +2969,13 @@ def print_summary(results):
         for result in successful
         if result["latest"]["state"]
         == "IMPROVING"
+    )
+
+    improving_limited = sum(
+        1
+        for result in successful
+        if result["latest"]["state"]
+        == "IMPROVING_LIMITED_HISTORY"
     )
 
     continuation = len(
@@ -2984,6 +3039,12 @@ def print_summary(results):
     )
 
     print(
+        f"🟠 Improving Limited History: "
+        f"{improving_limited}",
+        flush=True
+    )
+
+    print(
         f"💪 Strong Continuations: "
         f"{continuation}",
         flush=True
@@ -3024,7 +3085,14 @@ def print_summary(results):
             )
 
     print(
-        "\n✅ v2.0.1 Comparability Fix: "
+        "\n✅ v2.0.2 Breadth Gate: "
+        "التصنيفات القوية تحتاج اتساعًا تاريخيًا كافيًا، "
+        "بدون تحويل التاريخ المحدود إلى LOW_CONFIDENCE.",
+        flush=True
+    )
+
+    print(
+        "✅ Comparability Fix retained: "
         "المؤشرات الجديدة لا تخفض المقارنة لمجرد أنها لم تكن "
         "قابلة للحساب في الفترة السابقة.",
         flush=True
@@ -3089,7 +3157,11 @@ def run_turning_point_engine():
         f"Comparability >= "
         f"{MIN_COMPARABILITY_FOR_DIRECTION:.0f} | "
         f"Common Inputs >= "
-        f"{MIN_COMMON_INPUTS_FOR_DIRECTION}",
+        f"{MIN_COMMON_INPUTS_FOR_DIRECTION} | "
+        f"Early Breadth >= "
+        f"{MIN_BREADTH_FOR_EARLY_TURNING:.0f} | "
+        f"Strong Breadth >= "
+        f"{MIN_BREADTH_FOR_STRONG_TURNING:.0f}",
         flush=True
     )
 
