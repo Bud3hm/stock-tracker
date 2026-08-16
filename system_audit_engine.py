@@ -6,7 +6,7 @@ from supabase import create_client
 
 
 # ============================================================
-# SYSTEM AUDIT ENGINE v1.1
+# SYSTEM AUDIT ENGINE v1.2
 #
 # الهدف:
 # تدقيق النظام المالي كاملًا:
@@ -16,29 +16,49 @@ from supabase import create_client
 # 3) financial_metrics
 # 4) specialized models
 # 5) scoring
-# 6) turning point
-# 7) data quality
-# 8) final decision
+# 6) signal engine
+# 7) turning point engine v2.0.2
+# 8) data quality
+# 9) final decision
 #
-# المحرك READ ONLY
-# لا يكتب أو يعدل أي بيانات
+# READ ONLY
+# لا يكتب أو يعدل أي بيانات.
 #
-# v1.1:
-# - التمييز بين SYSTEM FAILURE و LIMITED DATA
-# - عدم اعتبار نقص بيانات REIT المعروف فشلًا في النظام
+# v1.2:
+#
+# - دعم Turning Engine v2.0.2 رسميًا.
+# - turning_engine_state_code هو مصدر الحقيقة لحالة Turning.
+# - عدم اعتبار اختلاف Base Turning عن Turning Engine خطأ.
+# - التحقق من التناقض الحقيقي بين Turning State والدرجات.
+# - تدقيق Signal Layer حسب Analysis Model.
+# - إزالة MOMENTUM_BOUNDARY القديم المضلل.
+# - الاحتفاظ بمنطق LIMITED DATA للـ REIT.
 # ============================================================
 
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY")
+# ============================================================
+# Supabase
+# ============================================================
+
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL"
+)
+
+SUPABASE_SECRET_KEY = os.environ.get(
+    "SUPABASE_SECRET_KEY"
+)
 
 
 if not SUPABASE_URL:
-    raise RuntimeError("SUPABASE_URL is missing")
+    raise RuntimeError(
+        "SUPABASE_URL is missing"
+    )
 
 
 if not SUPABASE_SECRET_KEY:
-    raise RuntimeError("SUPABASE_SECRET_KEY is missing")
+    raise RuntimeError(
+        "SUPABASE_SECRET_KEY is missing"
+    )
 
 
 supabase = create_client(
@@ -48,21 +68,96 @@ supabase = create_client(
 
 
 # ============================================================
-# إعدادات
+# Settings
 # ============================================================
+
+ENGINE_VERSION = "1.2"
 
 
 MODEL_PREFIX = {
-    "standard": "q_",
-    "bank": "bank_q_",
-    "insurance": "insurance_q_",
-    "reit": "reit_q_"
+
+    "standard":
+        "q_",
+
+    "bank":
+        "bank_q_",
+
+    "insurance":
+        "insurance_q_",
+
+    "reit":
+        "reit_q_"
 }
 
+
+# ============================================================
+# Signal Engine حسب النموذج
+# ============================================================
+
+MODEL_SIGNAL_PREFIX = {
+
+    "standard":
+        "engine22_",
+
+    "bank":
+        "bank_signal_",
+
+    "insurance":
+        "insurance_signal_",
+
+    "reit":
+        "engine22_"
+}
+
+
+# ============================================================
+# Turning State Codes
+#
+# نفس الحالات المستخدمة في Turning Engine v2.0.2.
+#
+# ملاحظة:
+# IMPROVING_LIMITED_HISTORY أضيفت بعد v2.0.
+# ============================================================
+
+TURNING_STATE_CODES = {
+
+    0:
+        "LOW_CONFIDENCE",
+
+    1:
+        "WEAK",
+
+    2:
+        "DETERIORATING",
+
+    3:
+        "NEUTRAL",
+
+    4:
+        "IMPROVING",
+
+    5:
+        "EARLY_TURNING_POINT",
+
+    6:
+        "STRONG_TURNING_POINT",
+
+    7:
+        "STRONG_CONTINUATION",
+
+    8:
+        "IMPROVING_LIMITED_HISTORY"
+}
+
+
+# ============================================================
+# Core Engine Metrics
+# ============================================================
 
 CORE_ENGINE_METRICS = {
 
     "scoring": [
+
         "score_opportunity_score",
         "score_risk_score",
         "score_turning_point_score",
@@ -70,10 +165,15 @@ CORE_ENGINE_METRICS = {
     ],
 
     "turning": [
-        "turning_engine_score"
+
+        "turning_engine_score",
+        "turning_engine_state_code",
+        "turning_engine_confidence_score",
+        "turning_engine_comparability_score"
     ],
 
     "data_quality": [
+
         "data_quality_score",
         "data_freshness_score",
         "data_coverage_score",
@@ -82,6 +182,7 @@ CORE_ENGINE_METRICS = {
     ],
 
     "decision": [
+
         "decision_score",
         "decision_confidence",
         "decision_reliability_score",
@@ -90,9 +191,14 @@ CORE_ENGINE_METRICS = {
 }
 
 
+# ============================================================
+# Required Financial Metrics
+# ============================================================
+
 MODEL_REQUIRED_METRICS = {
 
     "standard": [
+
         "q_revenue_growth_yoy",
         "q_net_income_growth_yoy",
         "q_gross_margin",
@@ -104,6 +210,7 @@ MODEL_REQUIRED_METRICS = {
     ],
 
     "bank": [
+
         "bank_q_revenue_growth_yoy",
         "bank_q_net_income_growth_yoy",
         "bank_q_assets_growth_yoy",
@@ -112,12 +219,14 @@ MODEL_REQUIRED_METRICS = {
     ],
 
     "insurance": [
+
         "insurance_q_revenue_growth_yoy",
         "insurance_q_net_income_growth_yoy",
         "insurance_q_equity_growth_yoy"
     ],
 
     "reit": [
+
         "reit_q_revenue_growth_yoy",
         "reit_q_operating_income_growth_yoy",
         "reit_q_net_income_growth_yoy",
@@ -126,32 +235,68 @@ MODEL_REQUIRED_METRICS = {
 }
 
 
+# ============================================================
+# Range Rules
+# ============================================================
+
 RANGE_RULES = {
 
-    "score_opportunity_score": (0, 100),
-    "score_risk_score": (0, 100),
-    "score_turning_point_score": (0, 100),
-    "score_confidence_score": (0, 100),
+    "score_opportunity_score":
+        (0, 100),
 
-    "turning_engine_score": (0, 100),
+    "score_risk_score":
+        (0, 100),
 
-    "data_quality_score": (0, 100),
-    "data_freshness_score": (0, 100),
-    "data_coverage_score": (0, 100),
-    "data_history_score": (0, 100),
-    "data_continuity_score": (0, 100),
+    "score_turning_point_score":
+        (0, 100),
 
-    "decision_score": (0, 100),
-    "decision_confidence": (0, 100),
-    "decision_reliability_score": (0, 100),
-    "decision_momentum_score": (0, 100)
+    "score_confidence_score":
+        (0, 100),
+
+    "turning_engine_score":
+        (0, 100),
+
+    "turning_engine_confidence_score":
+        (0, 100),
+
+    "turning_engine_comparability_score":
+        (0, 100),
+
+    "turning_engine_breadth_score":
+        (0, 100),
+
+    "data_quality_score":
+        (0, 100),
+
+    "data_freshness_score":
+        (0, 100),
+
+    "data_coverage_score":
+        (0, 100),
+
+    "data_history_score":
+        (0, 100),
+
+    "data_continuity_score":
+        (0, 100),
+
+    "decision_score":
+        (0, 100),
+
+    "decision_confidence":
+        (0, 100),
+
+    "decision_reliability_score":
+        (0, 100),
+
+    "decision_momentum_score":
+        (0, 100)
 }
 
 
 # ============================================================
-# أدوات عامة
+# Helpers
 # ============================================================
-
 
 def safe_number(value):
 
@@ -159,26 +304,41 @@ def safe_number(value):
         return None
 
     try:
-        return float(value)
 
-    except (TypeError, ValueError):
+        return float(
+            value
+        )
+
+    except (
+        TypeError,
+        ValueError
+    ):
+
         return None
 
 
-def fmt(value, decimals=2):
+def fmt(
+    value,
+    decimals=2
+):
 
-    value = safe_number(value)
+    value = safe_number(
+        value
+    )
 
     if value is None:
         return "N/A"
 
-    return f"{value:.{decimals}f}"
+    return (
+        f"{value:.{decimals}f}"
+    )
 
 
 def print_header(title):
 
     print(
-        "\n" + "=" * 88,
+        "\n"
+        + "=" * 96,
         flush=True
     )
 
@@ -188,7 +348,7 @@ def print_header(title):
     )
 
     print(
-        "=" * 88,
+        "=" * 96,
         flush=True
     )
 
@@ -196,7 +356,7 @@ def print_header(title):
 def print_separator():
 
     print(
-        "-" * 88,
+        "-" * 96,
         flush=True
     )
 
@@ -208,22 +368,29 @@ def audit_message(
 ):
 
     return {
-        "severity": severity,
-        "code": code,
-        "message": message
+
+        "severity":
+            severity,
+
+        "code":
+            code,
+
+        "message":
+            message
     }
 
 
 # ============================================================
-# Supabase
+# Supabase Reads
 # ============================================================
-
 
 def get_active_stocks():
 
     response = (
         supabase
-        .table("stocks")
+        .table(
+            "stocks"
+        )
         .select(
             "id,"
             "symbol,"
@@ -238,18 +405,27 @@ def get_active_stocks():
             "is_active",
             True
         )
-        .order("id")
+        .order(
+            "id"
+        )
         .execute()
     )
 
-    return response.data or []
+    return (
+        response.data
+        or []
+    )
 
 
-def get_financial_statements(stock_id):
+def get_financial_statements(
+    stock_id
+):
 
     response = (
         supabase
-        .table("financial_statements")
+        .table(
+            "financial_statements"
+        )
         .select(
             "metric,"
             "period_end,"
@@ -264,14 +440,21 @@ def get_financial_statements(stock_id):
         .execute()
     )
 
-    return response.data or []
+    return (
+        response.data
+        or []
+    )
 
 
-def get_financial_metrics(stock_id):
+def get_financial_metrics(
+    stock_id
+):
 
     response = (
         supabase
-        .table("financial_metrics")
+        .table(
+            "financial_metrics"
+        )
         .select(
             "period_end,"
             "metric_name,"
@@ -285,13 +468,15 @@ def get_financial_metrics(stock_id):
         .execute()
     )
 
-    return response.data or []
+    return (
+        response.data
+        or []
+    )
 
 
 # ============================================================
-# تنظيم financial_metrics
+# Organize Metrics
 # ============================================================
-
 
 def organize_metrics(rows):
 
@@ -299,11 +484,18 @@ def organize_metrics(rows):
 
     for row in rows:
 
-        period_end = row.get("period_end")
-        metric_name = row.get("metric_name")
+        period_end = row.get(
+            "period_end"
+        )
+
+        metric_name = row.get(
+            "metric_name"
+        )
 
         metric_value = safe_number(
-            row.get("metric_value")
+            row.get(
+                "metric_value"
+            )
         )
 
         if (
@@ -312,7 +504,9 @@ def organize_metrics(rows):
         ):
             continue
 
-        period_end = str(period_end)
+        period_end = str(
+            period_end
+        )
 
         periods.setdefault(
             period_end,
@@ -329,9 +523,8 @@ def organize_metrics(rows):
 
 
 # ============================================================
-# الفترات المالية الخاصة بالنموذج
+# Model Periods
 # ============================================================
-
 
 def get_model_periods(
     periods,
@@ -356,8 +549,11 @@ def get_model_periods(
         ]
 
         if any(
-            metric_name.startswith(prefix)
-            for metric_name in period_metrics
+            metric_name.startswith(
+                prefix
+            )
+            for metric_name
+            in period_metrics
         ):
 
             valid.append(
@@ -368,15 +564,8 @@ def get_model_periods(
 
 
 # ============================================================
-# LIMITED DATA DETECTOR
-#
-# مهم جدًا:
-# نقص المصدر لا يعني أن Pipeline معطل.
-#
-# الراجحي ريت مثال:
-# 3 فترات ربعية فقط + ضعف مراجع QoQ/YoY.
+# Limited Data Detector
 # ============================================================
-
 
 def detect_limited_data(
     periods,
@@ -387,11 +576,17 @@ def detect_limited_data(
     if not model_periods:
 
         return {
-            "limited": False,
-            "reason": None
+
+            "limited":
+                False,
+
+            "reason":
+                None
         }
 
-    latest_period = model_periods[-1]
+    latest_period = (
+        model_periods[-1]
+    )
 
     latest = periods.get(
         latest_period,
@@ -404,15 +599,21 @@ def detect_limited_data(
 
     if analysis_model == "reit":
 
-        # أقل من 4 أرباع لا يسمح بتاريخ ربعي مكتمل
-        if len(model_periods) < 4:
+        if len(
+            model_periods
+        ) < 4:
 
             return {
-                "limited": True,
-                "reason": (
-                    f"REIT history limited: "
-                    f"{len(model_periods)} quarterly periods"
-                )
+
+                "limited":
+                    True,
+
+                "reason":
+                    (
+                        "REIT history limited: "
+                        f"{len(model_periods)} "
+                        "quarterly periods"
+                    )
             }
 
         yoy_reference = safe_number(
@@ -433,10 +634,12 @@ def detect_limited_data(
         ):
 
             return {
-                "limited": True,
-                "reason": (
+
+                "limited":
+                    True,
+
+                "reason":
                     "REIT YoY reference unavailable"
-                )
             }
 
         if (
@@ -445,22 +648,27 @@ def detect_limited_data(
         ):
 
             return {
-                "limited": True,
-                "reason": (
+
+                "limited":
+                    True,
+
+                "reason":
                     "REIT QoQ reference unavailable"
-                )
             }
 
     return {
-        "limited": False,
-        "reason": None
+
+        "limited":
+            False,
+
+        "reason":
+            None
     }
 
 
 # ============================================================
-# أحدث فترة تحتوي Metric معين
+# Latest Period For Metric
 # ============================================================
-
 
 def latest_period_for_metric(
     periods,
@@ -482,13 +690,14 @@ def latest_period_for_metric(
     if not matches:
         return None
 
-    return sorted(matches)[-1]
+    return sorted(
+        matches
+    )[-1]
 
 
 # ============================================================
-# Duplicate detectors
+# Duplicate Detectors
 # ============================================================
-
 
 def find_metric_duplicates(rows):
 
@@ -497,17 +706,30 @@ def find_metric_duplicates(rows):
     for row in rows:
 
         key = (
+
             str(
-                row.get("period_end")
+                row.get(
+                    "period_end"
+                )
             ),
-            row.get("metric_name")
+
+            row.get(
+                "metric_name"
+            )
         )
 
-        counter[key] += 1
+        counter[
+            key
+        ] += 1
 
     return {
-        key: count
-        for key, count in counter.items()
+
+        key:
+            count
+
+        for key, count
+        in counter.items()
+
         if count > 1
     }
 
@@ -519,26 +741,41 @@ def find_statement_duplicates(rows):
     for row in rows:
 
         key = (
-            row.get("metric"),
-            str(
-                row.get("period_end")
+
+            row.get(
+                "metric"
             ),
-            row.get("period_type")
+
+            str(
+                row.get(
+                    "period_end"
+                )
+            ),
+
+            row.get(
+                "period_type"
+            )
         )
 
-        counter[key] += 1
+        counter[
+            key
+        ] += 1
 
     return {
-        key: count
-        for key, count in counter.items()
+
+        key:
+            count
+
+        for key, count
+        in counter.items()
+
         if count > 1
     }
 
 
 # ============================================================
-# Financial statements audit
+# Financial Statements Audit
 # ============================================================
-
 
 def audit_financial_statements(rows):
 
@@ -556,7 +793,9 @@ def audit_financial_statements(rows):
 
         return findings
 
-    if len(rows) < 20:
+    if len(
+        rows
+    ) < 20:
 
         findings.append(
             audit_message(
@@ -570,7 +809,9 @@ def audit_financial_statements(rows):
         )
 
     duplicates = (
-        find_statement_duplicates(rows)
+        find_statement_duplicates(
+            rows
+        )
     )
 
     if duplicates:
@@ -590,7 +831,9 @@ def audit_financial_statements(rows):
     missing_source = sum(
         1
         for row in rows
-        if not row.get("source")
+        if not row.get(
+            "source"
+        )
     )
 
     if missing_source > 0:
@@ -607,9 +850,16 @@ def audit_financial_statements(rows):
         )
 
     period_types = {
-        row.get("period_type")
+
+        row.get(
+            "period_type"
+        )
+
         for row in rows
-        if row.get("period_type")
+
+        if row.get(
+            "period_type"
+        )
     }
 
     if not period_types:
@@ -626,9 +876,8 @@ def audit_financial_statements(rows):
 
 
 # ============================================================
-# Metrics structure audit
+# Metrics Structure Audit
 # ============================================================
-
 
 def audit_metrics_structure(
     rows,
@@ -651,7 +900,9 @@ def audit_metrics_structure(
         return findings
 
     duplicates = (
-        find_metric_duplicates(rows)
+        find_metric_duplicates(
+            rows
+        )
     )
 
     if duplicates:
@@ -690,7 +941,9 @@ def audit_metrics_structure(
 
         return findings
 
-    if len(model_periods) < 2:
+    if len(
+        model_periods
+    ) < 2:
 
         findings.append(
             audit_message(
@@ -704,9 +957,8 @@ def audit_metrics_structure(
 
 
 # ============================================================
-# Required model metrics
+# Required Model Metrics Audit
 # ============================================================
-
 
 def audit_model_metrics(
     periods,
@@ -717,9 +969,11 @@ def audit_model_metrics(
 
     findings = []
 
-    required = MODEL_REQUIRED_METRICS.get(
-        analysis_model,
-        []
+    required = (
+        MODEL_REQUIRED_METRICS.get(
+            analysis_model,
+            []
+        )
     )
 
     if not required:
@@ -743,43 +997,166 @@ def audit_model_metrics(
     )
 
     missing = [
+
         metric_name
-        for metric_name in required
-        if latest.get(metric_name) is None
+
+        for metric_name
+        in required
+
+        if latest.get(
+            metric_name
+        ) is None
     ]
 
-    if missing:
+    if not missing:
+        return findings
 
-        # ----------------------------------------------------
-        # إذا المصدر نفسه محدود
-        # لا نحول النقص المعروف إلى SYSTEM FAILURE
-        # ----------------------------------------------------
+    if limited_data:
 
-        if limited_data:
+        severity = "WARN"
 
-            severity = "WARN"
-            code = "MODEL_REQUIRED_LIMITED_DATA"
+        code = (
+            "MODEL_REQUIRED_LIMITED_DATA"
+        )
 
-        else:
+    else:
 
-            severity = (
-                "FAIL"
-                if len(missing)
-                >= len(required) / 2
-                else "WARN"
+        severity = (
+            "FAIL"
+            if len(
+                missing
+            ) >= len(
+                required
+            ) / 2
+            else "WARN"
+        )
+
+        code = (
+            "MODEL_REQUIRED_MISSING"
+        )
+
+    findings.append(
+        audit_message(
+            severity,
+            code,
+            (
+                f"مفقود "
+                f"{len(missing)}/"
+                f"{len(required)} "
+                "من المؤشرات الأساسية: "
+                + ", ".join(
+                    missing
+                )
             )
+        )
+    )
 
-            code = "MODEL_REQUIRED_MISSING"
+    return findings
+
+
+# ============================================================
+# Specialized Signal Layer Audit
+# ============================================================
+
+def audit_signal_layer(
+    periods,
+    latest_period,
+    analysis_model,
+    limited_data=False
+):
+
+    findings = []
+
+    latest = periods.get(
+        latest_period,
+        {}
+    )
+
+    prefix = (
+        MODEL_SIGNAL_PREFIX.get(
+            analysis_model
+        )
+    )
+
+    if not prefix:
 
         findings.append(
             audit_message(
-                severity,
-                code,
+                "FAIL",
+                "SIGNAL_MODEL_UNKNOWN",
                 (
-                    f"مفقود {len(missing)}/"
-                    f"{len(required)} "
-                    "من المؤشرات الأساسية: "
-                    + ", ".join(missing)
+                    "لا يوجد Signal Prefix "
+                    f"للنموذج {analysis_model}"
+                )
+            )
+        )
+
+        return findings
+
+    net_metric = (
+        f"{prefix}net_score"
+    )
+
+    confidence_metric = (
+        f"{prefix}confidence_score"
+    )
+
+    net_score = safe_number(
+        latest.get(
+            net_metric
+        )
+    )
+
+    signal_confidence = safe_number(
+        latest.get(
+            confidence_metric
+        )
+    )
+
+    if net_score is None:
+
+        if limited_data:
+
+            findings.append(
+                audit_message(
+                    "WARN",
+                    "SIGNAL_LIMITED_DATA",
+                    (
+                        f"{net_metric} غير متوفر "
+                        "بسبب محدودية البيانات"
+                    )
+                )
+            )
+
+        else:
+
+            findings.append(
+                audit_message(
+                    "FAIL",
+                    "SIGNAL_OUTPUT_MISSING",
+                    (
+                        f"{net_metric} غير متوفر "
+                        "لأحدث فترة مالية"
+                    )
+                )
+            )
+
+    if (
+        signal_confidence is not None
+        and (
+            signal_confidence < 0
+            or signal_confidence > 100
+        )
+    ):
+
+        findings.append(
+            audit_message(
+                "FAIL",
+                "SIGNAL_CONFIDENCE_RANGE",
+                (
+                    f"{confidence_metric}="
+                    f"{fmt(signal_confidence)} "
+                    "خارج النطاق 0-100"
                 )
             )
         )
@@ -788,9 +1165,8 @@ def audit_model_metrics(
 
 
 # ============================================================
-# Engine outputs audit
+# Engine Outputs Audit
 # ============================================================
-
 
 def audit_engine_outputs(
     periods,
@@ -810,18 +1186,19 @@ def audit_engine_outputs(
     ):
 
         missing = [
+
             metric_name
-            for metric_name in metrics
-            if latest.get(metric_name) is None
+
+            for metric_name
+            in metrics
+
+            if latest.get(
+                metric_name
+            ) is None
         ]
 
         if not missing:
             continue
-
-        # ----------------------------------------------------
-        # في LIMITED DATA:
-        # عدم إصدار downstream score قد يكون سلوك حماية صحيح.
-        # ----------------------------------------------------
 
         if limited_data:
 
@@ -831,9 +1208,13 @@ def audit_engine_outputs(
                     "ENGINE_OUTPUT_LIMITED_DATA",
                     (
                         f"{engine_name}: "
-                        f"مفقود {len(missing)}/"
-                        f"{len(metrics)} بسبب محدودية البيانات: "
-                        + ", ".join(missing)
+                        f"مفقود "
+                        f"{len(missing)}/"
+                        f"{len(metrics)} "
+                        "بسبب محدودية البيانات: "
+                        + ", ".join(
+                            missing
+                        )
                     )
                 )
             )
@@ -846,9 +1227,12 @@ def audit_engine_outputs(
                     "ENGINE_OUTPUT_MISSING",
                     (
                         f"{engine_name}: "
-                        f"مفقود {len(missing)}/"
+                        f"مفقود "
+                        f"{len(missing)}/"
                         f"{len(metrics)}: "
-                        + ", ".join(missing)
+                        + ", ".join(
+                            missing
+                        )
                     )
                 )
             )
@@ -857,9 +1241,8 @@ def audit_engine_outputs(
 
 
 # ============================================================
-# Range audit
+# Range Audit
 # ============================================================
-
 
 def audit_ranges(
     periods,
@@ -878,7 +1261,9 @@ def audit_ranges(
     ):
 
         value = safe_number(
-            latest.get(metric_name)
+            latest.get(
+                metric_name
+            )
         )
 
         if value is None:
@@ -898,7 +1283,7 @@ def audit_ranges(
                     (
                         f"{metric_name}="
                         f"{fmt(value)} "
-                        f"خارج النطاق "
+                        "خارج النطاق "
                         f"{minimum}-{maximum}"
                     )
                 )
@@ -908,23 +1293,41 @@ def audit_ranges(
 
 
 # ============================================================
-# Period alignment audit
+# Period Alignment Audit
 # ============================================================
-
 
 def audit_period_alignment(
     periods,
-    latest_model_period
+    latest_model_period,
+    analysis_model
 ):
 
     findings = []
 
+    signal_prefix = (
+        MODEL_SIGNAL_PREFIX.get(
+            analysis_model
+        )
+    )
+
     important_metrics = [
+
         "score_opportunity_score",
+
         "turning_engine_score",
+
+        "turning_engine_state_code",
+
         "data_quality_score",
+
         "decision_score"
     ]
+
+    if signal_prefix:
+
+        important_metrics.append(
+            f"{signal_prefix}net_score"
+        )
 
     for metric_name in important_metrics:
 
@@ -938,7 +1341,10 @@ def audit_period_alignment(
         if metric_period is None:
             continue
 
-        if metric_period != latest_model_period:
+        if (
+            metric_period
+            != latest_model_period
+        ):
 
             findings.append(
                 audit_message(
@@ -946,8 +1352,9 @@ def audit_period_alignment(
                     "PERIOD_MISALIGNMENT",
                     (
                         f"{metric_name} "
-                        f"آخر فترة له {metric_period} "
-                        f"بينما أحدث فترة مالية "
+                        f"آخر فترة له "
+                        f"{metric_period} "
+                        "بينما أحدث فترة مالية "
                         f"{latest_model_period}"
                     )
                 )
@@ -957,9 +1364,16 @@ def audit_period_alignment(
 
 
 # ============================================================
-# Score internal consistency
+# Scoring Internal Logic
+#
+# مهم:
+# لم نعد نقارن Base Turning مع Turning Engine مباشرة.
+#
+# Base Turning = تقييم أولي.
+# Turning Engine = تقييم تاريخي مستقل.
+#
+# اختلافهما ليس خطأ.
 # ============================================================
-
 
 def audit_score_logic(
     periods,
@@ -985,39 +1399,6 @@ def audit_score_logic(
         )
     )
 
-    turning = safe_number(
-        latest.get(
-            "score_turning_point_score"
-        )
-    )
-
-    turning_engine = safe_number(
-        latest.get(
-            "turning_engine_score"
-        )
-    )
-
-    if (
-        turning is not None
-        and turning_engine is not None
-        and abs(
-            turning
-            - turning_engine
-        ) >= 45
-    ):
-
-        findings.append(
-            audit_message(
-                "WARN",
-                "TURNING_SCORE_DIVERGENCE",
-                (
-                    f"BaseTurning={fmt(turning)} "
-                    f"vs EngineTurning="
-                    f"{fmt(turning_engine)}"
-                )
-            )
-        )
-
     if (
         opportunity is not None
         and risk is not None
@@ -1030,8 +1411,11 @@ def audit_score_logic(
                 "WARN",
                 "OPPORTUNITY_RISK_CONTRADICTION",
                 (
-                    f"Opportunity={fmt(opportunity)} "
-                    f"و Risk={fmt(risk)} مرتفعان معًا"
+                    f"Opportunity="
+                    f"{fmt(opportunity)} "
+                    "و Risk="
+                    f"{fmt(risk)} "
+                    "مرتفعان معًا"
                 )
             )
         )
@@ -1040,9 +1424,359 @@ def audit_score_logic(
 
 
 # ============================================================
-# Data Quality consistency
+# Turning Engine v2.0.2 Audit
 # ============================================================
 
+def audit_turning_logic(
+    periods,
+    latest_period,
+    limited_data=False
+):
+
+    findings = []
+
+    latest = periods.get(
+        latest_period,
+        {}
+    )
+
+    score = safe_number(
+        latest.get(
+            "turning_engine_score"
+        )
+    )
+
+    state_code = safe_number(
+        latest.get(
+            "turning_engine_state_code"
+        )
+    )
+
+    confidence = safe_number(
+        latest.get(
+            "turning_engine_confidence_score"
+        )
+    )
+
+    comparability = safe_number(
+        latest.get(
+            "turning_engine_comparability_score"
+        )
+    )
+
+    breadth = safe_number(
+        latest.get(
+            "turning_engine_breadth_score"
+        )
+    )
+
+    deterioration = safe_number(
+        latest.get(
+            "turning_engine_deterioration_score"
+        )
+    )
+
+    common_inputs = safe_number(
+        latest.get(
+            "turning_engine_common_inputs"
+        )
+    )
+
+    # --------------------------------------------------------
+    # LIMITED DATA
+    # --------------------------------------------------------
+
+    if limited_data:
+
+        if (
+            state_code is None
+            or score is None
+        ):
+
+            return findings
+
+    # --------------------------------------------------------
+    # State Code
+    # --------------------------------------------------------
+
+    if state_code is None:
+
+        findings.append(
+            audit_message(
+                "FAIL",
+                "TURNING_STATE_MISSING",
+                "turning_engine_state_code غير موجود"
+            )
+        )
+
+        return findings
+
+    rounded_state = int(
+        round(
+            state_code
+        )
+    )
+
+    if abs(
+        state_code
+        - rounded_state
+    ) > 0.001:
+
+        findings.append(
+            audit_message(
+                "FAIL",
+                "TURNING_STATE_INVALID",
+                (
+                    "turning_engine_state_code "
+                    "ليس Integer صالحًا: "
+                    f"{fmt(state_code)}"
+                )
+            )
+        )
+
+        return findings
+
+    state = TURNING_STATE_CODES.get(
+        rounded_state
+    )
+
+    if state is None:
+
+        findings.append(
+            audit_message(
+                "FAIL",
+                "TURNING_STATE_UNKNOWN",
+                (
+                    "Turning State Code غير معروف: "
+                    f"{rounded_state}"
+                )
+            )
+        )
+
+        return findings
+
+    # --------------------------------------------------------
+    # Gate consistency
+    # --------------------------------------------------------
+
+    if state == "LOW_CONFIDENCE":
+
+        gate_reason_exists = False
+
+        if (
+            confidence is not None
+            and confidence < 55
+        ):
+            gate_reason_exists = True
+
+        if (
+            comparability is not None
+            and comparability < 50
+        ):
+            gate_reason_exists = True
+
+        if (
+            common_inputs is not None
+            and common_inputs < 3
+        ):
+            gate_reason_exists = True
+
+        if not gate_reason_exists:
+
+            findings.append(
+                audit_message(
+                    "WARN",
+                    "TURNING_LOW_CONFIDENCE_CONFLICT",
+                    (
+                        "State=LOW_CONFIDENCE "
+                        "لكن بوابات الجودة الظاهرة "
+                        "لا تفسر الحالة"
+                    )
+                )
+            )
+
+    # --------------------------------------------------------
+    # Strong Turning
+    # --------------------------------------------------------
+
+    if state == "STRONG_TURNING_POINT":
+
+        if (
+            score is not None
+            and score < 80
+        ):
+
+            findings.append(
+                audit_message(
+                    "FAIL",
+                    "TURNING_STRONG_SCORE_CONFLICT",
+                    (
+                        "State=STRONG_TURNING_POINT "
+                        "لكن Turning Score="
+                        f"{fmt(score)}"
+                    )
+                )
+            )
+
+        if (
+            breadth is not None
+            and breadth < 60
+        ):
+
+            findings.append(
+                audit_message(
+                    "FAIL",
+                    "TURNING_STRONG_BREADTH_CONFLICT",
+                    (
+                        "Strong Turning مع Breadth="
+                        f"{fmt(breadth)}% "
+                        "أقل من 60%"
+                    )
+                )
+            )
+
+    # --------------------------------------------------------
+    # Early Turning
+    # --------------------------------------------------------
+
+    if state == "EARLY_TURNING_POINT":
+
+        if (
+            score is not None
+            and score < 65
+        ):
+
+            findings.append(
+                audit_message(
+                    "FAIL",
+                    "TURNING_EARLY_SCORE_CONFLICT",
+                    (
+                        "State=EARLY_TURNING_POINT "
+                        "لكن Turning Score="
+                        f"{fmt(score)}"
+                    )
+                )
+            )
+
+        if (
+            breadth is not None
+            and breadth < 35
+        ):
+
+            findings.append(
+                audit_message(
+                    "FAIL",
+                    "TURNING_EARLY_BREADTH_CONFLICT",
+                    (
+                        "Early Turning مع Breadth="
+                        f"{fmt(breadth)}% "
+                        "أقل من 35%"
+                    )
+                )
+            )
+
+    # --------------------------------------------------------
+    # Improving Limited History
+    # --------------------------------------------------------
+
+    if (
+        state
+        == "IMPROVING_LIMITED_HISTORY"
+    ):
+
+        if (
+            breadth is not None
+            and breadth >= 35
+        ):
+
+            findings.append(
+                audit_message(
+                    "WARN",
+                    "TURNING_LIMITED_HISTORY_CONFLICT",
+                    (
+                        "State="
+                        "IMPROVING_LIMITED_HISTORY "
+                        "لكن Breadth="
+                        f"{fmt(breadth)}%"
+                    )
+                )
+            )
+
+    # --------------------------------------------------------
+    # Strong Continuation
+    # --------------------------------------------------------
+
+    if state == "STRONG_CONTINUATION":
+
+        if (
+            score is not None
+            and score < 75
+        ):
+
+            findings.append(
+                audit_message(
+                    "FAIL",
+                    "TURNING_CONTINUATION_SCORE_CONFLICT",
+                    (
+                        "State=STRONG_CONTINUATION "
+                        "لكن Turning Score="
+                        f"{fmt(score)}"
+                    )
+                )
+            )
+
+    # --------------------------------------------------------
+    # Deteriorating
+    # --------------------------------------------------------
+
+    if state == "DETERIORATING":
+
+        if (
+            deterioration is not None
+            and deterioration < 15
+        ):
+
+            findings.append(
+                audit_message(
+                    "WARN",
+                    "TURNING_DETERIORATION_CONFLICT",
+                    (
+                        "State=DETERIORATING "
+                        "لكن Deterioration Score="
+                        f"{fmt(deterioration)}"
+                    )
+                )
+            )
+
+    # --------------------------------------------------------
+    # Weak
+    # --------------------------------------------------------
+
+    if state == "WEAK":
+
+        if (
+            score is not None
+            and score >= 55
+        ):
+
+            findings.append(
+                audit_message(
+                    "WARN",
+                    "TURNING_WEAK_SCORE_CONFLICT",
+                    (
+                        "State=WEAK "
+                        "لكن Turning Score="
+                        f"{fmt(score)}"
+                    )
+                )
+            )
+
+    return findings
+
+
+# ============================================================
+# Data Quality Logic
+# ============================================================
 
 def audit_data_quality_logic(
     periods,
@@ -1092,8 +1826,10 @@ def audit_data_quality_logic(
                 "FAIL",
                 "QUALITY_FRESHNESS_CONFLICT",
                 (
-                    f"DataQuality={fmt(quality)} "
-                    f"مع Freshness={fmt(freshness)}"
+                    f"DataQuality="
+                    f"{fmt(quality)} "
+                    "مع Freshness="
+                    f"{fmt(freshness)}"
                 )
             )
         )
@@ -1110,8 +1846,10 @@ def audit_data_quality_logic(
                 "FAIL",
                 "QUALITY_COVERAGE_CONFLICT",
                 (
-                    f"DataQuality={fmt(quality)} "
-                    f"مع Coverage={fmt(coverage)}"
+                    f"DataQuality="
+                    f"{fmt(quality)} "
+                    "مع Coverage="
+                    f"{fmt(coverage)}"
                 )
             )
         )
@@ -1128,8 +1866,10 @@ def audit_data_quality_logic(
                 "FAIL",
                 "FRESHNESS_LAG_CONFLICT",
                 (
-                    f"Freshness={fmt(freshness)} "
-                    f"مع MarketLag={fmt(market_lag)}"
+                    f"Freshness="
+                    f"{fmt(freshness)} "
+                    "مع MarketLag="
+                    f"{fmt(market_lag)}"
                 )
             )
         )
@@ -1138,9 +1878,8 @@ def audit_data_quality_logic(
 
 
 # ============================================================
-# Decision logic audit
+# Decision Logic Audit
 # ============================================================
-
 
 def audit_decision_logic(
     periods,
@@ -1155,31 +1894,51 @@ def audit_decision_logic(
     )
 
     decision = safe_number(
-        latest.get("decision_score")
+        latest.get(
+            "decision_score"
+        )
     )
 
     risk = safe_number(
-        latest.get("score_risk_score")
+        latest.get(
+            "score_risk_score"
+        )
     )
 
     opportunity = safe_number(
-        latest.get("score_opportunity_score")
+        latest.get(
+            "score_opportunity_score"
+        )
     )
 
     turning = safe_number(
-        latest.get("turning_engine_score")
+        latest.get(
+            "turning_engine_score"
+        )
+    )
+
+    turning_state_code = safe_number(
+        latest.get(
+            "turning_engine_state_code"
+        )
     )
 
     data_quality = safe_number(
-        latest.get("data_quality_score")
+        latest.get(
+            "data_quality_score"
+        )
     )
 
     freshness = safe_number(
-        latest.get("data_freshness_score")
+        latest.get(
+            "data_freshness_score"
+        )
     )
 
     coverage = safe_number(
-        latest.get("data_coverage_score")
+        latest.get(
+            "data_coverage_score"
+        )
     )
 
     reliability = safe_number(
@@ -1188,17 +1947,27 @@ def audit_decision_logic(
         )
     )
 
-    momentum = safe_number(
-        latest.get(
-            "decision_momentum_score"
-        )
-    )
-
     market_lag = safe_number(
         latest.get(
             "data_market_lag_days"
         )
     )
+
+    state = None
+
+    if turning_state_code is not None:
+
+        state = TURNING_STATE_CODES.get(
+            int(
+                round(
+                    turning_state_code
+                )
+            )
+        )
+
+    # --------------------------------------------------------
+    # High Decision vs Data Quality
+    # --------------------------------------------------------
 
     if (
         decision is not None
@@ -1212,11 +1981,17 @@ def audit_decision_logic(
                 "FAIL",
                 "DECISION_DATA_CONFLICT",
                 (
-                    f"Decision={fmt(decision)} مرتفع "
-                    f"مع DataQuality={fmt(data_quality)}"
+                    f"Decision="
+                    f"{fmt(decision)} مرتفع "
+                    "مع DataQuality="
+                    f"{fmt(data_quality)}"
                 )
             )
         )
+
+    # --------------------------------------------------------
+    # Stale Data
+    # --------------------------------------------------------
 
     if (
         decision is not None
@@ -1230,11 +2005,17 @@ def audit_decision_logic(
                 "FAIL",
                 "DECISION_STALE_DATA",
                 (
-                    f"Decision={fmt(decision)} مرتفع "
-                    f"مع Freshness={fmt(freshness)}"
+                    f"Decision="
+                    f"{fmt(decision)} مرتفع "
+                    "مع Freshness="
+                    f"{fmt(freshness)}"
                 )
             )
         )
+
+    # --------------------------------------------------------
+    # Market Lag
+    # --------------------------------------------------------
 
     if (
         decision is not None
@@ -1248,12 +2029,17 @@ def audit_decision_logic(
                 "FAIL",
                 "DECISION_MARKET_LAG_CONFLICT",
                 (
-                    f"Decision={fmt(decision)} "
-                    f"مع MarketLag="
+                    f"Decision="
+                    f"{fmt(decision)} "
+                    "مع MarketLag="
                     f"{fmt(market_lag)} يوم"
                 )
             )
         )
+
+    # --------------------------------------------------------
+    # High Decision / High Risk
+    # --------------------------------------------------------
 
     if (
         decision is not None
@@ -1267,11 +2053,17 @@ def audit_decision_logic(
                 "WARN",
                 "DECISION_RISK_CONFLICT",
                 (
-                    f"Decision={fmt(decision)} "
-                    f"مع Risk={fmt(risk)}"
+                    f"Decision="
+                    f"{fmt(decision)} "
+                    "مع Risk="
+                    f"{fmt(risk)}"
                 )
             )
         )
+
+    # --------------------------------------------------------
+    # High Decision / Weak Opportunity
+    # --------------------------------------------------------
 
     if (
         decision is not None
@@ -1285,12 +2077,17 @@ def audit_decision_logic(
                 "WARN",
                 "DECISION_OPPORTUNITY_CONFLICT",
                 (
-                    f"Decision={fmt(decision)} "
-                    f"مع Opportunity="
+                    f"Decision="
+                    f"{fmt(decision)} "
+                    "مع Opportunity="
                     f"{fmt(opportunity)}"
                 )
             )
         )
+
+    # --------------------------------------------------------
+    # Reliability
+    # --------------------------------------------------------
 
     if (
         decision is not None
@@ -1304,12 +2101,17 @@ def audit_decision_logic(
                 "FAIL",
                 "DECISION_RELIABILITY_CONFLICT",
                 (
-                    f"Decision={fmt(decision)} "
-                    f"مع Reliability="
+                    f"Decision="
+                    f"{fmt(decision)} "
+                    "مع Reliability="
                     f"{fmt(reliability)}"
                 )
             )
         )
+
+    # --------------------------------------------------------
+    # Coverage
+    # --------------------------------------------------------
 
     if (
         decision is not None
@@ -1323,37 +2125,29 @@ def audit_decision_logic(
                 "FAIL",
                 "DECISION_COVERAGE_CONFLICT",
                 (
-                    f"Decision={fmt(decision)} "
-                    f"مع Coverage="
+                    f"Decision="
+                    f"{fmt(decision)} "
+                    "مع Coverage="
                     f"{fmt(coverage)}"
                 )
             )
         )
 
-    if (
-        momentum is not None
-        and (
-            momentum <= 10
-            or momentum >= 92
-        )
-    ):
-
-        findings.append(
-            audit_message(
-                "INFO",
-                "MOMENTUM_BOUNDARY",
-                (
-                    "Momentum على حد النظام: "
-                    f"{fmt(momentum)}"
-                )
-            )
-        )
+    # --------------------------------------------------------
+    # Turning vs Decision
+    #
+    # INFO فقط لأن Decision Engine قد يستخدم عوامل أخرى.
+    # --------------------------------------------------------
 
     if (
         turning is not None
         and turning >= 80
         and decision is not None
         and decision < 45
+        and state in (
+            "STRONG_TURNING_POINT",
+            "STRONG_CONTINUATION"
+        )
     ):
 
         findings.append(
@@ -1361,55 +2155,95 @@ def audit_decision_logic(
                 "INFO",
                 "TURNING_DECISION_DIVERGENCE",
                 (
-                    f"Turning={fmt(turning)} مرتفع "
-                    f"لكن Decision="
-                    f"{fmt(decision)} منخفض"
+                    f"Turning="
+                    f"{fmt(turning)} "
+                    f"({state}) "
+                    "لكن Decision="
+                    f"{fmt(decision)}"
                 )
             )
         )
+
+    # --------------------------------------------------------
+    # لا يوجد MOMENTUM_BOUNDARY هنا.
+    #
+    # الإصدار السابق كان يعتبر 10 و92 حدودًا بصورة عامة،
+    # وهذا لا يكشف خطأ حقيقيًا في النظام.
+    # --------------------------------------------------------
 
     return findings
 
 
 # ============================================================
-# تحديد حالة Audit
+# Audit Classification
 # ============================================================
-
 
 def classify_audit(findings):
 
     fail_count = sum(
+
         1
-        for finding in findings
-        if finding["severity"] == "FAIL"
+
+        for finding
+        in findings
+
+        if finding[
+            "severity"
+        ] == "FAIL"
     )
 
     warn_count = sum(
+
         1
-        for finding in findings
-        if finding["severity"] == "WARN"
+
+        for finding
+        in findings
+
+        if finding[
+            "severity"
+        ] == "WARN"
     )
 
     info_count = sum(
+
         1
-        for finding in findings
-        if finding["severity"] == "INFO"
+
+        for finding
+        in findings
+
+        if finding[
+            "severity"
+        ] == "INFO"
     )
 
     if fail_count > 0:
+
         status = "FAIL"
 
     elif warn_count > 0:
+
         status = "WARNING"
 
     else:
+
         status = "PASS"
 
     score = 100.0
 
-    score -= fail_count * 25
-    score -= warn_count * 8
-    score -= info_count * 1
+    score -= (
+        fail_count
+        * 25
+    )
+
+    score -= (
+        warn_count
+        * 8
+    )
+
+    score -= (
+        info_count
+        * 1
+    )
 
     score = max(
         0.0,
@@ -1417,31 +2251,49 @@ def classify_audit(findings):
     )
 
     return {
-        "status": status,
-        "audit_score": score,
-        "fail_count": fail_count,
-        "warn_count": warn_count,
-        "info_count": info_count
+
+        "status":
+            status,
+
+        "audit_score":
+            score,
+
+        "fail_count":
+            fail_count,
+
+        "warn_count":
+            warn_count,
+
+        "info_count":
+            info_count
     }
 
 
 # ============================================================
-# تحليل شركة واحدة
+# Audit One Stock
 # ============================================================
-
 
 def audit_stock(stock):
 
-    stock_id = stock["id"]
-    symbol = stock["symbol"]
+    stock_id = stock[
+        "id"
+    ]
+
+    symbol = stock[
+        "symbol"
+    ]
 
     company_name = (
-        stock.get("company_name")
+        stock.get(
+            "company_name"
+        )
         or symbol
     )
 
     analysis_model = (
-        stock.get("analysis_model")
+        stock.get(
+            "analysis_model"
+        )
         or "standard"
     )
 
@@ -1471,8 +2323,11 @@ def audit_stock(stock):
     )
 
     latest_period = (
+
         model_periods[-1]
+
         if model_periods
+
         else None
     )
 
@@ -1484,13 +2339,17 @@ def audit_stock(stock):
         )
     )
 
-    limited_data = limited_info[
-        "limited"
-    ]
+    limited_data = (
+        limited_info[
+            "limited"
+        ]
+    )
 
-    limited_reason = limited_info[
-        "reason"
-    ]
+    limited_reason = (
+        limited_info[
+            "reason"
+        ]
+    )
 
     findings = []
 
@@ -1533,7 +2392,16 @@ def audit_stock(stock):
                 periods,
                 analysis_model,
                 latest_period,
-                limited_data=limited_data
+                limited_data
+            )
+        )
+
+        findings.extend(
+            audit_signal_layer(
+                periods,
+                latest_period,
+                analysis_model,
+                limited_data
             )
         )
 
@@ -1541,7 +2409,7 @@ def audit_stock(stock):
             audit_engine_outputs(
                 periods,
                 latest_period,
-                limited_data=limited_data
+                limited_data
             )
         )
 
@@ -1555,7 +2423,8 @@ def audit_stock(stock):
         findings.extend(
             audit_period_alignment(
                 periods,
-                latest_period
+                latest_period,
+                analysis_model
             )
         )
 
@@ -1563,6 +2432,14 @@ def audit_stock(stock):
             audit_score_logic(
                 periods,
                 latest_period
+            )
+        )
+
+        findings.extend(
+            audit_turning_logic(
+                periods,
+                latest_period,
+                limited_data
             )
         )
 
@@ -1587,75 +2464,143 @@ def audit_stock(stock):
     )
 
     latest_values = (
+
         periods.get(
             latest_period,
             {}
         )
+
         if latest_period
+
         else {}
     )
 
+    turning_state_code = safe_number(
+        latest_values.get(
+            "turning_engine_state_code"
+        )
+    )
+
+    turning_state = None
+
+    if turning_state_code is not None:
+
+        turning_state = (
+            TURNING_STATE_CODES.get(
+                int(
+                    round(
+                        turning_state_code
+                    )
+                )
+            )
+        )
+
     return {
 
-        "symbol": symbol,
-        "company_name": company_name,
-        "analysis_model": analysis_model,
+        "symbol":
+            symbol,
 
-        "latest_period": latest_period,
+        "company_name":
+            company_name,
 
-        "raw_records": len(raw_rows),
-        "metric_records": len(metric_rows),
-        "period_count": len(model_periods),
+        "analysis_model":
+            analysis_model,
 
-        "limited_data": limited_data,
-        "limited_reason": limited_reason,
+        "latest_period":
+            latest_period,
 
-        "decision_score": safe_number(
-            latest_values.get(
-                "decision_score"
-            )
-        ),
+        "raw_records":
+            len(
+                raw_rows
+            ),
 
-        "data_quality": safe_number(
-            latest_values.get(
-                "data_quality_score"
-            )
-        ),
+        "metric_records":
+            len(
+                metric_rows
+            ),
 
-        "reliability": safe_number(
-            latest_values.get(
-                "decision_reliability_score"
-            )
-        ),
+        "period_count":
+            len(
+                model_periods
+            ),
 
-        "audit_status": classification[
-            "status"
-        ],
+        "limited_data":
+            limited_data,
 
-        "audit_score": classification[
-            "audit_score"
-        ],
+        "limited_reason":
+            limited_reason,
 
-        "fail_count": classification[
-            "fail_count"
-        ],
+        "decision_score":
+            safe_number(
+                latest_values.get(
+                    "decision_score"
+                )
+            ),
 
-        "warn_count": classification[
-            "warn_count"
-        ],
+        "data_quality":
+            safe_number(
+                latest_values.get(
+                    "data_quality_score"
+                )
+            ),
 
-        "info_count": classification[
-            "info_count"
-        ],
+        "reliability":
+            safe_number(
+                latest_values.get(
+                    "decision_reliability_score"
+                )
+            ),
 
-        "findings": findings
+        "turning_score":
+            safe_number(
+                latest_values.get(
+                    "turning_engine_score"
+                )
+            ),
+
+        "turning_state":
+            turning_state,
+
+        "turning_breadth":
+            safe_number(
+                latest_values.get(
+                    "turning_engine_breadth_score"
+                )
+            ),
+
+        "audit_status":
+            classification[
+                "status"
+            ],
+
+        "audit_score":
+            classification[
+                "audit_score"
+            ],
+
+        "fail_count":
+            classification[
+                "fail_count"
+            ],
+
+        "warn_count":
+            classification[
+                "warn_count"
+            ],
+
+        "info_count":
+            classification[
+                "info_count"
+            ],
+
+        "findings":
+            findings
     }
 
 
 # ============================================================
-# طباعة شركة
+# Print Stock Audit
 # ============================================================
-
 
 def print_stock_audit(result):
 
@@ -1689,7 +2634,9 @@ def print_stock_audit(result):
         flush=True
     )
 
-    if result["limited_data"]:
+    if result[
+        "limited_data"
+    ]:
 
         print(
             "🟡 Data Mode: LIMITED DATA",
@@ -1727,6 +2674,25 @@ def print_stock_audit(result):
         flush=True
     )
 
+    print(
+        f"🧭 Turning: "
+        f"{fmt(result['turning_score'])} | "
+        f"{result['turning_state'] or 'N/A'}",
+        flush=True
+    )
+
+    if (
+        result[
+            "turning_breadth"
+        ] is not None
+    ):
+
+        print(
+            f"📐 Turning Breadth: "
+            f"{fmt(result['turning_breadth'])}%",
+            flush=True
+        )
+
     print_separator()
 
     print(
@@ -1751,10 +2717,13 @@ def print_stock_audit(result):
         flush=True
     )
 
-    if not result["findings"]:
+    if not result[
+        "findings"
+    ]:
 
         print(
-            "\n✅ لا توجد ملاحظات تدقيق",
+            "\n"
+            "✅ لا توجد ملاحظات تدقيق",
             flush=True
         )
 
@@ -1765,17 +2734,24 @@ def print_stock_audit(result):
         flush=True
     )
 
-    for finding in result["findings"]:
+    for finding in result[
+        "findings"
+    ]:
 
-        severity = finding["severity"]
+        severity = finding[
+            "severity"
+        ]
 
         if severity == "FAIL":
+
             icon = "🔴"
 
         elif severity == "WARN":
+
             icon = "🟡"
 
         else:
+
             icon = "🔵"
 
         print(
@@ -1787,23 +2763,34 @@ def print_stock_audit(result):
 
 
 # ============================================================
-# System-wide audit
+# System-wide Audit
 # ============================================================
 
-
-def audit_system_consistency(results):
+def audit_system_consistency(
+    results
+):
 
     findings = []
 
     symbols = [
-        result["symbol"]
-        for result in results
+
+        result[
+            "symbol"
+        ]
+
+        for result
+        in results
     ]
 
     duplicate_symbols = [
+
         symbol
+
         for symbol, count
-        in Counter(symbols).items()
+        in Counter(
+            symbols
+        ).items()
+
         if count > 1
     ]
 
@@ -1823,22 +2810,36 @@ def audit_system_consistency(results):
         )
 
     decision_values = [
-        result["decision_score"]
-        for result in results
-        if result["decision_score"] is not None
+
+        result[
+            "decision_score"
+        ]
+
+        for result
+        in results
+
+        if result[
+            "decision_score"
+        ] is not None
     ]
 
     if decision_values:
 
         high_count = sum(
+
             1
-            for value in decision_values
+
+            for value
+            in decision_values
+
             if value >= 80
         )
 
         if (
             high_count
-            > len(decision_values) * 0.50
+            > len(
+                decision_values
+            ) * 0.50
         ):
 
             findings.append(
@@ -1853,14 +2854,20 @@ def audit_system_consistency(results):
             )
 
         zero_count = sum(
+
             1
-            for value in decision_values
+
+            for value
+            in decision_values
+
             if value == 0
         )
 
         if (
             zero_count
-            > len(decision_values) * 0.50
+            > len(
+                decision_values
+            ) * 0.50
         ):
 
             findings.append(
@@ -1875,9 +2882,17 @@ def audit_system_consistency(results):
             )
 
     period_counter = Counter(
-        result["latest_period"]
-        for result in results
-        if result["latest_period"]
+
+        result[
+            "latest_period"
+        ]
+
+        for result
+        in results
+
+        if result[
+            "latest_period"
+        ]
     )
 
     if period_counter:
@@ -1902,9 +2917,8 @@ def audit_system_consistency(results):
 
 
 # ============================================================
-# Final summary
+# Final Summary
 # ============================================================
-
 
 def print_final_summary(
     results,
@@ -1912,14 +2926,23 @@ def print_final_summary(
 ):
 
     print_header(
-        "🏆 MASTER SYSTEM AUDIT SUMMARY v1.1"
+        f"🏆 MASTER SYSTEM AUDIT SUMMARY "
+        f"v{ENGINE_VERSION}"
     )
 
     sorted_results = sorted(
+
         results,
+
         key=lambda item: (
-            item["audit_score"],
-            item["symbol"]
+
+            item[
+                "audit_score"
+            ],
+
+            item[
+                "symbol"
+            ]
         )
     )
 
@@ -1929,8 +2952,13 @@ def print_final_summary(
     ):
 
         data_mode = (
+
             "LIMITED"
-            if result["limited_data"]
+
+            if result[
+                "limited_data"
+            ]
+
             else "NORMAL"
         )
 
@@ -1946,42 +2974,79 @@ def print_final_summary(
             f"Warn={result['warn_count']} | "
             f"Info={result['info_count']} | "
             f"Decision={fmt(result['decision_score'])} | "
-            f"DataQuality={fmt(result['data_quality'])}",
+            f"DataQuality={fmt(result['data_quality'])} | "
+            f"Turning={fmt(result['turning_score'])} | "
+            f"TurningState="
+            f"{result['turning_state'] or 'N/A'}",
             flush=True
         )
 
     pass_count = sum(
+
         1
-        for result in results
-        if result["audit_status"] == "PASS"
+
+        for result
+        in results
+
+        if result[
+            "audit_status"
+        ] == "PASS"
     )
 
     warning_count = sum(
+
         1
-        for result in results
-        if result["audit_status"] == "WARNING"
+
+        for result
+        in results
+
+        if result[
+            "audit_status"
+        ] == "WARNING"
     )
 
     fail_count = sum(
+
         1
-        for result in results
-        if result["audit_status"] == "FAIL"
+
+        for result
+        in results
+
+        if result[
+            "audit_status"
+        ] == "FAIL"
     )
 
     limited_count = sum(
+
         1
-        for result in results
-        if result["limited_data"]
+
+        for result
+        in results
+
+        if result[
+            "limited_data"
+        ]
     )
 
     total_company_failures = sum(
-        result["fail_count"]
-        for result in results
+
+        result[
+            "fail_count"
+        ]
+
+        for result
+        in results
     )
 
     total_company_warnings = sum(
-        result["warn_count"]
-        for result in results
+
+        result[
+            "warn_count"
+        ]
+
+        for result
+        in results
     )
 
     print_separator()
@@ -2035,17 +3100,24 @@ def print_final_summary(
             flush=True
         )
 
-        for finding in system_findings:
+        for finding in (
+            system_findings
+        ):
 
-            severity = finding["severity"]
+            severity = finding[
+                "severity"
+            ]
 
             if severity == "FAIL":
+
                 icon = "🔴"
 
             elif severity == "WARN":
+
                 icon = "🟡"
 
             else:
+
                 icon = "🔵"
 
             print(
@@ -2058,14 +3130,22 @@ def print_final_summary(
     else:
 
         print(
-            "\n✅ لا توجد مشاكل System-wide ظاهرة",
+            "\n"
+            "✅ لا توجد مشاكل "
+            "System-wide ظاهرة",
             flush=True
         )
 
     system_fail_count = sum(
+
         1
-        for finding in system_findings
-        if finding["severity"] == "FAIL"
+
+        for finding
+        in system_findings
+
+        if finding[
+            "severity"
+        ] == "FAIL"
     )
 
     if (
@@ -2082,11 +3162,15 @@ def print_final_summary(
 
         else:
 
-            overall = "PASS_WITH_LIMITATIONS"
+            overall = (
+                "PASS_WITH_LIMITATIONS"
+            )
 
     else:
 
-        overall = "REVIEW_REQUIRED"
+        overall = (
+            "REVIEW_REQUIRED"
+        )
 
     print_separator()
 
@@ -2097,24 +3181,75 @@ def print_final_summary(
     )
 
     print(
-        "=" * 88,
+        "\n"
+        "✅ Turning Audit v1.2: "
+        "Base Turning وTurning Engine "
+        "مستقلان ولا يعاقب النظام على اختلافهما.",
+        flush=True
+    )
+
+    print(
+        "✅ Turning State Audit: "
+        "يتم تدقيق state_code مقابل "
+        "Score / Breadth / Confidence.",
+        flush=True
+    )
+
+    print(
+        "✅ Specialized Signal Audit: "
+        "Standard / Bank / Insurance / REIT.",
+        flush=True
+    )
+
+    print(
+        "✅ Momentum Boundary القديم تمت إزالته "
+        "لأنه لم يكن يمثل خللًا حقيقيًا.",
+        flush=True
+    )
+
+    print(
+        "✅ LIMITED DATA لا يتحول تلقائيًا "
+        "إلى System Failure.",
+        flush=True
+    )
+
+    print(
+        "🔒 READ ONLY | "
+        "لا يكتب أو يعدل أي بيانات.",
+        flush=True
+    )
+
+    print(
+        "=" * 96,
         flush=True
     )
 
 
 # ============================================================
-# التشغيل
+# Run
 # ============================================================
-
 
 def run_system_audit():
 
     print_header(
-        "🔬 MASTER SYSTEM AUDIT ENGINE v1.1"
+        f"🔬 MASTER SYSTEM AUDIT ENGINE "
+        f"v{ENGINE_VERSION}"
     )
 
     print(
         "🔒 Mode: READ ONLY",
+        flush=True
+    )
+
+    print(
+        "🧠 Turning State Source: "
+        "turning_engine_state_code",
+        flush=True
+    )
+
+    print(
+        "📡 Signal Audit: "
+        "Model-Aware",
         flush=True
     )
 
@@ -2124,7 +3259,9 @@ def run_system_audit():
         flush=True
     )
 
-    stocks = get_active_stocks()
+    stocks = (
+        get_active_stocks()
+    )
 
     print(
         f"🏢 Active Companies: "
@@ -2142,54 +3279,92 @@ def run_system_audit():
         print(
             "\n"
             f"🔍 Audit "
-            f"{index}/{len(stocks)} | "
+            f"{index}/"
+            f"{len(stocks)} | "
             f"{stock['symbol']}",
             flush=True
         )
 
         try:
 
-            result = audit_stock(
-                stock
+            result = (
+                audit_stock(
+                    stock
+                )
             )
 
         except Exception as error:
 
             result = {
 
-                "symbol": stock.get(
-                    "symbol"
-                ),
+                "symbol":
+                    stock.get(
+                        "symbol"
+                    ),
 
-                "company_name": stock.get(
-                    "company_name"
-                ),
+                "company_name":
+                    stock.get(
+                        "company_name"
+                    ),
 
-                "analysis_model": stock.get(
-                    "analysis_model"
-                ),
+                "analysis_model":
+                    stock.get(
+                        "analysis_model"
+                    ),
 
-                "latest_period": None,
+                "latest_period":
+                    None,
 
-                "raw_records": 0,
-                "metric_records": 0,
-                "period_count": 0,
+                "raw_records":
+                    0,
 
-                "limited_data": False,
-                "limited_reason": None,
+                "metric_records":
+                    0,
 
-                "decision_score": None,
-                "data_quality": None,
-                "reliability": None,
+                "period_count":
+                    0,
 
-                "audit_status": "FAIL",
-                "audit_score": 0,
+                "limited_data":
+                    False,
 
-                "fail_count": 1,
-                "warn_count": 0,
-                "info_count": 0,
+                "limited_reason":
+                    None,
+
+                "decision_score":
+                    None,
+
+                "data_quality":
+                    None,
+
+                "reliability":
+                    None,
+
+                "turning_score":
+                    None,
+
+                "turning_state":
+                    None,
+
+                "turning_breadth":
+                    None,
+
+                "audit_status":
+                    "FAIL",
+
+                "audit_score":
+                    0,
+
+                "fail_count":
+                    1,
+
+                "warn_count":
+                    0,
+
+                "info_count":
+                    0,
 
                 "findings": [
+
                     audit_message(
                         "FAIL",
                         "AUDIT_RUNTIME_ERROR",
