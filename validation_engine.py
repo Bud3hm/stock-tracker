@@ -3,23 +3,38 @@ from supabase import create_client
 
 
 # ============================================================
-# VALIDATION ENGINE v1.2.1
+# VALIDATION ENGINE v1.2.2
 #
 # READ ONLY
 #
+# v1.2.2:
+# - دعم Signal Engines المتخصصة حسب analysis_model
+#
+# standard:
+#   engine22_net_score
+#
+# reit:
+#   engine22_net_score
+#
+# bank:
+#   bank_signal_net_score
+#
+# insurance:
+#   insurance_signal_net_score
+#
 # v1.2.1:
+# - STRONG_CONTINUATION قبل EARLY_TURNING
+# - فصل Base Turning Delta عن Turning Engine Delta
 #
-# 1) إصلاح أولوية Turning:
-#    STRONG_CONTINUATION قبل EARLY_TURNING
+# Features:
+# - System Layer Coverage
+# - Financial Comparability
+# - Momentum Reliability
+# - Turning Validation
+# - Extreme / Base Effect Review
 #
-# 2) فصل:
-#    Base Turning Delta
-#    Turning Engine Delta
-#
-# 3) System Layer Coverage
-# 4) Financial Comparability
-# 5) Momentum Reliability v2
-# 6) Extreme / Base Effect Review
+# MODE:
+# READ ONLY
 # ============================================================
 
 
@@ -55,7 +70,7 @@ supabase = create_client(
 
 
 # ============================================================
-# عينة التحقق
+# Validation Sample
 # ============================================================
 
 DEFAULT_VALIDATION_SYMBOLS = [
@@ -98,7 +113,7 @@ def get_validation_symbols():
 
 
 # ============================================================
-# أدوات عامة
+# General Helpers
 # ============================================================
 
 def safe_number(value):
@@ -147,28 +162,6 @@ def signed_fmt(
 
     return (
         f"{value:+.{decimals}f}"
-    )
-
-
-def clamp(
-    value,
-    minimum=0.0,
-    maximum=100.0
-):
-
-    value = safe_number(
-        value
-    )
-
-    if value is None:
-        return None
-
-    return max(
-        minimum,
-        min(
-            maximum,
-            value
-        )
     )
 
 
@@ -224,7 +217,10 @@ def get_stocks(symbols):
         .execute()
     )
 
-    rows = response.data or []
+    rows = (
+        response.data
+        or []
+    )
 
     stock_map = {
 
@@ -352,6 +348,26 @@ MODEL_PREFIX = {
 
     "reit":
         "reit_q_"
+}
+
+
+# ============================================================
+# Signal Metric حسب النموذج
+# ============================================================
+
+MODEL_SIGNAL_METRIC = {
+
+    "standard":
+        "engine22_net_score",
+
+    "reit":
+        "engine22_net_score",
+
+    "bank":
+        "bank_signal_net_score",
+
+    "insurance":
+        "insurance_signal_net_score"
 }
 
 
@@ -544,7 +560,7 @@ def get_score_block(metrics):
 
 
 # ============================================================
-# Turning Engine الحقيقي
+# Turning Engine
 # ============================================================
 
 def get_turning_value(metrics):
@@ -611,9 +627,7 @@ def calculate_turning_engine_delta(
         return {
 
             "current":
-                current[
-                    "value"
-                ],
+                current["value"],
 
             "previous":
                 None,
@@ -622,9 +636,7 @@ def calculate_turning_engine_delta(
                 None,
 
             "source":
-                current[
-                    "source"
-                ]
+                current["source"]
         }
 
     previous_turning = get_turning_value(
@@ -632,15 +644,11 @@ def calculate_turning_engine_delta(
     )
 
     current_value = safe_number(
-        current[
-            "value"
-        ]
+        current["value"]
     )
 
     previous_value = safe_number(
-        previous_turning[
-            "value"
-        ]
+        previous_turning["value"]
     )
 
     delta = None
@@ -667,14 +675,12 @@ def calculate_turning_engine_delta(
             delta,
 
         "source":
-            current[
-                "source"
-            ]
+            current["source"]
     }
 
 
 # ============================================================
-# General Classification
+# Current State Classification
 # ============================================================
 
 def classify_score(
@@ -756,12 +762,32 @@ def classify_score(
 
 
 # ============================================================
-# System Layer Coverage
+# System Layer Coverage v1.2.2
 # ============================================================
 
 def calculate_system_layer_coverage(
-    metrics
+    metrics,
+    analysis_model
 ):
+
+    signal_metric = (
+        MODEL_SIGNAL_METRIC.get(
+            analysis_model
+        )
+    )
+
+    signal_available = False
+
+    if signal_metric:
+
+        signal_available = (
+            safe_number(
+                metrics.get(
+                    signal_metric
+                )
+            )
+            is not None
+        )
 
     layers = {
 
@@ -773,11 +799,7 @@ def calculate_system_layer_coverage(
             ) is not None,
 
         "signal":
-            safe_number(
-                metrics.get(
-                    "engine22_net_score"
-                )
-            ) is not None,
+            signal_available,
 
         "turning":
             safe_number(
@@ -802,8 +824,12 @@ def calculate_system_layer_coverage(
     }
 
     available = sum(
+
         1
-        for value in layers.values()
+
+        for value
+        in layers.values()
+
         if value
     )
 
@@ -856,7 +882,13 @@ def calculate_system_layer_coverage(
             layers,
 
         "missing":
-            missing
+            missing,
+
+        "signal_metric":
+            signal_metric,
+
+        "signal_available":
+            signal_available
     }
 
 
@@ -907,7 +939,8 @@ def calculate_financial_comparability(
 
         metric_name
 
-        for metric_name in watched
+        for metric_name
+        in watched
 
         if safe_number(
             latest.get(
@@ -920,7 +953,8 @@ def calculate_financial_comparability(
 
         metric_name
 
-        for metric_name in watched
+        for metric_name
+        in watched
 
         if safe_number(
             previous.get(
@@ -1136,17 +1170,7 @@ def calculate_momentum(
 
 
 # ============================================================
-# Turning Validation v1.2.1
-#
-# مهم:
-#
-# ترتيب الشروط:
-#
-# 1) TRUE TURNING
-# 2) STRONG CONTINUATION
-# 3) EARLY TURNING
-#
-# حتى لا نصنف شركة قوية أصلًا كتحول جديد.
+# Turning Validation
 # ============================================================
 
 def validate_turning(
@@ -1183,9 +1207,7 @@ def validate_turning(
                 None,
 
             "source":
-                current[
-                    "source"
-                ]
+                current["source"]
         }
 
     if not previous:
@@ -1208,18 +1230,18 @@ def validate_turning(
                 None,
 
             "source":
-                current[
-                    "source"
-                ]
+                current["source"]
         }
 
     previous_turning = get_turning_value(
         previous
     )
 
-    previous_value = previous_turning[
-        "value"
-    ]
+    previous_value = (
+        previous_turning[
+            "value"
+        ]
+    )
 
     if previous_value is None:
 
@@ -1241,9 +1263,7 @@ def validate_turning(
                 None,
 
             "source":
-                current[
-                    "source"
-                ]
+                current["source"]
         }
 
     delta = (
@@ -1274,15 +1294,11 @@ def validate_turning(
                 delta,
 
             "source":
-                current[
-                    "source"
-                ]
+                current["source"]
         }
 
     # --------------------------------------------------------
     # TRUE TURNING
-    #
-    # الشركة كانت ضعيفة/متوسطة ثم قفزت إلى مستوى قوي
     # --------------------------------------------------------
 
     if (
@@ -1313,15 +1329,11 @@ def validate_turning(
                 delta,
 
             "source":
-                current[
-                    "source"
-                ]
+                current["source"]
         }
 
     # --------------------------------------------------------
     # STRONG CONTINUATION
-    #
-    # مهم أن يأتي قبل EARLY_TURNING
     # --------------------------------------------------------
 
     if (
@@ -1350,9 +1362,7 @@ def validate_turning(
                 delta,
 
             "source":
-                current[
-                    "source"
-                ]
+                current["source"]
         }
 
     # --------------------------------------------------------
@@ -1387,9 +1397,7 @@ def validate_turning(
                 delta,
 
             "source":
-                current[
-                    "source"
-                ]
+                current["source"]
         }
 
     # --------------------------------------------------------
@@ -1416,14 +1424,8 @@ def validate_turning(
                 delta,
 
             "source":
-                current[
-                    "source"
-                ]
+                current["source"]
         }
-
-    # --------------------------------------------------------
-    # MIXED
-    # --------------------------------------------------------
 
     return {
 
@@ -1446,14 +1448,12 @@ def validate_turning(
             delta,
 
         "source":
-            current[
-                "source"
-            ]
+            current["source"]
     }
 
 
 # ============================================================
-# Extreme / Base Effect
+# Extreme / Base Effect Review
 # ============================================================
 
 def detect_extreme_flags(
@@ -1539,7 +1539,15 @@ def detect_extreme_flags(
             )
         ]
 
-        cash_metrics = []
+        cash_metrics = [
+
+            (
+                "التدفق التشغيلي",
+                latest.get(
+                    "insurance_q_ocf_growth_yoy"
+                )
+            )
+        ]
 
     elif analysis_model == "reit":
 
@@ -1626,7 +1634,7 @@ def detect_extreme_flags(
 
 
 # ============================================================
-# STANDARD Validation
+# Standard Validation
 # ============================================================
 
 def validate_standard(
@@ -1894,7 +1902,7 @@ def validate_standard(
 
 
 # ============================================================
-# BANK Validation
+# Bank Validation
 # ============================================================
 
 def validate_bank(
@@ -2064,7 +2072,7 @@ def validate_bank(
 
 
 # ============================================================
-# INSURANCE Validation
+# Insurance Validation
 # ============================================================
 
 def validate_insurance(
@@ -2328,7 +2336,7 @@ def validate_reit(
 
 
 # ============================================================
-# Analyze Stock
+# Validate Stock
 # ============================================================
 
 def validate_stock(stock):
@@ -2443,7 +2451,8 @@ def validate_stock(stock):
 
     system_coverage = (
         calculate_system_layer_coverage(
-            latest
+            latest,
+            analysis_model
         )
     )
 
@@ -2522,6 +2531,7 @@ def validate_stock(stock):
     else:
 
         positives = []
+
         risks = []
 
         contradictions = [
@@ -2580,6 +2590,12 @@ def validate_stock(stock):
             "🧩 Missing Layers: NONE",
             flush=True
         )
+
+    print(
+        f"📡 Signal Source: "
+        f"{system_coverage['signal_metric'] or 'N/A'}",
+        flush=True
+    )
 
     print(
         f"🔄 Turning Validation: "
@@ -2902,9 +2918,7 @@ def validate_stock(stock):
     return {
 
         "symbol":
-            stock[
-                "symbol"
-            ],
+            stock["symbol"],
 
         "company_name":
             stock.get(
@@ -2928,6 +2942,11 @@ def validate_stock(stock):
         "system_coverage_score":
             system_coverage[
                 "score"
+            ],
+
+        "signal_source":
+            system_coverage[
+                "signal_metric"
             ],
 
         "turning_state":
@@ -3035,7 +3054,7 @@ def print_final_summary(results):
     )
 
     print_header(
-        "📋 VALIDATION SUMMARY v1.2.1"
+        "📋 VALIDATION SUMMARY v1.2.2"
     )
 
     for index, result in enumerate(
@@ -3054,6 +3073,9 @@ def print_final_summary(results):
             f"SystemCoverage="
             f"{result['system_coverage']} "
             f"({fmt(result['system_coverage_score'])}%) | "
+
+            f"SignalSource="
+            f"{result['signal_source']} | "
 
             f"TurningValidation="
             f"{result['turning_state']} | "
@@ -3102,6 +3124,7 @@ def print_final_summary(results):
     full_count = sum(
 
         1
+
         for result in valid
 
         if result[
@@ -3112,6 +3135,7 @@ def print_final_summary(results):
     partial_count = sum(
 
         1
+
         for result in valid
 
         if result[
@@ -3122,6 +3146,7 @@ def print_final_summary(results):
     limited_count = sum(
 
         1
+
         for result in valid
 
         if result[
@@ -3132,6 +3157,7 @@ def print_final_summary(results):
     true_turning_count = sum(
 
         1
+
         for result in valid
 
         if result[
@@ -3142,6 +3168,7 @@ def print_final_summary(results):
     early_turning_count = sum(
 
         1
+
         for result in valid
 
         if result[
@@ -3152,6 +3179,7 @@ def print_final_summary(results):
     strong_continuation_count = sum(
 
         1
+
         for result in valid
 
         if result[
@@ -3162,6 +3190,7 @@ def print_final_summary(results):
     insufficient_turning_count = sum(
 
         1
+
         for result in valid
 
         if result[
@@ -3172,14 +3201,12 @@ def print_final_summary(results):
     low_momentum_count = sum(
 
         1
+
         for result in valid
 
-        if (
-            result[
-                "momentum_reliability"
-            ]
-            < 60
-        )
+        if result[
+            "momentum_reliability"
+        ] < 60
     )
 
     extreme_total = sum(
@@ -3260,9 +3287,16 @@ def print_final_summary(results):
 
     print(
         "\n"
-        "🧬 Momentum Reliability v2.1 يجمع "
-        "بين قابلية مقارنة المدخلات المالية "
+        "🧬 Momentum Reliability يجمع بين "
+        "قابلية مقارنة المدخلات المالية "
         "وتوفر درجات Scoring.",
+        flush=True
+    )
+
+    print(
+        "\n"
+        "📡 Signal Layer يتم التحقق منها "
+        "حسب Analysis Model لكل شركة.",
         flush=True
     )
 
@@ -3299,7 +3333,7 @@ def run_validation_engine():
     )
 
     print_header(
-        "🧪 VALIDATION ENGINE v1.2.1"
+        "🧪 VALIDATION ENGINE v1.2.2"
     )
 
     print(
