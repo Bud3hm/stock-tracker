@@ -3,13 +3,36 @@ from supabase import create_client
 
 
 # ============================================================
-# VALIDATION ENGINE v1
+# VALIDATION ENGINE v1.1
+#
 # الهدف:
-# التحقق من منطق Scoring Engine قبل تطوير Turning Point Engine
+# التحقق من منطق Scoring Engine والمحركات المرتبطة به
+# دون تعديل أي بيانات.
+#
+# v1.1:
+# 1) Comparable Momentum Reliability
+# 2) Model Coverage
+# 3) Extreme Growth / Base Effect Flags
+# 4) Turning Validation
+# 5) توضيح أن Confidence = Data Completeness أساسًا
+# ============================================================
+
+
+# ============================================================
+# Supabase
 # ============================================================
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY")
+
+
+if not SUPABASE_URL:
+    raise RuntimeError("SUPABASE_URL is missing")
+
+
+if not SUPABASE_SECRET_KEY:
+    raise RuntimeError("SUPABASE_SECRET_KEY is missing")
+
 
 supabase = create_client(
     SUPABASE_URL,
@@ -19,7 +42,6 @@ supabase = create_client(
 
 # ============================================================
 # عينة التحقق
-# يمكن تغييرها لاحقًا من GitHub Secrets / ENV
 # ============================================================
 
 DEFAULT_VALIDATION_SYMBOLS = [
@@ -42,7 +64,6 @@ def get_validation_symbols():
     )
 
     if not env_value:
-
         return DEFAULT_VALIDATION_SYMBOLS
 
     symbols = [
@@ -71,11 +92,9 @@ def safe_number(value):
         return None
 
     try:
-
         return float(value)
 
     except (TypeError, ValueError):
-
         return None
 
 
@@ -89,7 +108,6 @@ def fmt(
     )
 
     if value is None:
-
         return "N/A"
 
     return f"{value:.{decimals}f}"
@@ -105,16 +123,37 @@ def signed_fmt(
     )
 
     if value is None:
-
         return "N/A"
 
     return f"{value:+.{decimals}f}"
 
 
+def clamp(
+    value,
+    minimum=0.0,
+    maximum=100.0
+):
+
+    value = safe_number(
+        value
+    )
+
+    if value is None:
+        return None
+
+    return max(
+        minimum,
+        min(
+            maximum,
+            value
+        )
+    )
+
+
 def print_separator():
 
     print(
-        "-" * 78,
+        "-" * 88,
         flush=True
     )
 
@@ -123,7 +162,7 @@ def print_header(title):
 
     print(
         "\n"
-        + "=" * 78,
+        + "=" * 88,
         flush=True
     )
 
@@ -133,7 +172,7 @@ def print_header(title):
     )
 
     print(
-        "=" * 78,
+        "=" * 88,
         flush=True
     )
 
@@ -173,7 +212,6 @@ def get_stocks(symbols):
         for row in rows
     }
 
-    # نحافظ على ترتيب القائمة الأصلية
     ordered = []
 
     for symbol in symbols:
@@ -252,7 +290,6 @@ def organize_metrics(rows):
             or not metric_name
             or metric_value is None
         ):
-
             continue
 
         period_end = str(
@@ -274,7 +311,7 @@ def organize_metrics(rows):
 
 
 # ============================================================
-# إيجاد أحدث فترة صالحة لكل نموذج
+# نموذج -> Prefix
 # ============================================================
 
 MODEL_PREFIX = {
@@ -293,6 +330,10 @@ MODEL_PREFIX = {
 }
 
 
+# ============================================================
+# إيجاد أحدث فترتين
+# ============================================================
+
 def find_latest_periods(
     periods,
     analysis_model
@@ -303,7 +344,6 @@ def find_latest_periods(
     )
 
     if prefix is None:
-
         return None, None
 
     valid_dates = []
@@ -328,7 +368,6 @@ def find_latest_periods(
             )
 
     if not valid_dates:
-
         return None, None
 
     latest = valid_dates[-1]
@@ -339,11 +378,50 @@ def find_latest_periods(
         else None
     )
 
-    return latest, previous
+    return (
+        latest,
+        previous
+    )
 
 
 # ============================================================
-# قراءة درجات Scoring Engine
+# عدد الفترات للنموذج
+# ============================================================
+
+def count_model_periods(
+    periods,
+    analysis_model
+):
+
+    prefix = MODEL_PREFIX.get(
+        analysis_model
+    )
+
+    if prefix is None:
+        return 0
+
+    count = 0
+
+    for period_end in periods:
+
+        metrics = periods[
+            period_end
+        ]
+
+        if any(
+            metric_name.startswith(
+                prefix
+            )
+            for metric_name in metrics
+        ):
+
+            count += 1
+
+    return count
+
+
+# ============================================================
+# قراءة Scoring Engine
 # ============================================================
 
 def get_score_block(metrics):
@@ -351,49 +429,65 @@ def get_score_block(metrics):
     return {
 
         "growth":
-            metrics.get(
-                "score_growth_score"
+            safe_number(
+                metrics.get(
+                    "score_growth_score"
+                )
             ),
 
         "quality":
-            metrics.get(
-                "score_quality_score"
+            safe_number(
+                metrics.get(
+                    "score_quality_score"
+                )
             ),
 
         "cash":
-            metrics.get(
-                "score_cash_score"
+            safe_number(
+                metrics.get(
+                    "score_cash_score"
+                )
             ),
 
         "balance":
-            metrics.get(
-                "score_balance_score"
+            safe_number(
+                metrics.get(
+                    "score_balance_score"
+                )
             ),
 
         "confidence":
-            metrics.get(
-                "score_confidence_score"
+            safe_number(
+                metrics.get(
+                    "score_confidence_score"
+                )
             ),
 
         "opportunity":
-            metrics.get(
-                "score_opportunity_score"
+            safe_number(
+                metrics.get(
+                    "score_opportunity_score"
+                )
             ),
 
         "risk":
-            metrics.get(
-                "score_risk_score"
+            safe_number(
+                metrics.get(
+                    "score_risk_score"
+                )
             ),
 
         "turning":
-            metrics.get(
-                "score_turning_point_score"
+            safe_number(
+                metrics.get(
+                    "score_turning_point_score"
+                )
             )
     }
 
 
 # ============================================================
-# تحديد حالة عامة
+# تحديد الحالة العامة
 # ============================================================
 
 def classify_score(
@@ -426,7 +520,7 @@ def classify_score(
 
         return (
             "LOW_CONFIDENCE",
-            "البيانات غير كافية لحكم قوي"
+            "اكتمال البيانات غير كافٍ لحكم قوي"
         )
 
     if (
@@ -440,7 +534,7 @@ def classify_score(
 
         return (
             "STRONG",
-            "جودة مرتفعة مع فرصة وتحول قويين"
+            "جودة وفرصة حالية مرتفعتان"
         )
 
     if (
@@ -479,6 +573,285 @@ def classify_score(
         "NEUTRAL",
         "الصورة متوازنة أو مختلطة"
     )
+
+
+# ============================================================
+# Model Coverage
+#
+# FULL:
+# Scoring + Signal Engine متوفر
+#
+# PARTIAL:
+# Scoring موجود لكن Signal Engine المتخصص غير مطبق
+#
+# LIMITED:
+# التاريخ أو البيانات نفسها محدودة
+# ============================================================
+
+def calculate_model_coverage(
+    latest,
+    periods,
+    analysis_model
+):
+
+    model_period_count = count_model_periods(
+        periods,
+        analysis_model
+    )
+
+    has_scoring = (
+        safe_number(
+            latest.get(
+                "score_opportunity_score"
+            )
+        )
+        is not None
+    )
+
+    has_signal = (
+        safe_number(
+            latest.get(
+                "engine22_net_score"
+            )
+        )
+        is not None
+    )
+
+    if analysis_model == "reit":
+
+        reit_confidence = safe_number(
+            latest.get(
+                "reit_data_confidence_score"
+            )
+        )
+
+        if (
+            model_period_count < 4
+            or (
+                reit_confidence is not None
+                and reit_confidence < 60
+            )
+        ):
+
+            return (
+                "LIMITED",
+                "بيانات REIT الربعية غير كافية للتغطية الكاملة"
+            )
+
+        if has_scoring and has_signal:
+
+            return (
+                "FULL",
+                "Scoring وSignal متوفران"
+            )
+
+        return (
+            "PARTIAL",
+            "بعض طبقات التحليل غير متوفرة"
+        )
+
+    if analysis_model == "standard":
+
+        if (
+            has_scoring
+            and has_signal
+        ):
+
+            return (
+                "FULL",
+                "Scoring وSignal Engine متوفران"
+            )
+
+        if has_scoring:
+
+            return (
+                "PARTIAL",
+                "Scoring متوفر لكن Signal Engine غير مكتمل"
+            )
+
+        return (
+            "LIMITED",
+            "طبقات التحليل الأساسية غير مكتملة"
+        )
+
+    if analysis_model in [
+        "bank",
+        "insurance"
+    ]:
+
+        if has_scoring:
+
+            return (
+                "PARTIAL",
+                (
+                    "Scoring متخصص متوفر، "
+                    "لكن Signal Engine المتخصص لم يُبنَ بعد"
+                )
+            )
+
+        return (
+            "LIMITED",
+            "التحليل المتخصص غير مكتمل"
+        )
+
+    return (
+        "LIMITED",
+        "نموذج تحليل غير معروف"
+    )
+
+
+# ============================================================
+# Extreme Growth / Base Effect
+#
+# هذه Flags للمراجعة فقط.
+# لا تغير Score.
+# ============================================================
+
+def detect_extreme_growth_flags(
+    latest,
+    analysis_model
+):
+
+    flags = []
+
+    if analysis_model == "standard":
+
+        metrics = [
+
+            (
+                "الإيرادات",
+                latest.get(
+                    "q_revenue_growth_yoy"
+                )
+            ),
+
+            (
+                "صافي الربح",
+                latest.get(
+                    "q_net_income_growth_yoy"
+                )
+            ),
+
+            (
+                "التدفق التشغيلي",
+                latest.get(
+                    "q_ocf_growth_yoy"
+                )
+            ),
+
+            (
+                "التدفق النقدي الحر",
+                latest.get(
+                    "q_fcf_growth_yoy"
+                )
+            )
+        ]
+
+    elif analysis_model == "bank":
+
+        metrics = [
+
+            (
+                "دخل البنك",
+                latest.get(
+                    "bank_q_revenue_growth_yoy"
+                )
+            ),
+
+            (
+                "صافي الربح",
+                latest.get(
+                    "bank_q_net_income_growth_yoy"
+                )
+            ),
+
+            (
+                "الأصول",
+                latest.get(
+                    "bank_q_assets_growth_yoy"
+                )
+            )
+        ]
+
+    elif analysis_model == "insurance":
+
+        metrics = [
+
+            (
+                "الإيرادات",
+                latest.get(
+                    "insurance_q_revenue_growth_yoy"
+                )
+            ),
+
+            (
+                "صافي الربح",
+                latest.get(
+                    "insurance_q_net_income_growth_yoy"
+                )
+            )
+        ]
+
+    elif analysis_model == "reit":
+
+        metrics = [
+
+            (
+                "إيرادات REIT",
+                latest.get(
+                    "reit_q_revenue_growth_yoy"
+                )
+            ),
+
+            (
+                "الدخل التشغيلي",
+                latest.get(
+                    "reit_q_operating_income_growth_yoy"
+                )
+            ),
+
+            (
+                "صافي الربح",
+                latest.get(
+                    "reit_q_net_income_growth_yoy"
+                )
+            )
+        ]
+
+    else:
+
+        metrics = []
+
+    for name, value in metrics:
+
+        value = safe_number(
+            value
+        )
+
+        if value is None:
+            continue
+
+        if value >= 100:
+
+            flags.append(
+                (
+                    f"EXTREME_GROWTH | "
+                    f"{name} ينمو {signed_fmt(value)}% "
+                    f"وقد يوجد Base Effect"
+                )
+            )
+
+        elif value <= -70:
+
+            flags.append(
+                (
+                    f"EXTREME_DECLINE | "
+                    f"{name} يتراجع {signed_fmt(value)}% "
+                    f"ويحتاج مراجعة قاعدة المقارنة"
+                )
+            )
+
+    return flags
 
 
 # ============================================================
@@ -546,10 +919,6 @@ def validate_standard(
         "q_revenue_growth_qoq"
     )
 
-    # --------------------------------------------------------
-    # تحسن
-    # --------------------------------------------------------
-
     if (
         revenue_yoy is not None
         and revenue_yoy >= 10
@@ -599,10 +968,6 @@ def validate_standard(
             f"الهامش التشغيلي يتحسن "
             f"({signed_fmt(operating_margin_yoy)} نقطة)"
         )
-
-    # --------------------------------------------------------
-    # مخاطر
-    # --------------------------------------------------------
 
     if (
         gross_margin_yoy is not None
@@ -689,10 +1054,6 @@ def validate_standard(
             f"بفارق "
             f"{fmt(inventory_growth - revenue_qoq)} نقطة"
         )
-
-    # --------------------------------------------------------
-    # تناقضات
-    # --------------------------------------------------------
 
     if (
         revenue_yoy is not None
@@ -1118,8 +1479,20 @@ def validate_reit(
 
 
 # ============================================================
-# مقارنة Score بالفترة السابقة
+# Score Momentum
 # ============================================================
+
+MOMENTUM_KEYS = [
+
+    "growth",
+    "quality",
+    "cash",
+    "balance",
+    "opportunity",
+    "risk",
+    "turning"
+]
+
 
 def score_change(
     latest_scores,
@@ -1128,7 +1501,15 @@ def score_change(
 
     if not previous_metrics:
 
-        return {}
+        return {
+            "changes": {},
+            "comparable_count": 0,
+            "possible_count": len(
+                MOMENTUM_KEYS
+            ),
+            "reliability": 0.0,
+            "state": "NO_HISTORY"
+        }
 
     previous_scores = get_score_block(
         previous_metrics
@@ -1136,17 +1517,9 @@ def score_change(
 
     changes = {}
 
-    for key in [
+    comparable_count = 0
 
-        "growth",
-        "quality",
-        "cash",
-        "balance",
-        "opportunity",
-        "risk",
-        "turning"
-
-    ]:
+    for key in MOMENTUM_KEYS:
 
         current = safe_number(
             latest_scores.get(
@@ -1171,13 +1544,245 @@ def score_change(
 
         else:
 
+            comparable_count += 1
+
             changes[
                 key
             ] = (
-                current - previous
+                current
+                - previous
             )
 
-    return changes
+    possible_count = len(
+        MOMENTUM_KEYS
+    )
+
+    reliability = (
+        comparable_count
+        / possible_count
+    ) * 100
+
+    if reliability >= 85:
+
+        state = "HIGH"
+
+    elif reliability >= 60:
+
+        state = "MEDIUM"
+
+    elif reliability > 0:
+
+        state = "LOW"
+
+    else:
+
+        state = "NO_HISTORY"
+
+    return {
+
+        "changes":
+            changes,
+
+        "comparable_count":
+            comparable_count,
+
+        "possible_count":
+            possible_count,
+
+        "reliability":
+            reliability,
+
+        "state":
+            state
+    }
+
+
+# ============================================================
+# Turning Validation
+#
+# الهدف:
+# التفريق بين:
+#
+# - شركة قوية أصلًا
+# - شركة بدأت تتحول
+# ============================================================
+
+def validate_turning(
+    latest_scores,
+    previous_metrics
+):
+
+    current_turning = safe_number(
+        latest_scores.get(
+            "turning"
+        )
+    )
+
+    current_opportunity = safe_number(
+        latest_scores.get(
+            "opportunity"
+        )
+    )
+
+    current_risk = safe_number(
+        latest_scores.get(
+            "risk"
+        )
+    )
+
+    if not previous_metrics:
+
+        return (
+            "INSUFFICIENT_HISTORY",
+            "لا توجد فترة سابقة كافية للتحقق من التحول"
+        )
+
+    previous_scores = get_score_block(
+        previous_metrics
+    )
+
+    previous_turning = safe_number(
+        previous_scores.get(
+            "turning"
+        )
+    )
+
+    previous_opportunity = safe_number(
+        previous_scores.get(
+            "opportunity"
+        )
+    )
+
+    previous_risk = safe_number(
+        previous_scores.get(
+            "risk"
+        )
+    )
+
+    if (
+        current_turning is None
+        or previous_turning is None
+    ):
+
+        return (
+            "INSUFFICIENT_HISTORY",
+            "Turning غير قابل للمقارنة بين الفترتين"
+        )
+
+    turning_delta = (
+        current_turning
+        - previous_turning
+    )
+
+    opportunity_delta = (
+
+        current_opportunity
+        - previous_opportunity
+
+        if (
+            current_opportunity is not None
+            and previous_opportunity is not None
+        )
+
+        else None
+    )
+
+    risk_delta = (
+
+        current_risk
+        - previous_risk
+
+        if (
+            current_risk is not None
+            and previous_risk is not None
+        )
+
+        else None
+    )
+
+    # --------------------------------------------------------
+    # Turning حقيقي
+    # --------------------------------------------------------
+
+    if (
+        current_turning >= 70
+        and previous_turning < 60
+        and turning_delta >= 10
+        and (
+            opportunity_delta is None
+            or opportunity_delta > 0
+        )
+        and (
+            risk_delta is None
+            or risk_delta < 0
+        )
+    ):
+
+        return (
+            "TRUE_TURNING",
+            (
+                f"تحول واضح: Turning ارتفع "
+                f"{signed_fmt(turning_delta)} نقطة"
+            )
+        )
+
+    # --------------------------------------------------------
+    # Early Turning
+    # --------------------------------------------------------
+
+    if (
+        current_turning >= 55
+        and turning_delta >= 10
+        and previous_turning < current_turning
+    ):
+
+        return (
+            "EARLY_TURNING",
+            (
+                f"إشارة تحول مبكرة: Turning Δ "
+                f"{signed_fmt(turning_delta)}"
+            )
+        )
+
+    # --------------------------------------------------------
+    # الشركة قوية أصلًا
+    # --------------------------------------------------------
+
+    if (
+        current_turning >= 70
+        and previous_turning >= 70
+    ):
+
+        return (
+            "STRONG_CONTINUATION",
+            "الشركة قوية أصلًا؛ هذه استمرارية قوة وليست نقطة تحول جديدة"
+        )
+
+    # --------------------------------------------------------
+    # Turning مرتفع لكن لم يتحسن فعليًا
+    # --------------------------------------------------------
+
+    if (
+        current_turning >= 70
+        and turning_delta < 5
+    ):
+
+        return (
+            "STRONG_NOT_TURNING",
+            "Turning مرتفع حاليًا لكن لا توجد قفزة تحول واضحة عن الربع السابق"
+        )
+
+    if current_turning < 55:
+
+        return (
+            "NO_TURNING",
+            "لا توجد إشارة تحول قوية حاليًا"
+        )
+
+    return (
+        "MIXED_TURNING",
+        "إشارة التحول مختلطة وتحتاج مزيدًا من التاريخ"
+    )
 
 
 # ============================================================
@@ -1260,6 +1865,41 @@ def validate_stock(stock):
         )
     )
 
+    model_coverage, coverage_description = (
+        calculate_model_coverage(
+            latest,
+            periods,
+            analysis_model
+        )
+    )
+
+    extreme_flags = (
+        detect_extreme_growth_flags(
+            latest,
+            analysis_model
+        )
+    )
+
+    momentum = score_change(
+        scores,
+        previous
+    )
+
+    changes = momentum[
+        "changes"
+    ]
+
+    turning_state, turning_description = (
+        validate_turning(
+            scores,
+            previous
+        )
+    )
+
+    # ========================================================
+    # Header info
+    # ========================================================
+
     print(
         f"📅 Latest Period: "
         f"{latest_period}",
@@ -1279,7 +1919,25 @@ def validate_stock(stock):
         flush=True
     )
 
+    print(
+        f"🧩 Model Coverage: "
+        f"{model_coverage} | "
+        f"{coverage_description}",
+        flush=True
+    )
+
+    print(
+        f"🔄 Turning Validation: "
+        f"{turning_state} | "
+        f"{turning_description}",
+        flush=True
+    )
+
     print_separator()
+
+    # ========================================================
+    # Scoring
+    # ========================================================
 
     print(
         "🎯 SCORING COMPONENTS",
@@ -1287,55 +1945,55 @@ def validate_stock(stock):
     )
 
     print(
-        f"Growth:      "
+        f"Growth:            "
         f"{fmt(scores.get('growth'))}",
         flush=True
     )
 
     print(
-        f"Quality:     "
+        f"Quality:           "
         f"{fmt(scores.get('quality'))}",
         flush=True
     )
 
     print(
-        f"Cash:        "
+        f"Cash:              "
         f"{fmt(scores.get('cash'))}",
         flush=True
     )
 
     print(
-        f"Balance:     "
+        f"Balance:           "
         f"{fmt(scores.get('balance'))}",
         flush=True
     )
 
     print(
-        f"Opportunity: "
+        f"Opportunity:       "
         f"{fmt(scores.get('opportunity'))}",
         flush=True
     )
 
     print(
-        f"Risk:        "
+        f"Risk:              "
         f"{fmt(scores.get('risk'))}",
         flush=True
     )
 
     print(
-        f"Turning:     "
+        f"Turning:           "
         f"{fmt(scores.get('turning'))}",
         flush=True
     )
 
     print(
-        f"Confidence:  "
+        f"Data Completeness: "
         f"{fmt(scores.get('confidence'))}",
         flush=True
     )
 
     # ========================================================
-    # أسباب كل نموذج
+    # أسباب حسب النموذج
     # ========================================================
 
     if analysis_model == "standard":
@@ -1378,9 +2036,14 @@ def validate_stock(stock):
 
         positives = []
         risks = []
+
         contradictions = [
             "نموذج تحليل غير معروف"
         ]
+
+    # ========================================================
+    # Strength
+    # ========================================================
 
     print_separator()
 
@@ -1405,6 +2068,10 @@ def validate_stock(stock):
             flush=True
         )
 
+    # ========================================================
+    # Risks
+    # ========================================================
+
     print(
         "\n🔴 أسباب الخطر:",
         flush=True
@@ -1425,6 +2092,10 @@ def validate_stock(stock):
             "- لا توجد إشارة خطر قوية",
             flush=True
         )
+
+    # ========================================================
+    # Contradictions
+    # ========================================================
 
     print(
         "\n⚠️ التناقضات:",
@@ -1448,18 +2119,52 @@ def validate_stock(stock):
         )
 
     # ========================================================
-    # تغير الدرجة
+    # Extreme/Base Effect
     # ========================================================
 
-    changes = score_change(
-        scores,
-        previous
+    print(
+        "\n🧨 Extreme Growth / Base Effect Review:",
+        flush=True
     )
+
+    if extreme_flags:
+
+        for item in extreme_flags:
+
+            print(
+                f"- {item}",
+                flush=True
+            )
+
+    else:
+
+        print(
+            "- لا توجد حركة متطرفة تحتاج Flag خاص",
+            flush=True
+        )
+
+    # ========================================================
+    # Momentum
+    # ========================================================
 
     print_separator()
 
     print(
         "🚀 SCORE MOMENTUM",
+        flush=True
+    )
+
+    print(
+        f"Comparable Metrics: "
+        f"{momentum['comparable_count']}/"
+        f"{momentum['possible_count']}",
+        flush=True
+    )
+
+    print(
+        f"Momentum Reliability: "
+        f"{fmt(momentum['reliability'])}% | "
+        f"{momentum['state']}",
         flush=True
     )
 
@@ -1502,6 +2207,16 @@ def validate_stock(stock):
             flush=True
         )
 
+        if momentum[
+            "reliability"
+        ] < 60:
+
+            print(
+                "🟡 تنبيه: Momentum Reliability منخفضة؛ "
+                "لا نعتمد Δ كإشارة اتجاه قوية.",
+                flush=True
+            )
+
     return {
 
         "symbol":
@@ -1522,6 +2237,22 @@ def validate_stock(stock):
 
         "state":
             state,
+
+        "model_coverage":
+            model_coverage,
+
+        "turning_state":
+            turning_state,
+
+        "momentum_reliability":
+            momentum[
+                "reliability"
+            ],
+
+        "extreme_flag_count":
+            len(
+                extreme_flags
+            ),
 
         "opportunity":
             safe_number(
@@ -1602,7 +2333,7 @@ def print_final_summary(results):
     )
 
     print_header(
-        "📋 VALIDATION SUMMARY"
+        "📋 VALIDATION SUMMARY v1.1"
     )
 
     for index, result in enumerate(
@@ -1617,27 +2348,161 @@ def print_final_summary(results):
             f"{result['company_name']} | "
             f"{result['analysis_model']} | "
             f"{result['state']} | "
-            f"Opportunity={fmt(result['opportunity'])} | "
-            f"Risk={fmt(result['risk'])} | "
-            f"Turning={fmt(result['turning'])} | "
-            f"+Signals={result['positive_count']} | "
-            f"-Signals={result['risk_count']} | "
+            f"Coverage={result['model_coverage']} | "
+            f"TurningValidation={result['turning_state']} | "
+            f"MomentumRel="
+            f"{fmt(result['momentum_reliability'])}% | "
+            f"Opportunity="
+            f"{fmt(result['opportunity'])} | "
+            f"Risk="
+            f"{fmt(result['risk'])} | "
+            f"Turning="
+            f"{fmt(result['turning'])} | "
+            f"+Signals="
+            f"{result['positive_count']} | "
+            f"-Signals="
+            f"{result['risk_count']} | "
             f"Contradictions="
-            f"{result['contradiction_count']}",
+            f"{result['contradiction_count']} | "
+            f"ExtremeFlags="
+            f"{result['extreme_flag_count']}",
 
             flush=True
         )
 
+    print_separator()
+
+    full_count = sum(
+
+        1
+
+        for result in valid
+
+        if result[
+            "model_coverage"
+        ] == "FULL"
+    )
+
+    partial_count = sum(
+
+        1
+
+        for result in valid
+
+        if result[
+            "model_coverage"
+        ] == "PARTIAL"
+    )
+
+    limited_count = sum(
+
+        1
+
+        for result in valid
+
+        if result[
+            "model_coverage"
+        ] == "LIMITED"
+    )
+
+    true_turning_count = sum(
+
+        1
+
+        for result in valid
+
+        if result[
+            "turning_state"
+        ] == "TRUE_TURNING"
+    )
+
+    early_turning_count = sum(
+
+        1
+
+        for result in valid
+
+        if result[
+            "turning_state"
+        ] == "EARLY_TURNING"
+    )
+
+    extreme_total = sum(
+
+        result[
+            "extreme_flag_count"
+        ]
+
+        for result in valid
+    )
+
     print(
-        "\n"
-        "⚠️ ملاحظة: Confidence في النسخة الحالية "
-        "يعبر أساسًا عن اكتمال البيانات المستخدمة، "
-        "وليس ضمانًا لصحة المصدر أو دقة التنبؤ.",
+        f"🏢 Companies: "
+        f"{len(valid)}",
         flush=True
     )
 
     print(
-        "=" * 78,
+        f"🟢 FULL Model Coverage: "
+        f"{full_count}",
+        flush=True
+    )
+
+    print(
+        f"🟡 PARTIAL Model Coverage: "
+        f"{partial_count}",
+        flush=True
+    )
+
+    print(
+        f"🟠 LIMITED Model Coverage: "
+        f"{limited_count}",
+        flush=True
+    )
+
+    print(
+        f"🔄 TRUE Turning Points: "
+        f"{true_turning_count}",
+        flush=True
+    )
+
+    print(
+        f"🌱 EARLY Turning Points: "
+        f"{early_turning_count}",
+        flush=True
+    )
+
+    print(
+        f"🧨 Extreme/Base Effect Flags: "
+        f"{extreme_total}",
+        flush=True
+    )
+
+    print(
+        "\n"
+        "⚠️ Data Completeness يعبر عن اكتمال "
+        "المؤشرات المستخدمة، وليس ضمانًا لصحة "
+        "المصدر أو دقة التنبؤ.",
+        flush=True
+    )
+
+    print(
+        "\n"
+        "🔄 Turning Validation يفصل بين الشركة "
+        "القوية أصلًا وبين الشركة التي بدأت "
+        "تتحول فعليًا.",
+        flush=True
+    )
+
+    print(
+        "\n"
+        "🔒 VALIDATION ENGINE READ ONLY | "
+        "لا يعدل أي بيانات.",
+        flush=True
+    )
+
+    print(
+        "=" * 88,
         flush=True
     )
 
@@ -1655,7 +2520,12 @@ def run_validation_engine():
     )
 
     print_header(
-        "🧪 VALIDATION ENGINE v1"
+        "🧪 VALIDATION ENGINE v1.1"
+    )
+
+    print(
+        "🔒 Mode: READ ONLY",
+        flush=True
     )
 
     print(
