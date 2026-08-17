@@ -4,7 +4,7 @@ from supabase import create_client
 
 
 # ============================================================
-# INSURANCE SIGNAL ENGINE v1.0
+# INSURANCE SIGNAL ENGINE v1.0.1
 #
 # Specialized Signal Engine for Insurance Companies
 #
@@ -22,6 +22,8 @@ from supabase import create_client
 # - لا يستخدم Current Ratio / Debt Logic بشكل مصطنع
 # - يعتمد على المؤشرات المتوفرة حاليًا لنموذج التأمين
 # - يمنع التصنيف القوي عند ضعف Coverage / History / Trend
+# - إذا تم تمرير STOCK_ID أو STOCK_SYMBOL يشغل شركة واحدة
+# - إذا لم يتم تمريرهما يشغل جميع شركات التأمين النشطة
 # ============================================================
 
 
@@ -60,7 +62,7 @@ supabase = create_client(
 # Settings
 # ============================================================
 
-ENGINE_VERSION = "1.0"
+ENGINE_VERSION = "1.0.1"
 
 ENGINE_PREFIX = "insurance_signal_"
 
@@ -254,6 +256,38 @@ def get_stock_by_id(stock_id):
         return None
 
     return rows[0]
+
+
+def get_active_insurance_stocks():
+
+    response = (
+        supabase
+        .table("stocks")
+        .select(
+            "id,"
+            "symbol,"
+            "company_name,"
+            "analysis_model,"
+            "is_active"
+        )
+        .eq(
+            "is_active",
+            True
+        )
+        .eq(
+            "analysis_model",
+            "insurance"
+        )
+        .order(
+            "id"
+        )
+        .execute()
+    )
+
+    return (
+        response.data
+        or []
+    )
 
 
 def resolve_stock():
@@ -1590,12 +1624,13 @@ def save_engine_metrics(
 
 
 # ============================================================
-# Run
+# Run One Insurance Company
 # ============================================================
 
-def run_insurance_signal_engine():
+def run_insurance_signal_engine(stock=None):
 
-    stock = resolve_stock()
+    if stock is None:
+        stock = resolve_stock()
 
     if not stock:
 
@@ -1604,7 +1639,7 @@ def run_insurance_signal_engine():
             flush=True
         )
 
-        return
+        return False
 
     stock_id = stock[
         "id"
@@ -1673,7 +1708,7 @@ def run_insurance_signal_engine():
             flush=True
         )
 
-        return
+        return False
 
     rows = get_financial_metrics(
         stock_id
@@ -1686,7 +1721,7 @@ def run_insurance_signal_engine():
             flush=True
         )
 
-        return
+        return False
 
     periods = organize_metrics(
         rows
@@ -1703,7 +1738,7 @@ def run_insurance_signal_engine():
             flush=True
         )
 
-        return
+        return False
 
     print(
         f"📅 Quarterly Periods Found: "
@@ -2130,11 +2165,177 @@ def run_insurance_signal_engine():
         flush=True
     )
 
+    return True
+
+
+# ============================================================
+# Run All Active Insurance Companies
+# ============================================================
+
+def run_all_active_insurance():
+
+    insurance_stocks = (
+        get_active_insurance_stocks()
+    )
+
+    print(
+        "\n"
+        + "=" * 80,
+        flush=True
+    )
+
+    print(
+        f"🛡️ INSURANCE SIGNAL ENGINE v{ENGINE_VERSION} | "
+        "ALL ACTIVE INSURANCE",
+        flush=True
+    )
+
+    print(
+        f"🏢 Active Insurance Companies Found: "
+        f"{len(insurance_stocks)}",
+        flush=True
+    )
+
+    print(
+        "=" * 80,
+        flush=True
+    )
+
+    if not insurance_stocks:
+
+        print(
+            "🟡 لا توجد شركات تأمين نشطة في جدول stocks",
+            flush=True
+        )
+
+        return
+
+    success = 0
+    failed = 0
+
+    for index, stock in enumerate(
+        insurance_stocks,
+        start=1
+    ):
+
+        symbol = (
+            stock.get(
+                "symbol"
+            )
+            or str(
+                stock.get(
+                    "id"
+                )
+            )
+        )
+
+        print(
+            "\n"
+            f"🚦 Insurance "
+            f"{index}/{len(insurance_stocks)} | "
+            f"{symbol}",
+            flush=True
+        )
+
+        try:
+
+            result = run_insurance_signal_engine(
+                stock
+            )
+
+            if result:
+                success += 1
+            else:
+                failed += 1
+
+        except Exception as error:
+
+            failed += 1
+
+            print(
+                f"🔴 {symbol} | "
+                f"{type(error).__name__}: "
+                f"{error}",
+                flush=True
+            )
+
+    print(
+        "\n"
+        + "=" * 80,
+        flush=True
+    )
+
+    print(
+        "📊 ALL INSURANCE SUMMARY",
+        flush=True
+    )
+
+    print(
+        "=" * 80,
+        flush=True
+    )
+
+    print(
+        f"🏢 Insurance Companies Found: "
+        f"{len(insurance_stocks)}",
+        flush=True
+    )
+
+    print(
+        f"🟢 Completed: "
+        f"{success}",
+        flush=True
+    )
+
+    print(
+        f"🔴 Failed: "
+        f"{failed}",
+        flush=True
+    )
+
+    print(
+        "=" * 80,
+        flush=True
+    )
+
 
 # ============================================================
 # START
+#
+# إذا تم تمرير STOCK_ID أو STOCK_SYMBOL:
+# يشغل شركة واحدة للاختبار.
+#
+# إذا لم يتم تمرير أي منهما:
+# يشغل جميع شركات التأمين النشطة تلقائيًا.
 # ============================================================
 
 if __name__ == "__main__":
 
-    run_insurance_signal_engine()
+    stock_id_env = os.environ.get(
+        "STOCK_ID"
+    )
+
+    stock_symbol_env = os.environ.get(
+        "STOCK_SYMBOL"
+    )
+
+    if (
+        stock_id_env
+        or stock_symbol_env
+    ):
+
+        stock = resolve_stock()
+
+        if not stock:
+
+            raise RuntimeError(
+                "لم يتم العثور على شركة التأمين المطلوبة"
+            )
+
+        run_insurance_signal_engine(
+            stock
+        )
+
+    else:
+
+        run_all_active_insurance()
