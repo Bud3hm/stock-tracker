@@ -2,72 +2,61 @@ import re
 import time
 import hashlib
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from html import unescape
-from html.parser import HTMLParser
-from urllib.parse import urljoin
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 import requests
 
 
 # ============================================================
-# SAUDI NEWS ADAPTER v0.2
+# SAUDI NEWS ADAPTER v0.3
 #
 # READ ONLY / TEST ONLY
 #
-# المصادر:
-# 1) Tadawul            -> Official arbiter only if blocked
-# 2) Argaam             -> Primary Saudi-news candidate
-# 3) Google News RSS    -> Secondary coverage
+# القرار بعد v0.2:
+# - Tadawul: Official Arbiter فقط بسبب HTTP 403
+# - Argaam: الموقع متاح، لكن Homepage parsing غير موثوق
+# - Google News RSS: مصدر التجميع العملي الحالي
 #
-# أهداف v0.2:
-# - استخراج أخبار مرشحة فعلية بدل مجرد عدّ الروابط
-# - ربط الخبر بالشركة Company Hint قبل أي حفظ
-# - إزالة الروابط العامة/صفحات الشركات من أرقام
-# - إزالة التكرار
-# - طباعة عينات قابلة للمراجعة
-# - لا يكتب أي شيء في Supabase
+# v0.3:
+# 1) Google News RSS - General company search
+# 2) Google News RSS - Argaam-targeted search
+# 3) Lookback filter = 21 days
+# 4) إزالة الأخبار القديمة قبل عرضها
+# 5) إزالة صفحات البيانات/الملفات العامة غير الخبرية
+# 6) Company identity confirmation
+# 7) Cross-query deduplication
+# 8) لا كتابة في Supabase
 #
-# بعد نجاح v0.2:
-# يتم تمرير المخرجات إلى news_data.py
-# لكي يعمل Material Event Filter قبل الحفظ.
+# بعد نجاح v0.3:
+# نربط Candidate News مع news_data.py Material Event Filter.
 # ============================================================
 
 
-ENGINE_VERSION = "0.2"
+ENGINE_VERSION = "0.3"
 
 TIMEOUT = 25
 REQUEST_DELAY = 0.45
 
-MAX_ARGAAM_ITEMS = 120
-MAX_GOOGLE_ITEMS_PER_COMPANY = 30
-MAX_PRINT_PER_COMPANY = 8
+NEWS_LOOKBACK_DAYS = 21
 
-BASE_TADAWUL = "https://www.saudiexchange.sa"
+MAX_ITEMS_PER_QUERY = 40
+MAX_PRINT_PER_COMPANY = 10
 
 TADAWUL_URL = (
     "https://www.saudiexchange.sa/wps/portal/saudiexchange/"
     "newsandreports/issuer-news/issuer-announcements?locale=en"
 )
 
-ARGAAM_URLS = [
-    "https://www.argaam.com/",
-    "https://www.argaam.com/ar/",
-]
+ARGAAM_HOME = "https://www.argaam.com/"
 
 GOOGLE_NEWS_RSS = (
     "https://news.google.com/rss/search"
 )
 
-
-# ============================================================
-# شركات الاختبار
-#
-# سنبدأ بثلاث شركات فقط حتى نراجع الجودة يدويًا.
-# بعد النجاح نربطه تلقائيًا بجدول stocks.
-# ============================================================
 
 TEST_COMPANIES = [
     {
@@ -125,6 +114,26 @@ HEADERS = {
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
+
+
+# ============================================================
+# Noise / non-news title rules
+# ============================================================
+
+NON_NEWS_TITLE_PATTERNS = [
+    r"\brevenue breakdown\b",
+    r"\bfinancial statements\b",
+    r"\bnumber of employees\b",
+    r"\bemployee count\b",
+    r"\bheadcount data\b",
+    r"\bstock price\b",
+    r"\bshare price\b",
+    r"\btechnical analysis\b",
+    r"\bprice target\b",
+    r"\bvaluation\b",
+    r"\bhistorical data\b",
+    r"\bcompany profile\b",
+]
 
 
 # ============================================================
@@ -201,15 +210,13 @@ def safe_request(
 
     try:
 
-        response = requests.get(
+        return requests.get(
             url,
             params=params,
             headers=HEADERS,
             timeout=TIMEOUT,
             allow_redirects=True,
         )
-
-        return response
 
     except Exception as error:
 
@@ -221,6 +228,80 @@ def safe_request(
         )
 
         return None
+
+
+def parse_rss_date(
+    value
+):
+
+    value = clean_text(
+        value
+    )
+
+    if not value:
+        return None
+
+    try:
+
+        parsed = parsedate_to_datetime(
+            value
+        )
+
+        if parsed.tzinfo is None:
+
+            parsed = parsed.replace(
+                tzinfo=timezone.utc
+            )
+
+        return parsed.astimezone(
+            timezone.utc
+        )
+
+    except Exception:
+
+        return None
+
+
+def within_lookback(
+    published_at
+):
+
+    if published_at is None:
+        return False
+
+    cutoff = (
+        datetime.now(
+            timezone.utc
+        )
+        - timedelta(
+            days=NEWS_LOOKBACK_DAYS
+        )
+    )
+
+    return (
+        published_at
+        >= cutoff
+    )
+
+
+def is_non_news_title(
+    title
+):
+
+    title_lower = normalized_lower(
+        title
+    )
+
+    return any(
+        re.search(
+            pattern,
+            title_lower,
+            flags=re.I
+        )
+
+        for pattern
+        in NON_NEWS_TITLE_PATTERNS
+    )
 
 
 def company_match(
@@ -246,8 +327,6 @@ def company_match(
         if not alias_lower:
             continue
 
-        # Aliases القصيرة جدًا مثل "علم" و"سيرا" تحتاج
-        # حدود كلمة حتى لا تطابق أجزاء من كلمات أخرى.
         if len(
             alias_lower
         ) <= 4:
@@ -265,126 +344,50 @@ def company_match(
                 haystack,
                 flags=re.I
             ):
+
                 return True
 
         elif alias_lower in haystack:
+
             return True
 
     return False
 
 
-def identify_company(
+def normalized_title_key(
     title
 ):
 
-    matches = []
+    title = normalized_lower(
+        title
+    )
 
-    for company in TEST_COMPANIES:
+    title = re.sub(
+        r"\s+-\s+[^-]{2,80}$",
+        "",
+        title
+    )
 
-        if company_match(
-            title,
-            company
-        ):
+    title = re.sub(
+        r"[^\w\u0600-\u06FF]+",
+        " ",
+        title
+    )
 
-            matches.append(
-                company
-            )
+    title = re.sub(
+        r"\s+",
+        " ",
+        title
+    ).strip()
 
-    if len(
-        matches
-    ) == 1:
-
-        return matches[0]
-
-    return None
-
-
-# ============================================================
-# Minimal HTML Parser
-# ============================================================
-
-class PublicHTMLParser(
-    HTMLParser
-):
-
-    def __init__(self):
-
-        super().__init__()
-
-        self.links = []
-
-        self.current_href = None
-        self.current_text = []
-
-    def handle_starttag(
-        self,
-        tag,
-        attrs
-    ):
-
-        if tag.lower() != "a":
-            return
-
-        attrs = dict(
-            attrs
-        )
-
-        self.current_href = (
-            attrs.get(
-                "href"
-            )
-        )
-
-        self.current_text = []
-
-    def handle_data(
-        self,
-        data
-    ):
-
-        if self.current_href is not None:
-
-            self.current_text.append(
-                data
-            )
-
-    def handle_endtag(
-        self,
-        tag
-    ):
-
-        if (
-            tag.lower() == "a"
-            and self.current_href is not None
-        ):
-
-            text = clean_text(
-                " ".join(
-                    self.current_text
-                )
-            )
-
-            self.links.append({
-                "text":
-                    text,
-
-                "href":
-                    self.current_href,
-            })
-
-            self.current_href = None
-            self.current_text = []
+    return title
 
 
 # ============================================================
-# 1) Tadawul
+# Source diagnostics
 # ============================================================
 
 def test_tadawul():
-
-    print_header(
-        "🏛 SOURCE 1: TADAWUL"
-    )
 
     response = safe_request(
         TADAWUL_URL
@@ -393,350 +396,86 @@ def test_tadawul():
     if response is None:
 
         return {
-            "source":
-                "tadawul",
+            "available":
+                False,
 
+            "status":
+                "REQUEST_ERROR",
+        }
+
+    return {
+        "available":
+            response.status_code == 200,
+
+        "status":
+            f"HTTP_{response.status_code}",
+    }
+
+
+def test_argaam():
+
+    response = safe_request(
+        ARGAAM_HOME
+    )
+
+    if response is None:
+
+        return {
             "available":
                 False,
 
             "status":
                 "REQUEST_ERROR",
 
-            "items":
-                [],
-        }
-
-    print(
-        f"🌐 HTTP Status: "
-        f"{response.status_code}",
-        flush=True
-    )
-
-    print(
-        f"📦 Response Size: "
-        f"{len(response.content):,} bytes",
-        flush=True
-    )
-
-    if response.status_code != 200:
-
-        print(
-            "🔴 Tadawul unavailable for direct automation.",
-            flush=True
-        )
-
-        return {
-            "source":
-                "tadawul",
-
-            "available":
-                False,
-
-            "status":
-                f"HTTP_{response.status_code}",
-
-            "items":
-                [],
+            "size":
+                0,
         }
 
     return {
-        "source":
-            "tadawul",
-
         "available":
-            True,
+            response.status_code == 200,
 
         "status":
-            "HTTP_200",
-
-        "items":
-            [],
-    }
-
-
-# ============================================================
-# 2) Argaam
-# ============================================================
-
-def is_argaam_article_url(
-    url
-):
-
-    url_lower = normalized_lower(
-        url
-    )
-
-    # نستهدف صفحات الأخبار/المقالات فقط.
-    # نستبعد صفحات الشركات والتصنيفات والتنقل العام.
-    positive = any(
-        token in url_lower
-
-        for token in (
-            "/article/articledetail/",
-            "/article/",
-            "/news/",
-        )
-    )
-
-    negative = any(
-        token in url_lower
-
-        for token in (
-            "/company/",
-            "/companies/",
-            "/market/",
-            "/markets/",
-            "/indices/",
-            "/stock/",
-            "/stocks/",
-            "/sector/",
-            "/sectors/",
-        )
-    )
-
-    return (
-        positive
-        and not negative
-    )
-
-
-def extract_argaam_articles(
-    html_text,
-    base_url
-):
-
-    parser = PublicHTMLParser()
-
-    parser.feed(
-        html_text
-    )
-
-    candidates = []
-
-    for link in parser.links:
-
-        title = clean_text(
-            link.get(
-                "text"
-            )
-        )
-
-        href = clean_text(
-            link.get(
-                "href"
-            )
-        )
-
-        if (
-            not title
-            or not href
-        ):
-            continue
-
-        # عنوان قصير جدًا غالبًا ليس خبرًا.
-        if len(
-            title
-        ) < 18:
-            continue
-
-        full_url = urljoin(
-            base_url,
-            href
-        )
-
-        if not is_argaam_article_url(
-            full_url
-        ):
-            continue
-
-        company = identify_company(
-            title
-        )
-
-        if company is None:
-            continue
-
-        candidates.append({
-            "source":
-                "argaam",
-
-            "symbol":
-                company[
-                    "symbol"
-                ],
-
-            "company_name":
-                company[
-                    "name_ar"
-                ],
-
-            "title":
-                title,
-
-            "url":
-                full_url,
-
-            "published_at":
-                None,
-
-            "external_id":
-                make_external_id(
-                    "argaam",
-                    title,
-                    full_url
-                ),
-        })
-
-    # Deduplicate
-    unique = []
-    seen = set()
-
-    for item in candidates:
-
-        external_id = (
-            item[
-                "external_id"
-            ]
-        )
-
-        if external_id in seen:
-            continue
-
-        seen.add(
-            external_id
-        )
-
-        unique.append(
-            item
-        )
-
-    return unique
-
-
-def test_argaam():
-
-    print_header(
-        "🟢 SOURCE 2: ARGAAM"
-    )
-
-    all_items = []
-
-    successful_endpoint = False
-
-    for url in ARGAAM_URLS:
-
-        response = safe_request(
-            url
-        )
-
-        if response is None:
-
-            print(
-                f"🔴 {url} | REQUEST ERROR",
-                flush=True
-            )
-
-            continue
-
-        print(
-            f"🌐 {url} | "
-            f"HTTP {response.status_code} | "
-            f"{len(response.content):,} bytes",
-            flush=True
-        )
-
-        if response.status_code != 200:
-            continue
-
-        successful_endpoint = True
-
-        items = extract_argaam_articles(
-            response.text,
-            response.url
-        )
-
-        all_items.extend(
-            items
-        )
-
-        time.sleep(
-            REQUEST_DELAY
-        )
-
-    # Deduplicate across endpoints
-    unique = []
-    seen = set()
-
-    for item in all_items:
-
-        external_id = (
-            item[
-                "external_id"
-            ]
-        )
-
-        if external_id in seen:
-            continue
-
-        seen.add(
-            external_id
-        )
-
-        unique.append(
-            item
-        )
-
-    unique = unique[
-        :MAX_ARGAAM_ITEMS
-    ]
-
-    print(
-        f"📰 Company-matched article candidates: "
-        f"{len(unique)}",
-        flush=True
-    )
-
-    return {
-        "source":
-            "argaam",
-
-        "available":
-            successful_endpoint,
-
-        "status":
-            (
-                "HTTP_200"
-                if successful_endpoint
-                else "UNAVAILABLE"
+            f"HTTP_{response.status_code}",
+
+        "size":
+            len(
+                response.content
             ),
-
-        "items":
-            unique,
     }
 
 
 # ============================================================
-# 3) Google News RSS
+# Google News RSS
 # ============================================================
 
-def google_news_query(
+def google_query_general(
     company
 ):
 
-    # استخدام الاسم الإنجليزي + السعودية
-    # يقلل النتائج من الشركات الأجنبية المشابهة.
     return (
         f"\"{company['name_en']}\" "
         f"Saudi Arabia"
     )
 
 
-def parse_google_news_rss(
-    xml_text,
+def google_query_argaam(
     company
 ):
 
-    items = []
+    return (
+        f"\"{company['name_en']}\" "
+        f"site:argaam.com"
+    )
+
+
+def parse_google_rss(
+    xml_text,
+    company,
+    query_type
+):
+
+    output = []
 
     try:
 
@@ -753,7 +492,7 @@ def parse_google_news_rss(
             flush=True
         )
 
-        return items
+        return output
 
     for node in root.findall(
         ".//item"
@@ -771,7 +510,7 @@ def parse_google_news_rss(
             )
         )
 
-        pub_date_raw = clean_text(
+        published_at = parse_rss_date(
             node.findtext(
                 "pubDate"
             )
@@ -792,44 +531,28 @@ def parse_google_news_rss(
         if not title:
             continue
 
-        # Google RSS query قد يعيد نتائج جانبية،
-        # لذلك نعيد تأكيد اسم الشركة في العنوان.
+        if not within_lookback(
+            published_at
+        ):
+            continue
+
         if not company_match(
             title,
             company
         ):
             continue
 
-        published_at = None
+        if is_non_news_title(
+            title
+        ):
+            continue
 
-        if pub_date_raw:
-
-            try:
-
-                parsed = parsedate_to_datetime(
-                    pub_date_raw
-                )
-
-                if parsed.tzinfo is None:
-
-                    parsed = parsed.replace(
-                        tzinfo=timezone.utc
-                    )
-
-                published_at = (
-                    parsed.astimezone(
-                        timezone.utc
-                    )
-                    .isoformat()
-                )
-
-            except Exception:
-
-                published_at = None
-
-        items.append({
+        output.append({
             "source":
                 "google_news_rss",
+
+            "query_type":
+                query_type,
 
             "symbol":
                 company[
@@ -851,7 +574,7 @@ def parse_google_news_rss(
                 publisher,
 
             "published_at":
-                published_at,
+                published_at.isoformat(),
 
             "external_id":
                 make_external_id(
@@ -862,272 +585,128 @@ def parse_google_news_rss(
         })
 
         if len(
-            items
-        ) >= MAX_GOOGLE_ITEMS_PER_COMPANY:
+            output
+        ) >= MAX_ITEMS_PER_QUERY:
 
             break
 
-    return items
+    return output
 
 
-def test_google_news():
+def fetch_google_query(
+    company,
+    query,
+    query_type
+):
 
-    print_header(
-        "🔵 SOURCE 3: GOOGLE NEWS RSS"
-    )
+    params = {
+        "q":
+            query,
 
-    all_items = []
+        "hl":
+            "en-SA",
 
-    success_count = 0
+        "gl":
+            "SA",
 
-    for company in TEST_COMPANIES:
-
-        params = {
-            "q":
-                google_news_query(
-                    company
-                ),
-
-            "hl":
-                "en-SA",
-
-            "gl":
-                "SA",
-
-            "ceid":
-                "SA:en",
-        }
-
-        response = safe_request(
-            GOOGLE_NEWS_RSS,
-            params=params
-        )
-
-        if response is None:
-
-            print(
-                f"🔴 {company['symbol']} | "
-                "REQUEST ERROR",
-                flush=True
-            )
-
-            continue
-
-        print(
-            f"🌐 {company['symbol']} | "
-            f"HTTP {response.status_code} | "
-            f"{len(response.content):,} bytes",
-            flush=True
-        )
-
-        if response.status_code != 200:
-            continue
-
-        success_count += 1
-
-        items = parse_google_news_rss(
-            response.text,
-            company
-        )
-
-        all_items.extend(
-            items
-        )
-
-        print(
-            f"📰 {company['symbol']} | "
-            f"Company-confirmed RSS items: "
-            f"{len(items)}",
-            flush=True
-        )
-
-        time.sleep(
-            REQUEST_DELAY
-        )
-
-    return {
-        "source":
-            "google_news_rss",
-
-        "available":
-            success_count > 0,
-
-        "status":
-            (
-                "HTTP_200"
-                if success_count > 0
-                else "UNAVAILABLE"
-            ),
-
-        "items":
-            all_items,
+        "ceid":
+            "SA:en",
     }
 
-
-# ============================================================
-# Cross-source dedupe
-# ============================================================
-
-def normalized_title_key(
-    title
-):
-
-    title = normalized_lower(
-        title
+    response = safe_request(
+        GOOGLE_NEWS_RSS,
+        params=params
     )
 
-    title = re.sub(
-        r"[^\w\u0600-\u06FF]+",
-        " ",
-        title
+    if response is None:
+
+        return []
+
+    print(
+        f"🌐 {company['symbol']} | "
+        f"{query_type} | "
+        f"HTTP {response.status_code} | "
+        f"{len(response.content):,} bytes",
+        flush=True
     )
 
-    title = re.sub(
-        r"\s+",
-        " ",
-        title
-    ).strip()
+    if response.status_code != 200:
 
-    return title
+        return []
 
-
-def merge_candidate_items(
-    source_results
-):
-
-    merged = []
-
-    seen_exact = set()
-    seen_title = set()
-
-    for result in source_results:
-
-        for item in result[
-            "items"
-        ]:
-
-            exact_key = (
-                item[
-                    "external_id"
-                ]
-            )
-
-            title_key = (
-                item[
-                    "symbol"
-                ],
-                normalized_title_key(
-                    item[
-                        "title"
-                    ]
-                )
-            )
-
-            if exact_key in seen_exact:
-                continue
-
-            if title_key in seen_title:
-                continue
-
-            seen_exact.add(
-                exact_key
-            )
-
-            seen_title.add(
-                title_key
-            )
-
-            merged.append(
-                item
-            )
-
-    return merged
-
-
-# ============================================================
-# Print candidates
-# ============================================================
-
-def print_company_candidates(
-    merged
-):
-
-    grouped = defaultdict(
-        list
+    return parse_google_rss(
+        response.text,
+        company,
+        query_type
     )
 
-    for item in merged:
 
-        grouped[
+def fetch_company_candidates(
+    company
+):
+
+    items = []
+
+    general_items = fetch_google_query(
+        company=company,
+        query=google_query_general(
+            company
+        ),
+        query_type="general"
+    )
+
+    items.extend(
+        general_items
+    )
+
+    time.sleep(
+        REQUEST_DELAY
+    )
+
+    argaam_items = fetch_google_query(
+        company=company,
+        query=google_query_argaam(
+            company
+        ),
+        query_type="argaam_targeted"
+    )
+
+    items.extend(
+        argaam_items
+    )
+
+    # Deduplicate by normalized title within the company.
+    unique = []
+
+    seen_titles = set()
+
+    for item in sorted(
+        items,
+        key=lambda x:
+            x[
+                "published_at"
+            ],
+        reverse=True
+    ):
+
+        title_key = normalized_title_key(
             item[
-                "symbol"
+                "title"
             ]
-        ].append(
+        )
+
+        if title_key in seen_titles:
+            continue
+
+        seen_titles.add(
+            title_key
+        )
+
+        unique.append(
             item
         )
 
-    print_header(
-        "🔎 COMPANY CANDIDATE REVIEW"
-    )
-
-    for company in TEST_COMPANIES:
-
-        symbol = company[
-            "symbol"
-        ]
-
-        items = grouped.get(
-            symbol,
-            []
-        )
-
-        print(
-            f"\n🏢 {symbol} | "
-            f"{company['name_ar']} | "
-            f"Candidates={len(items)}",
-            flush=True
-        )
-
-        if not items:
-
-            print(
-                "- No confirmed candidate news.",
-                flush=True
-            )
-
-            continue
-
-        for index, item in enumerate(
-            items[
-                :MAX_PRINT_PER_COMPANY
-            ],
-            start=1
-        ):
-
-            date_text = (
-                item.get(
-                    "published_at"
-                )
-                or "N/A"
-            )
-
-            publisher = (
-                item.get(
-                    "publisher"
-                )
-                or item[
-                    "source"
-                ]
-            )
-
-            print(
-                f"{index}. "
-                f"[{item['source']}] "
-                f"{date_text} | "
-                f"{publisher} | "
-                f"{item['title']}",
-                flush=True
-            )
+    return unique
 
 
 # ============================================================
@@ -1147,7 +726,8 @@ def run():
     )
 
     print(
-        "🚫 No protection bypass",
+        f"📅 Lookback: "
+        f"{NEWS_LOOKBACK_DAYS} days",
         flush=True
     )
 
@@ -1163,133 +743,180 @@ def run():
     )
 
     # ========================================================
-    # Source 1
+    # Diagnostics
     # ========================================================
+
+    print_header(
+        "🧭 SOURCE DIAGNOSTICS"
+    )
 
     tadawul = test_tadawul()
 
-    # ========================================================
-    # Source 2
-    # ========================================================
+    print(
+        f"🏛 Tadawul | "
+        f"Available="
+        f"{tadawul['available']} | "
+        f"{tadawul['status']}",
+        flush=True
+    )
 
     argaam = test_argaam()
 
-    # ========================================================
-    # Source 3
-    # ========================================================
-
-    google_news = test_google_news()
-
-    source_results = [
-        argaam,
-        google_news,
-    ]
-
-    merged = merge_candidate_items(
-        source_results
+    print(
+        f"🟢 Argaam | "
+        f"Available="
+        f"{argaam['available']} | "
+        f"{argaam['status']} | "
+        f"Size="
+        f"{argaam['size']:,}",
+        flush=True
     )
 
-    print_company_candidates(
-        merged
+    # ========================================================
+    # Candidate collection
+    # ========================================================
+
+    print_header(
+        "🔎 COMPANY CANDIDATE REVIEW"
     )
+
+    all_items = []
+
+    for company in TEST_COMPANIES:
+
+        items = fetch_company_candidates(
+            company
+        )
+
+        all_items.extend(
+            items
+        )
+
+        print(
+            f"\n🏢 {company['symbol']} | "
+            f"{company['name_ar']} | "
+            f"Recent Candidates="
+            f"{len(items)}",
+            flush=True
+        )
+
+        if not items:
+
+            print(
+                "- No recent confirmed candidates.",
+                flush=True
+            )
+
+            continue
+
+        for index, item in enumerate(
+            items[
+                :MAX_PRINT_PER_COMPANY
+            ],
+            start=1
+        ):
+
+            print(
+                f"{index}. "
+                f"[{item['query_type']}] "
+                f"{item['published_at'][:10]} | "
+                f"{item['publisher'] or 'N/A'} | "
+                f"{item['title']}",
+                flush=True
+            )
 
     # ========================================================
     # Final Summary
     # ========================================================
 
     print_header(
-        "🏁 SAUDI NEWS SOURCE SUMMARY"
+        "🏁 SAUDI NEWS ADAPTER v0.3 SUMMARY"
     )
 
-    for result in (
-        tadawul,
-        argaam,
-        google_news,
-    ):
-
-        print(
-            f"{result['source']} | "
-            f"Available="
-            f"{result['available']} | "
-            f"Status="
-            f"{result['status']} | "
-            f"Items="
-            f"{len(result['items'])}",
-            flush=True
-        )
-
-    print(
-        f"\n🧩 Cross-source unique "
-        f"company candidates: "
-        f"{len(merged)}",
-        flush=True
+    grouped = defaultdict(
+        int
     )
 
-    if (
-        argaam[
-            "available"
-        ]
-        and len(
-            argaam[
-                "items"
+    query_types = defaultdict(
+        int
+    )
+
+    for item in all_items:
+
+        grouped[
+            item[
+                "symbol"
             ]
-        ) > 0
-    ):
+        ] += 1
 
-        print(
-            "🟢 Argaam extraction is usable.",
-            flush=True
-        )
-
-    elif argaam[
-        "available"
-    ]:
-
-        print(
-            "🟡 Argaam is reachable but "
-            "company-title extraction needs refinement.",
-            flush=True
-        )
-
-    if (
-        google_news[
-            "available"
-        ]
-        and len(
-            google_news[
-                "items"
+        query_types[
+            item[
+                "query_type"
             ]
-        ) > 0
-    ):
+        ] += 1
+
+    print(
+        f"🏢 Companies Tested: "
+        f"{len(TEST_COMPANIES)}",
+        flush=True
+    )
+
+    print(
+        f"📰 Recent Unique Candidates: "
+        f"{len(all_items)}",
+        flush=True
+    )
+
+    print(
+        f"🌐 General RSS Candidates: "
+        f"{query_types['general']}",
+        flush=True
+    )
+
+    print(
+        f"🟢 Argaam-targeted RSS Candidates: "
+        f"{query_types['argaam_targeted']}",
+        flush=True
+    )
+
+    for company in TEST_COMPANIES:
 
         print(
-            "🟢 Google News RSS company matching is usable.",
+            f"- {company['symbol']} | "
+            f"{company['name_ar']} | "
+            f"{grouped[company['symbol']]} candidates",
             flush=True
         )
 
     print(
-        "\n📌 NEXT GATE:",
+        "\n📌 IMPORTANT:",
         flush=True
     )
 
     print(
-        "- نراجع العناوين المطبوعة أولًا.",
+        "- الأخبار الأقدم من 21 يومًا تم حذفها قبل العرض.",
         flush=True
     )
 
     print(
-        "- إذا كانت تخص الشركات فعلًا، "
-        "نربطها مع Material Event Filter في news_data.py.",
+        "- صفحات البيانات العامة مثل Revenue Breakdown "
+        "وFinancial Statements تم استبعادها.",
         flush=True
     )
 
     print(
-        "- لا يتم الحفظ قبل اجتياز الفلترة.",
+        "- هذه ليست مرحلة Material Event النهائية بعد.",
         flush=True
     )
 
     print(
-        "- تداول يبقى Official Arbiter بسبب HTTP 403.",
+        "- الخطوة التالية بعد مراجعة العناوين: "
+        "تمريرها إلى news_data.py للتصنيف والفلترة قبل الحفظ.",
+        flush=True
+    )
+
+    print(
+        "- Tadawul يبقى Official Arbiter بسبب الحماية.",
         flush=True
     )
 
