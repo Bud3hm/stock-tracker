@@ -8,24 +8,35 @@ on:
     # 06:30 UTC = 09:30 Riyadh
     - cron: "30 6 * * *"
 
+
 jobs:
+
   financial-pipeline:
+
     runs-on: ubuntu-latest
 
     steps:
+
+      # ======================================================
+      # Setup
+      # ======================================================
+
       - name: Get code
         uses: actions/checkout@v4
+
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+
       - name: Install requirements
         run: pip install -r requirements.txt
 
+
       # ======================================================
-      # 1) جلب البيانات المالية
+      # 1) جلب البيانات المالية الخام
       # ======================================================
 
       - name: Fetch financial data
@@ -34,18 +45,20 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python financial_data.py
 
+
       # ======================================================
-      # 2) الشركات العادية
+      # 2) مؤشرات الشركات العادية
       # ======================================================
 
-      - name: Calculate financial metrics
+      - name: Calculate standard financial metrics
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python financial_metrics.py
 
+
       # ======================================================
-      # 3) البنوك
+      # 3) مؤشرات البنوك
       # ======================================================
 
       - name: Calculate bank metrics
@@ -54,8 +67,9 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python bank_metrics.py
 
+
       # ======================================================
-      # 4) التأمين
+      # 4) مؤشرات التأمين
       # ======================================================
 
       - name: Calculate insurance metrics
@@ -64,8 +78,9 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python insurance_metrics.py
 
+
       # ======================================================
-      # 5) REIT
+      # 5) مؤشرات REIT
       # ======================================================
 
       - name: Calculate REIT metrics
@@ -74,8 +89,9 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python reit_metrics.py
 
+
       # ======================================================
-      # 6) Scoring
+      # 6) Scoring Engine
       # ======================================================
 
       - name: Run Scoring Engine
@@ -84,8 +100,44 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python scoring_engine.py
 
+
       # ======================================================
-      # 7) Turning Point
+      # 7) Standard Signal Engine
+      # ======================================================
+
+      - name: Run Standard Signal Engine
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: python signal_engine.py
+
+
+      # ======================================================
+      # 8) Bank Signal Engine
+      # ======================================================
+
+      - name: Run Bank Signal Engine
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: python bank_signal_engine.py
+
+
+      # ======================================================
+      # 9) Insurance Signal Engine
+      # ======================================================
+
+      - name: Run Insurance Signal Engine
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: python insurance_signal_engine.py
+
+
+      # ======================================================
+      # 10) Turning Point Engine
+      #
+      # يجب أن يعمل بعد Scoring + Signal Engines
       # ======================================================
 
       - name: Run Turning Point Engine
@@ -94,9 +146,11 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python turning_point_engine.py
 
+
       # ======================================================
-      # 8) Data Quality
-      # لازم يسبق Decision
+      # 11) Data Quality Engine
+      #
+      # يجب أن يعمل قبل Decision
       # ======================================================
 
       - name: Run Data Quality Engine
@@ -105,8 +159,9 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python data_quality_engine.py
 
+
       # ======================================================
-      # 9) Final Decision
+      # 12) Final Decision Engine
       # ======================================================
 
       - name: Run Decision Engine
@@ -114,3 +169,30 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: python decision_engine.py
+
+
+      # ======================================================
+      # 13) Validation Engine
+      #
+      # READ ONLY
+      # ======================================================
+
+      - name: Run Validation Engine
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: python validation_engine.py
+
+
+      # ======================================================
+      # 14) Master System Audit
+      #
+      # آخر مرحلة في السلسلة
+      # READ ONLY
+      # ======================================================
+
+      - name: Run Master System Audit
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: python system_audit_engine.py
