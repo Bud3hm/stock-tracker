@@ -2118,18 +2118,198 @@ def run_bank_signal_engine(
 
 
 # ============================================================
+# Get Active Bank Stocks
+# ============================================================
+
+def get_active_bank_stocks():
+
+    response = (
+        supabase
+        .table("stocks")
+        .select(
+            "id,"
+            "symbol,"
+            "company_name,"
+            "analysis_model,"
+            "is_active"
+        )
+        .eq(
+            "is_active",
+            True
+        )
+        .eq(
+            "analysis_model",
+            "bank"
+        )
+        .order(
+            "id"
+        )
+        .execute()
+    )
+
+    return (
+        response.data
+        or []
+    )
+
+
+# ============================================================
+# Run All Active Banks
+# ============================================================
+
+def run_all_active_banks():
+
+    banks = get_active_bank_stocks()
+
+    print(
+        "\n"
+        + "=" * 80,
+        flush=True
+    )
+
+    print(
+        f"🏦 BANK SIGNAL ENGINE v{ENGINE_VERSION} | ALL ACTIVE BANKS",
+        flush=True
+    )
+
+    print(
+        f"🏢 Active Banks Found: {len(banks)}",
+        flush=True
+    )
+
+    print(
+        "=" * 80,
+        flush=True
+    )
+
+    if not banks:
+
+        print(
+            "🟡 لا توجد بنوك نشطة في جدول stocks",
+            flush=True
+        )
+
+        return
+
+    success = 0
+    failed = 0
+
+    for index, bank in enumerate(
+        banks,
+        start=1
+    ):
+
+        stock_id = bank.get(
+            "id"
+        )
+
+        symbol = (
+            bank.get(
+                "symbol"
+            )
+            or str(
+                stock_id
+            )
+        )
+
+        print(
+            "\n"
+            f"🚦 Bank "
+            f"{index}/{len(banks)} | "
+            f"{symbol}",
+            flush=True
+        )
+
+        try:
+
+            run_bank_signal_engine(
+                stock_id
+            )
+
+            success += 1
+
+        except Exception as error:
+
+            failed += 1
+
+            print(
+                f"🔴 {symbol} | "
+                f"{type(error).__name__}: "
+                f"{error}",
+                flush=True
+            )
+
+    print(
+        "\n"
+        + "=" * 80,
+        flush=True
+    )
+
+    print(
+        "📊 ALL BANKS SUMMARY",
+        flush=True
+    )
+
+    print(
+        "=" * 80,
+        flush=True
+    )
+
+    print(
+        f"🏢 Banks Found: {len(banks)}",
+        flush=True
+    )
+
+    print(
+        f"🟢 Completed: {success}",
+        flush=True
+    )
+
+    print(
+        f"🔴 Failed: {failed}",
+        flush=True
+    )
+
+    print(
+        "=" * 80,
+        flush=True
+    )
+
+
+# ============================================================
 # START
+#
+# إذا تم تمرير STOCK_ID:
+# يشغل بنكًا واحدًا للاختبار.
+#
+# إذا لم يتم تمرير STOCK_ID:
+# يشغل جميع البنوك النشطة تلقائيًا.
 # ============================================================
 
 if __name__ == "__main__":
 
-    stock_id = int(
-        os.environ.get(
-            "STOCK_ID",
-            "1"
-        )
+    stock_id_env = os.environ.get(
+        "STOCK_ID"
     )
 
-    run_bank_signal_engine(
-        stock_id
-    )
+    if stock_id_env:
+
+        try:
+
+            stock_id = int(
+                stock_id_env
+            )
+
+        except ValueError:
+
+            raise RuntimeError(
+                "STOCK_ID must be an integer"
+            )
+
+        run_bank_signal_engine(
+            stock_id
+        )
+
+    else:
+
+        run_all_active_banks()
