@@ -1,10 +1,10 @@
-name: Test Tadawul News Adapter
+name: Test Saudi News Sources
 
 on:
   workflow_dispatch:
 
 jobs:
-  test-tadawul-news:
+  test-saudi-news:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,15 +21,21 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
 
       # ======================================================
-      # Tadawul News Adapter Test
+      # Saudi News Sources Test
+      #
+      # Sources:
+      # 1. Tadawul
+      # 2. Argaam
+      # 3. Google News RSS
       #
       # READ ONLY / TEST ONLY
-      # لا يكتب في Supabase
-      # لا يحاول تجاوز أي حماية
+      # No Supabase writes
       # ======================================================
 
-      - name: Run Tadawul News Adapter
-        run: python tadawul_news_adapter.py
+      - name: Run Saudi News Adapter
+        run: python saudi_news_adapter.py
