@@ -21,10 +21,12 @@ from supabase import create_client
 # لا يتم الحفظ إلا إذا:
 # NEWS_TEST_MODE=false
 #
-# التعديلات في v1.0.1:
+# التعديلات في v1.0.2:
 # - TEST MODE لا يقرأ company_news
-# - Yahoo queries تستخدم symbol و symbol code فقط
-# - تم إيقاف البحث بالاسم العربي بسبب HTTP 400 من Yahoo
+# - Yahoo query يستخدم الرمز الكامل فقط مثل 1810.SR
+# - لا نعتمد الرمز الرقمي وحده بسبب تعارضات عالمية مثل 1810 في هونغ كونغ
+# - التحقق من relatedTickers داخل خبر Yahoo إلزامي للقبول
+# - منع false positives من شركات تحمل نفس الرقم في أسواق أخرى
 # - Live mode فقط يستخدم Deduplication من company_news
 #
 # المسار:
@@ -74,7 +76,7 @@ supabase = create_client(
 # Settings
 # ============================================================
 
-ENGINE_VERSION = "1.0.1"
+ENGINE_VERSION = "1.0.2"
 
 TEST_MODE = (
     os.environ
@@ -690,34 +692,16 @@ class YahooNewsAdapter(
             )
         )
 
-        queries = []
+        if not symbol:
+            return []
 
-        if symbol:
-
-            queries.append(
-                symbol
-            )
-
-            symbol_code = (
-                symbol
-                .split(".")[0]
-            )
-
-            if symbol_code:
-
-                queries.append(
-                    symbol_code
-                )
-
-        return list(
-            dict.fromkeys(
-                query
-
-                for query in queries
-
-                if query
-            )
-        )
+        # نستخدم الرمز الكامل فقط.
+        # مثال مهم:
+        # 1810 وحده قد يعيد Xiaomi (1810.HK)
+        # بينما 1810.SR يحدد السوق السعودي.
+        return [
+            symbol
+        ]
 
     def normalize_item(
         self,
@@ -772,6 +756,29 @@ class YahooNewsAdapter(
             url=link
         )
 
+        related_tickers = (
+            item.get(
+                "relatedTickers"
+            )
+            or []
+        )
+
+        if not isinstance(
+            related_tickers,
+            list
+        ):
+            related_tickers = []
+
+        related_tickers = [
+            normalize_text(
+                ticker
+            )
+            for ticker in related_tickers
+            if normalize_text(
+                ticker
+            )
+        ]
+
         return {
             "title":
                 truncate_text(
@@ -796,6 +803,9 @@ class YahooNewsAdapter(
 
             "published_at":
                 published_at,
+
+            "related_tickers":
+                related_tickers,
 
             "raw_data":
                 item,
@@ -878,61 +888,52 @@ class YahooNewsAdapter(
 # Relevance
 # ============================================================
 
-def calculate_relevance_score(
+def exact_related_ticker_match(
     stock,
     item
 ):
 
-    title = normalized_lower(
-        item.get(
-            "title"
-        )
-    )
-
-    if not title:
-
-        return 0.0
-
-    symbol = normalize_text(
+    symbol = normalized_lower(
         stock.get(
             "symbol"
         )
     )
 
-    symbol_code = (
-        symbol
-        .split(".")[0]
-        if symbol
-        else ""
-    )
+    if not symbol:
+        return False
 
-    score = 0.0
-
-    if (
-        symbol
-        and normalized_lower(
-            symbol
+    related_tickers = (
+        item.get(
+            "related_tickers"
         )
-        in title
-    ):
-
-        score += 70.0
-
-    if (
-        symbol_code
-        and symbol_code
-        in title
-    ):
-
-        score += 45.0
-
-    # Yahoo query matching gives a limited prior.
-    score += 15.0
-
-    return min(
-        100.0,
-        score
+        or []
     )
+
+    return any(
+        normalized_lower(
+            ticker
+        )
+        == symbol
+        for ticker in related_tickers
+    )
+
+
+def calculate_relevance_score(
+    stock,
+    item
+):
+
+    # أهم قاعدة في v1.0.2:
+    # لا نقبل خبر Yahoo لشركة سعودية إلا إذا Yahoo نفسه
+    # ربط الخبر بالرمز السعودي الكامل داخل relatedTickers.
+    if exact_related_ticker_match(
+        stock,
+        item
+    ):
+
+        return 100.0
+
+    return 0.0
 
 
 # ============================================================
@@ -1210,6 +1211,22 @@ def prefilter_news_item(
         )
     )
 
+    if not exact_related_ticker_match(
+        stock,
+        item
+    ):
+
+        return {
+            "accepted":
+                False,
+
+            "reason":
+                "WRONG_OR_UNCONFIRMED_TICKER",
+
+            "relevance_score":
+                relevance_score,
+        }
+
     if relevance_score < MIN_RELEVANCE_SCORE:
 
         return {
@@ -1401,6 +1418,12 @@ def build_news_record(
                 "matched_keywords":
                     decision.get(
                         "matched_keywords",
+                        []
+                    ),
+
+                "related_tickers":
+                    item.get(
+                        "related_tickers",
                         []
                     ),
 
@@ -1989,12 +2012,17 @@ def run_news_pipeline():
     )
 
     print(
-        "- Yahoo query uses symbol and symbol code only.",
+        "- Yahoo query uses the full Saudi symbol only (example: 1810.SR).",
         flush=True
     )
 
     print(
-        "- Arabic company-name query is disabled in v1.0.1.",
+        "- relatedTickers exact match is required before a news item can pass relevance.",
+        flush=True
+    )
+
+    print(
+        "- Numeric-only ticker queries are disabled to prevent cross-market false positives.",
         flush=True
     )
 
