@@ -10,7 +10,7 @@ from supabase import create_client
 
 
 # ============================================================
-# NEWS DATA PIPELINE v1.0.2
+# NEWS DATA PIPELINE v1.0.3
 #
 # الهدف:
 # جلب أخبار الشركات + فلترة الأخبار غير المهمة قبل الحفظ.
@@ -21,12 +21,13 @@ from supabase import create_client
 # لا يتم الحفظ إلا إذا:
 # NEWS_TEST_MODE=false
 #
-# التعديلات في v1.0.2:
+# التعديلات في v1.0.3:
 # - TEST MODE لا يقرأ company_news
-# - Yahoo query يستخدم الرمز الكامل فقط مثل 1810.SR
-# - لا نعتمد الرمز الرقمي وحده بسبب تعارضات عالمية مثل 1810 في هونغ كونغ
-# - التحقق من relatedTickers داخل خبر Yahoo إلزامي للقبول
-# - منع false positives من شركات تحمل نفس الرقم في أسواق أخرى
+# - Yahoo query يستخدم الرمز السعودي الكامل فقط مثل 1810.SR
+# - relatedTickers أصبح إشارة ثقة قوية وليس شرطًا إلزاميًا
+# - إضافة Company Aliases إنجليزية/عربية للتحقق من هوية الخبر
+# - كشف تعارضات الأسواق الأخرى لنفس الرقم مثل SEHK:1810 / 1810.HK
+# - منع false positives مع السماح بالأخبار الصحيحة التي لا تحتوي relatedTickers
 # - Live mode فقط يستخدم Deduplication من company_news
 #
 # المسار:
@@ -76,7 +77,7 @@ supabase = create_client(
 # Settings
 # ============================================================
 
-ENGINE_VERSION = "1.0.2"
+ENGINE_VERSION = "1.0.3"
 
 TEST_MODE = (
     os.environ
@@ -116,6 +117,127 @@ MIN_IMPORTANCE_SCORE = 60.0
 MAX_TITLE_LENGTH = 500
 
 SOURCE_NAME = "yahoo_news_search"
+
+
+# ============================================================
+# Company Name Aliases
+#
+# تستخدم فقط للتحقق من أن الخبر يخص الشركة الصحيحة.
+# يمكن توسيعها مستقبلًا من جدول aliases مستقل.
+# ============================================================
+
+COMPANY_ALIASES = {
+    "2283.SR": [
+        "First Milling Company",
+        "First Mills",
+        "المطاحن الأولى",
+    ],
+    "1831.SR": [
+        "Maharah Human Resources",
+        "Maharah",
+        "مهارة",
+    ],
+    "4002.SR": [
+        "Mouwasat Medical Services",
+        "Mouwasat",
+        "المواساة",
+    ],
+    "1150.SR": [
+        "Alinma Bank",
+        "Al Inma Bank",
+        "مصرف الإنماء",
+        "الإنماء",
+    ],
+    "2222.SR": [
+        "Saudi Aramco",
+        "Aramco",
+        "أرامكو السعودية",
+        "أرامكو",
+    ],
+    "1211.SR": [
+        "Saudi Arabian Mining Company",
+        "Maaden",
+        "Ma'aden",
+        "معادن",
+    ],
+    "1320.SR": [
+        "Saudi Steel Pipe",
+        "Saudi Steel Pipe Company",
+        "أنابيب السعودية",
+    ],
+    "4030.SR": [
+        "Bahri",
+        "National Shipping Company of Saudi Arabia",
+        "البحري",
+    ],
+    "4011.SR": [
+        "Lazurde",
+        "L'azurde",
+        "Lazurde Company for Jewelry",
+        "لازوردي",
+    ],
+    "1810.SR": [
+        "Seera Group",
+        "Seera",
+        "سيرا",
+    ],
+    "4210.SR": [
+        "Saudi Research and Media Group",
+        "SRMG",
+        "الأبحاث والإعلام",
+    ],
+    "4190.SR": [
+        "Jarir Marketing",
+        "Jarir",
+        "جرير",
+    ],
+    "4163.SR": [
+        "Al-Dawaa Medical Services",
+        "Al Dawaa Medical Services",
+        "Al-Dawaa",
+        "الدواء",
+    ],
+    "2282.SR": [
+        "Naqi Water",
+        "Naqi",
+        "نقي",
+    ],
+    "4015.SR": [
+        "Jamjoom Pharma",
+        "Jamjoom Pharmaceuticals",
+        "جمجوم فارما",
+    ],
+    "1111.SR": [
+        "Saudi Tadawul Group",
+        "Saudi Tadawul Group Holding",
+        "مجموعة تداول السعودية",
+    ],
+    "8010.SR": [
+        "Tawuniya",
+        "The Company for Cooperative Insurance",
+        "التعاونية",
+    ],
+    "7203.SR": [
+        "Elm Company",
+        "Elm",
+        "علم",
+    ],
+    "7010.SR": [
+        "Saudi Telecom Company",
+        "stc",
+        "STC",
+    ],
+    "2082.SR": [
+        "ACWA Power",
+        "Acwa Power",
+        "أكوا باور",
+    ],
+    "4250.SR": [
+        "Jabal Omar Development",
+        "Jabal Omar",
+        "جبل عمر",
+    ],
+}
 
 
 HEADERS = {
@@ -885,8 +1007,69 @@ class YahooNewsAdapter(
 
 
 # ============================================================
-# Relevance
+# Relevance / Identity Validation
 # ============================================================
+
+FOREIGN_MARKET_PREFIXES = (
+    "sehk",
+    "hkex",
+    "hkg",
+    "nasdaq",
+    "nyse",
+    "lse",
+    "tse",
+    "tsx",
+    "asx",
+    "szse",
+    "sse",
+    "bse",
+    "nse",
+    "krx",
+    "epa",
+    "etr",
+)
+
+
+def get_company_aliases(
+    stock
+):
+
+    symbol = normalize_text(
+        stock.get(
+            "symbol"
+        )
+    )
+
+    aliases = list(
+        COMPANY_ALIASES.get(
+            symbol,
+            []
+        )
+    )
+
+    company_name = normalize_text(
+        stock.get(
+            "company_name"
+        )
+    )
+
+    if company_name:
+
+        aliases.append(
+            company_name
+        )
+
+    # إزالة التكرار مع الحفاظ على الترتيب
+    return list(
+        dict.fromkeys(
+            alias
+            for alias in aliases
+            if normalize_text(
+                alias
+            )
+        )
+    )
+
 
 def exact_related_ticker_match(
     stock,
@@ -918,20 +1101,193 @@ def exact_related_ticker_match(
     )
 
 
+def has_cross_market_conflict(
+    stock,
+    item
+):
+
+    symbol = normalize_text(
+        stock.get(
+            "symbol"
+        )
+    )
+
+    if not symbol:
+        return False
+
+    symbol_code = (
+        symbol
+        .split(".")[0]
+    )
+
+    title = normalized_lower(
+        item.get(
+            "title"
+        )
+    )
+
+    related_tickers = [
+        normalized_lower(
+            ticker
+        )
+        for ticker in (
+            item.get(
+                "related_tickers"
+            )
+            or []
+        )
+    ]
+
+    # مثال:
+    # 1810.HK / 1810.HK داخل relatedTickers
+    for ticker in related_tickers:
+
+        if not ticker:
+            continue
+
+        ticker_code = (
+            ticker
+            .split(".")[0]
+        )
+
+        if (
+            ticker_code == normalized_lower(
+                symbol_code
+            )
+            and ticker != normalized_lower(
+                symbol
+            )
+        ):
+            return True
+
+    # مثال في العنوان:
+    # Xiaomi (SEHK:1810)
+    escaped_code = re.escape(
+        symbol_code
+    )
+
+    market_pattern = (
+        r"\b(?:"
+        + "|".join(
+            FOREIGN_MARKET_PREFIXES
+        )
+        + r")\s*[:\-]?\s*"
+        + escaped_code
+        + r"\b"
+    )
+
+    if re.search(
+        market_pattern,
+        title,
+        flags=re.I
+    ):
+
+        return True
+
+    return False
+
+
+def alias_match_score(
+    stock,
+    item
+):
+
+    title = normalized_lower(
+        item.get(
+            "title"
+        )
+    )
+
+    if not title:
+        return 0.0
+
+    best_score = 0.0
+
+    for alias in get_company_aliases(
+        stock
+    ):
+
+        alias_lower = normalized_lower(
+            alias
+        )
+
+        if not alias_lower:
+            continue
+
+        # الاسم الكامل داخل العنوان
+        if alias_lower in title:
+
+            # Alias قصير جدًا مثل stc يحتاج وزن أقل قليلًا
+            if len(
+                alias_lower
+            ) <= 4:
+
+                best_score = max(
+                    best_score,
+                    78.0
+                )
+
+            else:
+
+                best_score = max(
+                    best_score,
+                    92.0
+                )
+
+    return best_score
+
+
 def calculate_relevance_score(
     stock,
     item
 ):
 
-    # أهم قاعدة في v1.0.2:
-    # لا نقبل خبر Yahoo لشركة سعودية إلا إذا Yahoo نفسه
-    # ربط الخبر بالرمز السعودي الكامل داخل relatedTickers.
+    if has_cross_market_conflict(
+        stock,
+        item
+    ):
+
+        return 0.0
+
+    # أقوى إشارة: Yahoo نفسه ربط الخبر بالرمز السعودي.
     if exact_related_ticker_match(
         stock,
         item
     ):
 
         return 100.0
+
+    # ثاني أقوى إشارة: اسم الشركة/alias واضح في العنوان.
+    alias_score = (
+        alias_match_score(
+            stock,
+            item
+        )
+    )
+
+    if alias_score > 0:
+
+        return alias_score
+
+    # وجود الرمز السعودي الكامل في العنوان إشارة قوية.
+    symbol = normalized_lower(
+        stock.get(
+            "symbol"
+        )
+    )
+
+    title = normalized_lower(
+        item.get(
+            "title"
+        )
+    )
+
+    if (
+        symbol
+        and symbol in title
+    ):
+
+        return 88.0
 
     return 0.0
 
@@ -1204,14 +1560,7 @@ def prefilter_news_item(
                 "OUTSIDE_LOOKBACK"
         }
 
-    relevance_score = (
-        calculate_relevance_score(
-            stock,
-            item
-        )
-    )
-
-    if not exact_related_ticker_match(
+    if has_cross_market_conflict(
         stock,
         item
     ):
@@ -1221,11 +1570,18 @@ def prefilter_news_item(
                 False,
 
             "reason":
-                "WRONG_OR_UNCONFIRMED_TICKER",
+                "CROSS_MARKET_CONFLICT",
 
             "relevance_score":
-                relevance_score,
+                0.0,
         }
+
+    relevance_score = (
+        calculate_relevance_score(
+            stock,
+            item
+        )
+    )
 
     if relevance_score < MIN_RELEVANCE_SCORE:
 
@@ -1234,7 +1590,7 @@ def prefilter_news_item(
                 False,
 
             "reason":
-                "LOW_RELEVANCE",
+                "UNCONFIRMED_COMPANY_IDENTITY",
 
             "relevance_score":
                 relevance_score,
@@ -2017,12 +2373,22 @@ def run_news_pipeline():
     )
 
     print(
-        "- relatedTickers exact match is required before a news item can pass relevance.",
+        "- relatedTickers is a strong identity signal, not a mandatory gate.",
         flush=True
     )
 
     print(
-        "- Numeric-only ticker queries are disabled to prevent cross-market false positives.",
+        "- Company aliases can confirm identity when relatedTickers is missing.",
+        flush=True
+    )
+
+    print(
+        "- Cross-market conflicts such as SEHK:1810 / 1810.HK are rejected.",
+        flush=True
+    )
+
+    print(
+        "- Numeric-only ticker queries remain disabled.",
         flush=True
     )
 
