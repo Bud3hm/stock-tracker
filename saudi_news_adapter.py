@@ -11,29 +11,27 @@ import requests
 
 
 # ============================================================
-# SAUDI NEWS ADAPTER v0.4
+# SAUDI NEWS ADAPTER v0.4.1
 #
 # READ ONLY / TEST ONLY
 #
-# v0.4:
-# - يجمع الأخبار السعودية من Google News RSS
-# - يستخدم بحث عام + بحث موجّه لأرقام
-# - يؤكد هوية الشركة
-# - يحذف الأخبار القديمة والضوضاء العامة
-# - يزيل التكرار
-# - يطبق Material Event Filter داخل نفس الملف مؤقتًا
-# - يحسب Event Type + Relevance + Importance
+# v0.4.1:
+# - يحتفظ بكل منطق v0.4
+# - يضيف Retry + Exponential Backoff لـ Google News RSS
+# - يقلل ضغط الطلبات
+# - يميز SOURCE_UNAVAILABLE عن NO_NEWS
+# - لا يعتبر 503 = صفر أخبار
 # - لا يكتب إلى Supabase
-#
-# الهدف:
-# اختبار الربط الكامل قبل تشغيل الحفظ الحقيقي.
 # ============================================================
 
 
-ENGINE_VERSION = "0.4"
+ENGINE_VERSION = "0.4.1"
 
 TIMEOUT = 25
-REQUEST_DELAY = 0.45
+
+REQUEST_DELAY = 1.25
+RETRY_ATTEMPTS = 3
+RETRY_BASE_WAIT = 3
 
 NEWS_LOOKBACK_DAYS = 21
 
@@ -453,6 +451,95 @@ def safe_request(
         return None
 
 
+def safe_request_with_retry(
+    url,
+    params=None,
+    label=""
+):
+
+    last_response = None
+
+    for attempt in range(
+        1,
+        RETRY_ATTEMPTS + 1
+    ):
+
+        response = safe_request(
+            url,
+            params=params
+        )
+
+        if response is None:
+
+            if attempt < RETRY_ATTEMPTS:
+
+                wait_seconds = (
+                    RETRY_BASE_WAIT
+                    * attempt
+                )
+
+                print(
+                    f"🟠 {label} | "
+                    f"REQUEST ERROR | "
+                    f"retry in {wait_seconds}s",
+                    flush=True
+                )
+
+                time.sleep(
+                    wait_seconds
+                )
+
+            continue
+
+        last_response = response
+
+        status = (
+            response.status_code
+        )
+
+        if status == 200:
+
+            return response
+
+        if status in (
+            429,
+            500,
+            502,
+            503,
+            504,
+        ):
+
+            if attempt < RETRY_ATTEMPTS:
+
+                wait_seconds = (
+                    RETRY_BASE_WAIT
+                    * (2 ** (
+                        attempt - 1
+                    ))
+                )
+
+                print(
+                    f"🟠 {label} | "
+                    f"HTTP {status} | "
+                    f"attempt "
+                    f"{attempt}/"
+                    f"{RETRY_ATTEMPTS} | "
+                    f"retry in "
+                    f"{wait_seconds}s",
+                    flush=True
+                )
+
+                time.sleep(
+                    wait_seconds
+                )
+
+                continue
+
+        return response
+
+    return last_response
+
+
 def parse_rss_date(value):
 
     value = clean_text(
@@ -854,14 +941,32 @@ def fetch_google_query(
             "SA:en",
     }
 
-    response = safe_request(
+    label = (
+        f"{company['symbol']} | "
+        f"{query_type}"
+    )
+
+    response = safe_request_with_retry(
         GOOGLE_NEWS_RSS,
-        params=params
+        params=params,
+        label=label
     )
 
     if response is None:
 
-        return []
+        print(
+            f"🔴 {label} | "
+            "SOURCE_UNAVAILABLE",
+            flush=True
+        )
+
+        return {
+            "status":
+                "SOURCE_UNAVAILABLE",
+
+            "items":
+                [],
+        }
 
     print(
         f"🌐 {company['symbol']} | "
@@ -873,13 +978,38 @@ def fetch_google_query(
 
     if response.status_code != 200:
 
-        return []
+        return {
+            "status":
+                (
+                    "SOURCE_UNAVAILABLE"
+                    if response.status_code
+                    in (
+                        429,
+                        500,
+                        502,
+                        503,
+                        504,
+                    )
+                    else f"HTTP_{response.status_code}"
+                ),
 
-    return parse_google_rss(
+            "items":
+                [],
+        }
+
+    items = parse_google_rss(
         response.text,
         company,
         query_type
     )
+
+    return {
+        "status":
+            "OK",
+
+        "items":
+            items,
+    }
 
 
 def fetch_company_candidates(
@@ -888,7 +1018,9 @@ def fetch_company_candidates(
 
     items = []
 
-    general_items = fetch_google_query(
+    source_unavailable = False
+
+    general = fetch_google_query(
         company=company,
         query=google_query_general(
             company
@@ -896,15 +1028,23 @@ def fetch_company_candidates(
         query_type="general"
     )
 
+    if general[
+        "status"
+    ] == "SOURCE_UNAVAILABLE":
+
+        source_unavailable = True
+
     items.extend(
-        general_items
+        general[
+            "items"
+        ]
     )
 
     time.sleep(
         REQUEST_DELAY
     )
 
-    argaam_items = fetch_google_query(
+    argaam_targeted = fetch_google_query(
         company=company,
         query=google_query_argaam(
             company
@@ -912,8 +1052,16 @@ def fetch_company_candidates(
         query_type="argaam_targeted"
     )
 
+    if argaam_targeted[
+        "status"
+    ] == "SOURCE_UNAVAILABLE":
+
+        source_unavailable = True
+
     items.extend(
-        argaam_items
+        argaam_targeted[
+            "items"
+        ]
     )
 
     unique = []
@@ -946,7 +1094,20 @@ def fetch_company_candidates(
             item
         )
 
-    return unique
+    return {
+        "status":
+            (
+                "SOURCE_UNAVAILABLE"
+                if (
+                    source_unavailable
+                    and not unique
+                )
+                else "OK"
+            ),
+
+        "items":
+            unique,
+    }
 
 
 # ============================================================
@@ -1202,14 +1363,14 @@ def run():
     )
 
     print(
-        f"🎯 Min Relevance: "
-        f"{MIN_RELEVANCE_SCORE}",
+        f"🔁 Retry Attempts: "
+        f"{RETRY_ATTEMPTS}",
         flush=True
     )
 
     print(
-        f"⭐ Min Importance: "
-        f"{MIN_IMPORTANCE_SCORE}",
+        f"⏱ Request Delay: "
+        f"{REQUEST_DELAY}s",
         flush=True
     )
 
@@ -1264,6 +1425,8 @@ def run():
 
     total_candidates = 0
     total_accepted = 0
+    source_unavailable_companies = 0
+
     rejection_counts = defaultdict(
         int
     )
@@ -1274,9 +1437,34 @@ def run():
 
     for company in TEST_COMPANIES:
 
-        candidates = fetch_company_candidates(
+        result = fetch_company_candidates(
             company
         )
+
+        if result[
+            "status"
+        ] == "SOURCE_UNAVAILABLE":
+
+            source_unavailable_companies += 1
+
+            print(
+                f"\n🏢 {company['symbol']} | "
+                f"{company['name_ar']} | "
+                "SOURCE_UNAVAILABLE",
+                flush=True
+            )
+
+            print(
+                "🟠 لم نعتبر الحالة "
+                "NO_NEWS لأن المصدر لم يكن متاحًا.",
+                flush=True
+            )
+
+            continue
+
+        candidates = result[
+            "items"
+        ]
 
         total_candidates += len(
             candidates
@@ -1423,12 +1611,18 @@ def run():
     # ========================================================
 
     print_header(
-        "🏁 SAUDI NEWS ADAPTER v0.4 SUMMARY"
+        "🏁 SAUDI NEWS ADAPTER v0.4.1 SUMMARY"
     )
 
     print(
         f"🏢 Companies Tested: "
         f"{len(TEST_COMPANIES)}",
+        flush=True
+    )
+
+    print(
+        f"🟠 Source-Unavailable Companies: "
+        f"{source_unavailable_companies}",
         flush=True
     )
 
@@ -1499,8 +1693,12 @@ def run():
     )
 
     print(
-        "- هذه أول نسخة تطبق Material Event Filter "
-        "على أخبار المصادر السعودية.",
+        "- 503/429/5xx لا تعني NO_NEWS.",
+        flush=True
+    )
+
+    print(
+        "- عند تعذر المصدر نسجل SOURCE_UNAVAILABLE.",
         flush=True
     )
 
@@ -1510,18 +1708,8 @@ def run():
     )
 
     print(
-        "- إذا كانت Accepted Events منطقية، "
-        "ننتقل للـ21 شركة ثم الحفظ في company_news.",
-        flush=True
-    )
-
-    print(
-        "- Sentiment والـAI لم يدخلا بعد.",
-        flush=True
-    )
-
-    print(
-        "- Tadawul يبقى Official Arbiter بسبب HTTP 403.",
+        "- إذا عاد Google إلى HTTP 200 "
+        "سنراجع Accepted Events قبل التوسعة للـ21 شركة.",
         flush=True
     )
 
