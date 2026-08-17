@@ -5,40 +5,32 @@ from collections import defaultdict
 from datetime import datetime
 from html import unescape
 from html.parser import HTMLParser
-from statistics import median, pstdev
+from statistics import mean, median, pstdev
 
 import requests
 from supabase import create_client
 
 
 # ============================================================
-# SOURCE RECONCILIATION ENGINE v1.0
+# SOURCE RECONCILIATION ENGINE v1.1
 #
 # الهدف:
-# بناء طبقة مستقلة بين مصادر البيانات والمحركات التحليلية.
+# فصل جودة "الاتفاق بين المصدرين" عن "تغطية المصادر".
 #
 # READ ONLY
 #
-# المرحلة الحالية:
-# - Source A: Yahoo (من financial_statements في Supabase)
-# - Source B: StockAnalysis
-# - Official Arbiter: تداول/الإعلانات الرسمية (خارج هذا الملف)
+# Source A: Yahoo (Supabase)
+# Source B: StockAnalysis
+# Official Arbiter: Tadawul / official announcements
 #
-# المخرجات:
-# - AGREED
-# - AGREED_MINOR_DIFF
-# - REVIEW
-# - CONFLICT
-# - SCALE_ANOMALY
-# - DEFINITION_CONFLICT
-# - SINGLE_SOURCE
-# - NO_DATA
-#
-# مهم:
-# - لا يكتب أو يعدل أي بيانات في Supabase.
-# - لا يغير financial_data.py.
-# - لا يغير أي Engine حالي.
-# - قابل مستقبلًا لإضافة Paid Provider Adapter.
+# v1.1:
+# - SINGLE_SOURCE لا يدخل في Agreement Confidence
+# - إضافة Dual-Source Agreement Confidence
+# - إضافة Source Coverage Score
+# - إضافة Reconciliation Risk Score
+# - فصل Arbitration Needed عن Definition Conflict known
+# - إبقاء Scale / Conflict / Review واضحة
+# - لا يكتب أو يعدل أي بيانات
 # ============================================================
 
 
@@ -65,7 +57,7 @@ supabase = create_client(
 # Settings
 # ============================================================
 
-ENGINE_VERSION = "1.0"
+ENGINE_VERSION = "1.1"
 
 STOCKANALYSIS_BASE = (
     "https://stockanalysis.com/quote/tadawul"
@@ -83,7 +75,6 @@ TEST_SYMBOLS = [
     "8010.SR",
 ]
 
-
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -95,7 +86,7 @@ HEADERS = {
 
 
 # ============================================================
-# Reconciliation thresholds
+# Thresholds
 # ============================================================
 
 AGREED_LIMIT = 0.50
@@ -240,7 +231,7 @@ STOCKANALYSIS_ALIASES = {
 
 
 # ============================================================
-# Model-aware allowed metrics
+# Model-aware metrics
 # ============================================================
 
 MODEL_METRICS = {
@@ -279,13 +270,6 @@ MODEL_METRICS = {
 
 # ============================================================
 # Known Definition Rules
-#
-# مؤقتًا هذه ليست "تصحيح أرقام".
-# فقط تساعد النظام على التمييز بين Conflict عشوائي
-# وفرق متكرر قد يكون Definition/Mapping.
-#
-# البحري مثال:
-# StockAnalysis Equity أعلى بصورة منهجية ~5-7%.
 # ============================================================
 
 KNOWN_DEFINITION_RULES = {
@@ -635,7 +619,7 @@ def is_scale_anomaly(ratio):
     )
 
 
-def canonical_candidate(
+def consensus_candidate(
     yahoo_value,
     stockanalysis_value
 ):
@@ -660,8 +644,6 @@ def canonical_candidate(
     if stockanalysis_value is None:
         return yahoo_value
 
-    # عند الاتفاق نأخذ المتوسط فقط كـ Candidate تشخيصي.
-    # لا يتم حفظه أو استخدامه في المحركات حاليًا.
     return (
         yahoo_value
         + stockanalysis_value
@@ -669,7 +651,7 @@ def canonical_candidate(
 
 
 # ============================================================
-# Minimal HTML parser
+# HTML Parser
 # ============================================================
 
 class TableParser(HTMLParser):
@@ -679,7 +661,6 @@ class TableParser(HTMLParser):
         super().__init__()
 
         self.tables = []
-
         self.table = None
         self.row = None
         self.cell = None
@@ -1199,7 +1180,7 @@ def get_test_stocks():
 
 
 # ============================================================
-# Model-aware metrics
+# Model-aware
 # ============================================================
 
 def allowed_metrics(
@@ -1217,7 +1198,7 @@ def allowed_metrics(
 
 
 # ============================================================
-# Definition rule
+# Known Definition Rule
 # ============================================================
 
 def get_definition_rule(
@@ -1351,9 +1332,7 @@ def reconcile_value(
                 None,
 
             "reason":
-                (
-                    "Only one source returned a value."
-                )
+                "Only one source returned a value."
         }
 
     difference = (
@@ -1370,9 +1349,11 @@ def reconcile_value(
         )
     )
 
-    ratio = ratio_value(
-        yahoo_value,
-        stockanalysis_value
+    ratio = (
+        ratio_value(
+            yahoo_value,
+            stockanalysis_value
+        )
     )
 
     scale_flag, scale_target = (
@@ -1467,7 +1448,7 @@ def reconcile_value(
                 99.0,
 
             "canonical_candidate":
-                canonical_candidate(
+                consensus_candidate(
                     yahoo_value,
                     stockanalysis_value
                 ),
@@ -1495,7 +1476,7 @@ def reconcile_value(
                 94.0,
 
             "canonical_candidate":
-                canonical_candidate(
+                consensus_candidate(
                     yahoo_value,
                     stockanalysis_value
                 ),
@@ -1563,7 +1544,452 @@ def reconcile_value(
 
 
 # ============================================================
-# Detect repeated definition bias
+# Company reconciliation
+# ============================================================
+
+def reconcile_stock(
+    stock,
+    yahoo_data,
+    stockanalysis_data
+):
+
+    analysis_model = (
+        stock.get(
+            "analysis_model"
+        )
+        or "standard"
+    )
+
+    symbol = stock[
+        "symbol"
+    ]
+
+    allowed = (
+        allowed_metrics(
+            analysis_model
+        )
+    )
+
+    rows = []
+
+    all_keys = sorted(
+        set(
+            yahoo_data
+        )
+        | set(
+            stockanalysis_data
+        )
+    )
+
+    for key in all_keys:
+
+        frequency, period_end, metric = (
+            key
+        )
+
+        if metric not in allowed:
+            continue
+
+        yahoo_value = (
+            yahoo_data.get(
+                key
+            )
+        )
+
+        stockanalysis_value = (
+            stockanalysis_data.get(
+                key
+            )
+        )
+
+        result = (
+            reconcile_value(
+                symbol=symbol,
+                metric=metric,
+                yahoo_value=yahoo_value,
+                stockanalysis_value=stockanalysis_value
+            )
+        )
+
+        rows.append({
+            "frequency":
+                frequency,
+
+            "period_end":
+                period_end,
+
+            "metric":
+                metric,
+
+            "yahoo":
+                yahoo_value,
+
+            "stockanalysis":
+                stockanalysis_value,
+
+            **result
+        })
+
+    return rows
+
+
+# ============================================================
+# Metrics for v1.1
+# ============================================================
+
+def calculate_dual_source_agreement(
+    rows
+):
+
+    dual_source = [
+        row
+        for row in rows
+        if (
+            row[
+                "yahoo"
+            ] is not None
+            and row[
+                "stockanalysis"
+            ] is not None
+        )
+    ]
+
+    if not dual_source:
+
+        return {
+            "dual_count":
+                0,
+
+            "agreement_confidence":
+                0.0,
+
+            "strong_agreement_rate":
+                0.0,
+
+            "arbitration_needed":
+                0,
+
+            "known_definition_conflicts":
+                0,
+        }
+
+    weights = {
+        "AGREED":
+            100.0,
+
+        "AGREED_MINOR_DIFF":
+            95.0,
+
+        "REVIEW":
+            70.0,
+
+        "CONFLICT":
+            20.0,
+
+        "SCALE_ANOMALY":
+            10.0,
+
+        "DEFINITION_CONFLICT":
+            85.0,
+    }
+
+    values = []
+
+    strong_count = 0
+    arbitration_needed = 0
+    known_definition_conflicts = 0
+
+    for row in dual_source:
+
+        status = row[
+            "status"
+        ]
+
+        values.append(
+            weights.get(
+                status,
+                0.0
+            )
+        )
+
+        if status in (
+            "AGREED",
+            "AGREED_MINOR_DIFF",
+            "DEFINITION_CONFLICT"
+        ):
+
+            strong_count += 1
+
+        if status in (
+            "REVIEW",
+            "CONFLICT",
+            "SCALE_ANOMALY"
+        ):
+
+            arbitration_needed += 1
+
+        if status == "DEFINITION_CONFLICT":
+
+            known_definition_conflicts += 1
+
+    agreement_confidence = (
+        mean(
+            values
+        )
+        if values
+        else 0.0
+    )
+
+    strong_agreement_rate = (
+        strong_count
+        / len(
+            dual_source
+        )
+        * 100.0
+    )
+
+    return {
+        "dual_count":
+            len(
+                dual_source
+            ),
+
+        "agreement_confidence":
+            agreement_confidence,
+
+        "strong_agreement_rate":
+            strong_agreement_rate,
+
+        "arbitration_needed":
+            arbitration_needed,
+
+        "known_definition_conflicts":
+            known_definition_conflicts,
+    }
+
+
+def calculate_source_coverage(
+    rows
+):
+
+    if not rows:
+
+        return {
+            "total_rows":
+                0,
+
+            "dual_source_rows":
+                0,
+
+            "single_source_rows":
+                0,
+
+            "coverage_score":
+                0.0,
+
+            "yahoo_presence":
+                0.0,
+
+            "stockanalysis_presence":
+                0.0,
+        }
+
+    total_rows = len(
+        rows
+    )
+
+    yahoo_present = sum(
+        1
+        for row in rows
+        if row[
+            "yahoo"
+        ] is not None
+    )
+
+    stockanalysis_present = sum(
+        1
+        for row in rows
+        if row[
+            "stockanalysis"
+        ] is not None
+    )
+
+    dual_source_rows = sum(
+        1
+        for row in rows
+        if (
+            row[
+                "yahoo"
+            ] is not None
+            and row[
+                "stockanalysis"
+            ] is not None
+        )
+    )
+
+    single_source_rows = sum(
+        1
+        for row in rows
+        if row[
+            "status"
+        ] == "SINGLE_SOURCE"
+    )
+
+    # Coverage Score:
+    # dual-source counts fully
+    # single-source counts partially
+    coverage_score = (
+        (
+            dual_source_rows
+            + single_source_rows
+            * 0.50
+        )
+        / total_rows
+        * 100.0
+    )
+
+    yahoo_presence = (
+        yahoo_present
+        / total_rows
+        * 100.0
+    )
+
+    stockanalysis_presence = (
+        stockanalysis_present
+        / total_rows
+        * 100.0
+    )
+
+    return {
+        "total_rows":
+            total_rows,
+
+        "dual_source_rows":
+            dual_source_rows,
+
+        "single_source_rows":
+            single_source_rows,
+
+        "coverage_score":
+            coverage_score,
+
+        "yahoo_presence":
+            yahoo_presence,
+
+        "stockanalysis_presence":
+            stockanalysis_presence,
+    }
+
+
+def calculate_reconciliation_risk(
+    rows
+):
+
+    if not rows:
+        return {
+            "risk_score":
+                100.0,
+
+            "review":
+                0,
+
+            "conflict":
+                0,
+
+            "scale":
+                0,
+
+            "definition":
+                0,
+        }
+
+    review_count = sum(
+        1
+        for row in rows
+        if row[
+            "status"
+        ] == "REVIEW"
+    )
+
+    conflict_count = sum(
+        1
+        for row in rows
+        if row[
+            "status"
+        ] == "CONFLICT"
+    )
+
+    scale_count = sum(
+        1
+        for row in rows
+        if row[
+            "status"
+        ] == "SCALE_ANOMALY"
+    )
+
+    definition_count = sum(
+        1
+        for row in rows
+        if row[
+            "status"
+        ] == "DEFINITION_CONFLICT"
+    )
+
+    dual_rows = sum(
+        1
+        for row in rows
+        if (
+            row[
+                "yahoo"
+            ] is not None
+            and row[
+                "stockanalysis"
+            ] is not None
+        )
+    )
+
+    if dual_rows == 0:
+        risk_score = 100.0
+
+    else:
+        raw_penalty = (
+            review_count
+            * 0.40
+            + conflict_count
+            * 1.00
+            + scale_count
+            * 1.25
+            + definition_count
+            * 0.10
+        )
+
+        risk_score = min(
+            100.0,
+            raw_penalty
+            / dual_rows
+            * 100.0
+        )
+
+    return {
+        "risk_score":
+            risk_score,
+
+        "review":
+            review_count,
+
+        "conflict":
+            conflict_count,
+
+        "scale":
+            scale_count,
+
+        "definition":
+            definition_count,
+    }
+
+
+# ============================================================
+# Repeated bias diagnostics
 # ============================================================
 
 def detect_repeated_bias(
@@ -1681,96 +2107,6 @@ def detect_repeated_bias(
 
 
 # ============================================================
-# Company reconciliation
-# ============================================================
-
-def reconcile_stock(
-    stock,
-    yahoo_data,
-    stockanalysis_data
-):
-
-    analysis_model = (
-        stock.get(
-            "analysis_model"
-        )
-        or "standard"
-    )
-
-    symbol = stock[
-        "symbol"
-    ]
-
-    allowed = (
-        allowed_metrics(
-            analysis_model
-        )
-    )
-
-    rows = []
-
-    all_keys = sorted(
-        set(
-            yahoo_data
-        )
-        | set(
-            stockanalysis_data
-        )
-    )
-
-    for key in all_keys:
-
-        frequency, period_end, metric = (
-            key
-        )
-
-        if metric not in allowed:
-            continue
-
-        yahoo_value = (
-            yahoo_data.get(
-                key
-            )
-        )
-
-        stockanalysis_value = (
-            stockanalysis_data.get(
-                key
-            )
-        )
-
-        result = (
-            reconcile_value(
-                symbol=symbol,
-                metric=metric,
-                yahoo_value=yahoo_value,
-                stockanalysis_value=stockanalysis_value
-            )
-        )
-
-        rows.append({
-            "frequency":
-                frequency,
-
-            "period_end":
-                period_end,
-
-            "metric":
-                metric,
-
-            "yahoo":
-                yahoo_value,
-
-            "stockanalysis":
-                stockanalysis_value,
-
-            **result
-        })
-
-    return rows
-
-
-# ============================================================
 # Print
 # ============================================================
 
@@ -1815,81 +2151,111 @@ def print_stock_result(
             ]
         ] += 1
 
-    comparable = [
-        row
-        for row in rows
-        if row[
-            "status"
-        ] != "NO_DATA"
-    ]
-
-    avg_confidence = (
-        sum(
-            row[
-                "confidence"
-            ]
-            for row in comparable
+    agreement = (
+        calculate_dual_source_agreement(
+            rows
         )
-        / len(
-            comparable
+    )
+
+    coverage = (
+        calculate_source_coverage(
+            rows
         )
-        if comparable
-        else 0.0
+    )
+
+    risk = (
+        calculate_reconciliation_risk(
+            rows
+        )
     )
 
     print(
-        f"📊 Reconciled Values: "
-        f"{len(rows)}",
+        f"📊 Total Canonical Rows: "
+        f"{coverage['total_rows']}",
         flush=True
     )
 
     print(
-        f"🛡 Average Reconciliation Confidence: "
-        f"{avg_confidence:.2f}",
+        f"🤝 Dual-Source Rows: "
+        f"{agreement['dual_count']}",
         flush=True
     )
 
     print(
-        f"🟢 AGREED: "
-        f"{counts['AGREED']}",
+        f"🟠 Single-Source Rows: "
+        f"{coverage['single_source_rows']}",
         flush=True
     )
 
     print(
-        f"🔵 AGREED_MINOR_DIFF: "
-        f"{counts['AGREED_MINOR_DIFF']}",
+        f"🏆 Dual-Source Agreement Confidence: "
+        f"{agreement['agreement_confidence']:.2f}/100",
         flush=True
     )
 
     print(
-        f"🟡 REVIEW: "
-        f"{counts['REVIEW']}",
+        f"✅ Strong Agreement Rate: "
+        f"{agreement['strong_agreement_rate']:.2f}%",
         flush=True
     )
 
     print(
-        f"🔴 CONFLICT: "
-        f"{counts['CONFLICT']}",
+        f"📡 Source Coverage Score: "
+        f"{coverage['coverage_score']:.2f}/100",
         flush=True
     )
 
     print(
-        f"🧮 SCALE_ANOMALY: "
-        f"{counts['SCALE_ANOMALY']}",
+        f"🅰️ Yahoo Presence: "
+        f"{coverage['yahoo_presence']:.2f}%",
         flush=True
     )
 
     print(
-        f"🧬 DEFINITION_CONFLICT: "
-        f"{counts['DEFINITION_CONFLICT']}",
+        f"🅱️ StockAnalysis Presence: "
+        f"{coverage['stockanalysis_presence']:.2f}%",
         flush=True
     )
 
     print(
-        f"🟠 SINGLE_SOURCE: "
-        f"{counts['SINGLE_SOURCE']}",
+        f"⚠️ Reconciliation Risk: "
+        f"{risk['risk_score']:.2f}/100",
         flush=True
     )
+
+    print(
+        f"🏛 Arbitration Needed: "
+        f"{agreement['arbitration_needed']}",
+        flush=True
+    )
+
+    print(
+        f"🧬 Known Definition Conflicts: "
+        f"{agreement['known_definition_conflicts']}",
+        flush=True
+    )
+
+    print(
+        "\n📋 Status Counts:",
+        flush=True
+    )
+
+    for status in (
+        "AGREED",
+        "AGREED_MINOR_DIFF",
+        "REVIEW",
+        "CONFLICT",
+        "SCALE_ANOMALY",
+        "DEFINITION_CONFLICT",
+        "SINGLE_SOURCE",
+        "NO_DATA"
+    ):
+
+        print(
+            f"- {status}: "
+            f"{counts[status]}",
+            flush=True
+        )
 
     problem_rows = [
         row
@@ -1958,7 +2324,8 @@ def print_stock_result(
                 f"StockAnalysis {direction} "
                 f"by median "
                 f"{abs(item['median_signed_diff']):.2f}% | "
-                f"Std={item['std']:.2f}",
+                f"Std="
+                f"{item['std']:.2f}",
                 flush=True
             )
 
@@ -1972,16 +2339,19 @@ def print_stock_result(
         "analysis_model":
             model,
 
-        "rows":
-            len(rows),
+        "agreement":
+            agreement,
 
-        "avg_confidence":
-            avg_confidence,
+        "coverage":
+            coverage,
+
+        "risk":
+            risk,
 
         "counts":
             dict(
                 counts
-            )
+            ),
     }
 
 
@@ -2014,6 +2384,11 @@ def run_reconciliation():
     print(
         "🏛 Official Arbiter: Tadawul "
         "(external/manual verification when needed)",
+        flush=True
+    )
+
+    print(
+        "🧠 Metrics: Agreement / Coverage / Risk separated",
         flush=True
     )
 
@@ -2103,8 +2478,15 @@ def run_reconciliation():
         f"v{ENGINE_VERSION} SUMMARY"
     )
 
+    weighted_agreement = []
+    weighted_coverage = []
+    weighted_risk = []
+
+    total_dual = 0
     total_rows = 0
-    total_confidence = 0.0
+    total_single = 0
+    total_arbitration = 0
+    total_definition = 0
 
     overall_counts = defaultdict(
         int
@@ -2115,6 +2497,18 @@ def run_reconciliation():
         start=1
     ):
 
+        agreement = item[
+            "agreement"
+        ]
+
+        coverage = item[
+            "coverage"
+        ]
+
+        risk = item[
+            "risk"
+        ]
+
         counts = item[
             "counts"
         ]
@@ -2124,38 +2518,97 @@ def run_reconciliation():
             f"{item['symbol']} | "
             f"{item['company_name']} | "
             f"{item['analysis_model']} | "
-            f"Rows={item['rows']} | "
-            f"AvgConfidence="
-            f"{item['avg_confidence']:.2f} | "
-            f"Agreed="
-            f"{counts.get('AGREED', 0)} | "
-            f"Minor="
-            f"{counts.get('AGREED_MINOR_DIFF', 0)} | "
-            f"Review="
-            f"{counts.get('REVIEW', 0)} | "
-            f"Conflict="
-            f"{counts.get('CONFLICT', 0)} | "
-            f"Scale="
-            f"{counts.get('SCALE_ANOMALY', 0)} | "
+            f"Dual="
+            f"{agreement['dual_count']} | "
+            f"Agreement="
+            f"{agreement['agreement_confidence']:.2f} | "
+            f"Strong="
+            f"{agreement['strong_agreement_rate']:.2f}% | "
+            f"Coverage="
+            f"{coverage['coverage_score']:.2f} | "
+            f"Risk="
+            f"{risk['risk_score']:.2f} | "
+            f"Arbitration="
+            f"{agreement['arbitration_needed']} | "
             f"Definition="
-            f"{counts.get('DEFINITION_CONFLICT', 0)}",
+            f"{agreement['known_definition_conflicts']}",
             flush=True
         )
 
-        total_rows += (
-            item[
-                "rows"
+        total_dual += (
+            agreement[
+                "dual_count"
             ]
         )
 
-        total_confidence += (
-            item[
-                "avg_confidence"
-            ]
-            * item[
-                "rows"
+        total_rows += (
+            coverage[
+                "total_rows"
             ]
         )
+
+        total_single += (
+            coverage[
+                "single_source_rows"
+            ]
+        )
+
+        total_arbitration += (
+            agreement[
+                "arbitration_needed"
+            ]
+        )
+
+        total_definition += (
+            agreement[
+                "known_definition_conflicts"
+            ]
+        )
+
+        if agreement[
+            "dual_count"
+        ] > 0:
+
+            weighted_agreement.extend(
+                [
+                    agreement[
+                        "agreement_confidence"
+                    ]
+                ]
+                * agreement[
+                    "dual_count"
+                ]
+            )
+
+        if coverage[
+            "total_rows"
+        ] > 0:
+
+            weighted_coverage.extend(
+                [
+                    coverage[
+                        "coverage_score"
+                    ]
+                ]
+                * coverage[
+                    "total_rows"
+                ]
+            )
+
+        if agreement[
+            "dual_count"
+        ] > 0:
+
+            weighted_risk.extend(
+                [
+                    risk[
+                        "risk_score"
+                    ]
+                ]
+                * agreement[
+                    "dual_count"
+                ]
+            )
 
         for status, count in (
             counts.items()
@@ -2165,10 +2618,47 @@ def run_reconciliation():
                 status
             ] += count
 
-    overall_confidence = (
-        total_confidence
-        / total_rows
-        if total_rows
+    overall_agreement = (
+        mean(
+            weighted_agreement
+        )
+        if weighted_agreement
+        else 0.0
+    )
+
+    overall_coverage = (
+        mean(
+            weighted_coverage
+        )
+        if weighted_coverage
+        else 0.0
+    )
+
+    overall_risk = (
+        mean(
+            weighted_risk
+        )
+        if weighted_risk
+        else 0.0
+    )
+
+    strong_total = (
+        overall_counts[
+            "AGREED"
+        ]
+        + overall_counts[
+            "AGREED_MINOR_DIFF"
+        ]
+        + overall_counts[
+            "DEFINITION_CONFLICT"
+        ]
+    )
+
+    overall_strong_rate = (
+        strong_total
+        / total_dual
+        * 100.0
+        if total_dual
         else 0.0
     )
 
@@ -2184,58 +2674,80 @@ def run_reconciliation():
     )
 
     print(
-        f"📊 Total Reconciled Rows: "
+        f"📊 Total Canonical Rows: "
         f"{total_rows}",
         flush=True
     )
 
     print(
-        f"🛡 Overall Reconciliation Confidence: "
-        f"{overall_confidence:.2f}",
+        f"🤝 Total Dual-Source Rows: "
+        f"{total_dual}",
         flush=True
     )
 
     print(
-        f"🟢 AGREED: "
-        f"{overall_counts['AGREED']}",
+        f"🟠 Total Single-Source Rows: "
+        f"{total_single}",
         flush=True
     )
 
     print(
-        f"🔵 AGREED_MINOR_DIFF: "
-        f"{overall_counts['AGREED_MINOR_DIFF']}",
+        f"🏆 Overall Dual-Source Agreement Confidence: "
+        f"{overall_agreement:.2f}/100",
         flush=True
     )
 
     print(
-        f"🟡 REVIEW: "
-        f"{overall_counts['REVIEW']}",
+        f"✅ Overall Strong Agreement Rate: "
+        f"{overall_strong_rate:.2f}%",
         flush=True
     )
 
     print(
-        f"🔴 CONFLICT: "
-        f"{overall_counts['CONFLICT']}",
+        f"📡 Overall Source Coverage Score: "
+        f"{overall_coverage:.2f}/100",
         flush=True
     )
 
     print(
-        f"🧮 SCALE_ANOMALY: "
-        f"{overall_counts['SCALE_ANOMALY']}",
+        f"⚠️ Overall Reconciliation Risk: "
+        f"{overall_risk:.2f}/100",
         flush=True
     )
 
     print(
-        f"🧬 DEFINITION_CONFLICT: "
-        f"{overall_counts['DEFINITION_CONFLICT']}",
+        f"🏛 Total Arbitration Needed: "
+        f"{total_arbitration}",
         flush=True
     )
 
     print(
-        f"🟠 SINGLE_SOURCE: "
-        f"{overall_counts['SINGLE_SOURCE']}",
+        f"🧬 Known Definition Conflicts: "
+        f"{total_definition}",
         flush=True
     )
+
+    print(
+        "\n📋 Overall Status Counts:",
+        flush=True
+    )
+
+    for status in (
+        "AGREED",
+        "AGREED_MINOR_DIFF",
+        "REVIEW",
+        "CONFLICT",
+        "SCALE_ANOMALY",
+        "DEFINITION_CONFLICT",
+        "SINGLE_SOURCE",
+        "NO_DATA"
+    ):
+
+        print(
+            f"- {status}: "
+            f"{overall_counts[status]}",
+            flush=True
+        )
 
     print(
         "\n📌 IMPORTANT:",
@@ -2243,30 +2755,43 @@ def run_reconciliation():
     )
 
     print(
-        "- هذا الملف لا يكتب أو يعدل أي بيانات.",
+        "- SINGLE_SOURCE لا يخفض Agreement Confidence.",
         flush=True
     )
 
     print(
-        "- Canonical Candidate هنا تشخيصي فقط.",
+        "- Agreement يقيس فقط القيم الموجودة في المصدرين.",
         flush=True
     )
 
     print(
-        "- REVIEW / CONFLICT / SCALE_ANOMALY "
-        "لا تدخل المحركات الحالية.",
+        "- Coverage يقيس مدى توفر البيانات عبر المصادر.",
         flush=True
     )
 
     print(
-        "- بعد نجاح هذه المرحلة يمكن إنشاء "
-        "canonical_financials أو طبقة مصدر موحدة.",
+        "- Risk يقيس القيم التي تحتاج Review/Conflict/Scale arbitration.",
         flush=True
     )
 
     print(
-        "- أي مزود مدفوع مستقبلًا يضاف كـ Adapter "
-        "بدون تغيير المحركات التحليلية.",
+        "- Definition Conflict المعروف لا يعامل كخطأ عشوائي.",
+        flush=True
+    )
+
+    print(
+        "- هذا الملف READ ONLY ولا يكتب أو يعدل أي بيانات.",
+        flush=True
+    )
+
+    print(
+        "- بعد نجاح v1.1 نراجع فقط حالات Arbitration المهمة.",
+        flush=True
+    )
+
+    print(
+        "- بعدها يمكن إقفال مرحلة المصادر مؤقتًا "
+        "والانتقال للأخبار والـAI.",
         flush=True
     )
 
