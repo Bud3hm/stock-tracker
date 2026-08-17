@@ -25,7 +25,7 @@ import requests
 # ============================================================
 
 
-ENGINE_VERSION = "0.4.1"
+ENGINE_VERSION = "0.4.2"
 
 TIMEOUT = 25
 
@@ -131,6 +131,56 @@ NON_NEWS_TITLE_PATTERNS = [
     r"\bhistorical data\b",
     r"\bcompany profile\b",
 ]
+
+
+# ============================================================
+# v0.4.2 - Pre-event rejection rules
+# Reject previews, expectations and analyst/commentary pieces
+# BEFORE material-event classification.
+# ============================================================
+
+PRE_EVENT_REJECT_PATTERNS = [
+    r"\bwhat to expect\b",
+    r"\bahead of .* earnings\b",
+    r"\bahead of .* results\b",
+    r"\bearnings preview\b",
+    r"\bresults preview\b",
+    r"\bpreviewing .* earnings\b",
+    r"\bpreviewing .* results\b",
+    r"\bexpected to report\b",
+    r"\bexpected earnings\b",
+    r"\bearnings expectations\b",
+    r"\banalyst expects?\b",
+    r"\banalysts expect\b",
+    r"\banalyst forecast\b",
+    r"\banalyst forecasts\b",
+    r"\banalyst estimates?\b",
+    r"\bconsensus estimate\b",
+    r"\bconsensus estimates\b",
+    r"\bforecast ahead of\b",
+    r"\bshould you buy\b",
+    r"\bis .* a buy\b",
+    r"\bstock looks\b",
+]
+
+# Explicit precedence prevents a generic financial keyword such as
+# "Q2" or "results" from overriding a more specific event.
+EVENT_TYPE_PRIORITY = {
+    "acquisition_merger": 120,
+    "capital_action": 115,
+    "contract_award": 110,
+    "legal_regulatory": 105,
+    "operational_event": 100,
+    "project_status": 95,
+    "dividend": 92,
+    "management_change": 90,
+    "financing_debt": 88,
+    "expansion": 86,
+    "ownership": 84,
+    "guidance": 82,
+    "growth_strategy": 80,
+    "financial_results": 70,
+}
 
 
 # ============================================================
@@ -303,7 +353,6 @@ EVENT_RULES = {
             "cuts guidance",
             "profit warning",
             "financial impact expected",
-            "what to expect",
         ],
     },
 
@@ -1161,10 +1210,14 @@ def classify_event(
         return None
 
     matches.sort(
-        key=lambda item:
-            item[
-                "base_score"
-            ],
+        key=lambda item: (
+            EVENT_TYPE_PRIORITY.get(
+                item["event_type"],
+                0
+            ),
+            item["base_score"],
+            len(item["matched_keywords"]),
+        ),
         reverse=True
     )
 
@@ -1262,6 +1315,29 @@ def material_filter(
 
             "reason":
                 "LOW_RELEVANCE",
+
+            "relevance_score":
+                relevance,
+        }
+
+    title_lower = normalized_lower(
+        item["title"]
+    )
+
+    if any(
+        re.search(
+            pattern,
+            title_lower,
+            flags=re.IGNORECASE
+        )
+        for pattern in PRE_EVENT_REJECT_PATTERNS
+    ):
+        return {
+            "accepted":
+                False,
+
+            "reason":
+                "PREVIEW_OR_COMMENTARY",
 
             "relevance_score":
                 relevance,
