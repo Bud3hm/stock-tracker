@@ -80,18 +80,15 @@ jobs:
 
 
       # ======================================================
-      # 5) مؤشرات REIT
+      # REIT
+      #
+      # متوقف حاليًا من النسخة الشخصية
+      # ملف reit_metrics.py محفوظ للمستقبل
       # ======================================================
-
-      - name: Calculate REIT metrics
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-        run: python reit_metrics.py
 
 
       # ======================================================
-      # 6) Scoring Engine
+      # 5) Scoring Engine
       # ======================================================
 
       - name: Run Scoring Engine
@@ -102,7 +99,7 @@ jobs:
 
 
       # ======================================================
-      # 7) Standard Signal Engine
+      # 6) Standard Signal Engine
       # ======================================================
 
       - name: Run Standard Signal Engine
@@ -113,7 +110,7 @@ jobs:
 
 
       # ======================================================
-      # 8) Bank Signal Engine
+      # 7) Bank Signal Engine
       # ======================================================
 
       - name: Run Bank Signal Engine
@@ -124,7 +121,7 @@ jobs:
 
 
       # ======================================================
-      # 9) Insurance Signal Engine
+      # 8) Insurance Signal Engine
       # ======================================================
 
       - name: Run Insurance Signal Engine
@@ -135,7 +132,7 @@ jobs:
 
 
       # ======================================================
-      # 10) Turning Point Engine
+      # 9) Turning Point Engine
       #
       # يجب أن يعمل بعد Scoring + Signal Engines
       # ======================================================
@@ -148,7 +145,7 @@ jobs:
 
 
       # ======================================================
-      # 11) Data Quality Engine
+      # 10) Data Quality Engine
       #
       # يجب أن يعمل قبل Decision
       # ======================================================
@@ -161,7 +158,7 @@ jobs:
 
 
       # ======================================================
-      # 12) Final Decision Engine
+      # 11) Final Decision Engine
       # ======================================================
 
       - name: Run Decision Engine
@@ -172,7 +169,7 @@ jobs:
 
 
       # ======================================================
-      # 13) Validation Engine
+      # 12) Validation Engine
       #
       # READ ONLY
       # ======================================================
@@ -185,7 +182,7 @@ jobs:
 
 
       # ======================================================
-      # 14) Master System Audit
+      # 13) Master System Audit
       #
       # آخر مرحلة في السلسلة
       # READ ONLY
