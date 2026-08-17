@@ -10,7 +10,7 @@ from supabase import create_client
 
 
 # ============================================================
-# NEWS DATA PIPELINE v1.0.1
+# NEWS DATA PIPELINE v1.0.2
 #
 # الهدف:
 # جلب أخبار الشركات + فلترة الأخبار غير المهمة قبل الحفظ.
