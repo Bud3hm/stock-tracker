@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import time
 import hashlib
 from datetime import datetime, timezone, timedelta
@@ -11,7 +10,7 @@ from supabase import create_client
 
 
 # ============================================================
-# NEWS DATA PIPELINE v1.0
+# NEWS DATA PIPELINE v1.0.1
 #
 # الهدف:
 # جلب أخبار الشركات + فلترة الأخبار غير المهمة قبل الحفظ.
@@ -21,6 +20,12 @@ from supabase import create_client
 #
 # لا يتم الحفظ إلا إذا:
 # NEWS_TEST_MODE=false
+#
+# التعديلات في v1.0.1:
+# - TEST MODE لا يقرأ company_news
+# - Yahoo queries تستخدم symbol و symbol code فقط
+# - تم إيقاف البحث بالاسم العربي بسبب HTTP 400 من Yahoo
+# - Live mode فقط يستخدم Deduplication من company_news
 #
 # المسار:
 # News Source
@@ -69,7 +74,7 @@ supabase = create_client(
 # Settings
 # ============================================================
 
-ENGINE_VERSION = "1.0"
+ENGINE_VERSION = "1.0.1"
 
 TEST_MODE = (
     os.environ
@@ -120,16 +125,12 @@ HEADERS = {
         "Chrome/131.0 Safari/537.36"
     ),
     "Accept": "application/json,text/plain,*/*",
-    "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 
 # ============================================================
 # Event Rules
-#
-# الوزن هنا ليس Sentiment.
-# هو "أهمية الحدث" فقط.
-# Sentiment سيأتي لاحقًا من AI.
 # ============================================================
 
 EVENT_RULES = {
@@ -137,24 +138,6 @@ EVENT_RULES = {
     "financial_results": {
         "base_score": 72,
         "keywords": [
-            # Arabic
-            "النتائج المالية",
-            "النتائج الأولية",
-            "النتائج السنوية",
-            "النتائج الربعية",
-            "صافي الربح",
-            "الأرباح الفصلية",
-            "الأرباح السنوية",
-            "الإيرادات",
-            "ارتفاع الأرباح",
-            "انخفاض الأرباح",
-            "تراجع الأرباح",
-            "نمو الأرباح",
-            "خسائر",
-            "تحول للربحية",
-            "تحول للخسارة",
-
-            # English
             "financial results",
             "earnings",
             "quarterly results",
@@ -173,21 +156,6 @@ EVENT_RULES = {
     "contract_award": {
         "base_score": 78,
         "keywords": [
-            # Arabic
-            "ترسية",
-            "ترسية عقد",
-            "توقيع عقد",
-            "وقعت عقد",
-            "عقد جديد",
-            "اتفاقية جديدة",
-            "مشروع جديد",
-            "فازت بعقد",
-            "تمديد عقد",
-            "تجديد عقد",
-            "أمر شراء",
-            "أوامر شراء",
-
-            # English
             "contract award",
             "awarded contract",
             "wins contract",
@@ -202,19 +170,6 @@ EVENT_RULES = {
     "acquisition_merger": {
         "base_score": 88,
         "keywords": [
-            # Arabic
-            "استحواذ",
-            "الاستحواذ",
-            "اندماج",
-            "الاندماج",
-            "شراء حصة",
-            "بيع حصة",
-            "صفقة استحواذ",
-            "شراء شركة",
-            "بيع شركة",
-            "عرض استحواذ",
-
-            # English
             "acquisition",
             "acquire",
             "merger",
@@ -228,17 +183,6 @@ EVENT_RULES = {
     "capital_action": {
         "base_score": 82,
         "keywords": [
-            # Arabic
-            "زيادة رأس المال",
-            "تخفيض رأس المال",
-            "خفض رأس المال",
-            "أسهم منحة",
-            "حقوق أولوية",
-            "إصدار أسهم",
-            "تجزئة السهم",
-            "تجميع الأسهم",
-
-            # English
             "capital increase",
             "capital reduction",
             "rights issue",
@@ -252,15 +196,6 @@ EVENT_RULES = {
     "dividend": {
         "base_score": 70,
         "keywords": [
-            # Arabic
-            "توزيعات نقدية",
-            "توزيع أرباح",
-            "توزيعات الأرباح",
-            "أحقية الأرباح",
-            "صرف الأرباح",
-            "توصية بتوزيع",
-
-            # English
             "dividend",
             "cash dividend",
             "dividend distribution",
@@ -271,18 +206,6 @@ EVENT_RULES = {
     "financing_debt": {
         "base_score": 70,
         "keywords": [
-            # Arabic
-            "تمويل",
-            "قرض",
-            "تسهيلات ائتمانية",
-            "إعادة تمويل",
-            "صكوك",
-            "سندات",
-            "إصدار صكوك",
-            "إصدار سندات",
-            "اتفاقية تمويل",
-
-            # English
             "financing",
             "loan",
             "credit facility",
@@ -296,20 +219,6 @@ EVENT_RULES = {
     "expansion": {
         "base_score": 74,
         "keywords": [
-            # Arabic
-            "توسعة",
-            "التوسعة",
-            "مصنع جديد",
-            "خط إنتاج",
-            "زيادة الطاقة الإنتاجية",
-            "طاقة إنتاجية",
-            "افتتاح فرع",
-            "افتتاح مصنع",
-            "تشغيل مصنع",
-            "بدء الإنتاج",
-            "التشغيل التجاري",
-
-            # English
             "expansion",
             "new plant",
             "new factory",
@@ -323,17 +232,6 @@ EVENT_RULES = {
     "management_change": {
         "base_score": 64,
         "keywords": [
-            # Arabic
-            "استقالة الرئيس التنفيذي",
-            "تعيين الرئيس التنفيذي",
-            "تعيين رئيس تنفيذي",
-            "تغيير الرئيس التنفيذي",
-            "استقالة عضو مجلس الإدارة",
-            "تعيين عضو مجلس الإدارة",
-            "تشكيل مجلس الإدارة",
-            "تعيين مدير عام",
-
-            # English
             "ceo resigns",
             "ceo appointed",
             "appoints ceo",
@@ -346,20 +244,6 @@ EVENT_RULES = {
     "legal_regulatory": {
         "base_score": 80,
         "keywords": [
-            # Arabic
-            "دعوى قضائية",
-            "حكم قضائي",
-            "غرامة",
-            "مخالفة",
-            "عقوبة",
-            "تحقيق",
-            "إيقاف",
-            "تعليق الترخيص",
-            "إلغاء الترخيص",
-            "هيئة السوق المالية",
-            "الهيئة العامة للمنافسة",
-
-            # English
             "lawsuit",
             "court ruling",
             "fine",
@@ -374,18 +258,6 @@ EVENT_RULES = {
     "project_status": {
         "base_score": 76,
         "keywords": [
-            # Arabic
-            "إلغاء مشروع",
-            "تعليق مشروع",
-            "تأجيل مشروع",
-            "بدء تنفيذ",
-            "بدء المشروع",
-            "اكتمال المشروع",
-            "إنجاز المشروع",
-            "تأخر المشروع",
-            "توقف المشروع",
-
-            # English
             "project cancelled",
             "project delayed",
             "project suspended",
@@ -398,17 +270,6 @@ EVENT_RULES = {
     "operational_event": {
         "base_score": 74,
         "keywords": [
-            # Arabic
-            "توقف الإنتاج",
-            "حريق",
-            "حادث",
-            "عطل",
-            "إغلاق",
-            "تعطل العمليات",
-            "استئناف الإنتاج",
-            "استئناف التشغيل",
-
-            # English
             "production halt",
             "fire",
             "shutdown",
@@ -421,16 +282,6 @@ EVENT_RULES = {
     "guidance": {
         "base_score": 77,
         "keywords": [
-            # Arabic
-            "توقعات الشركة",
-            "توقعات الإدارة",
-            "تحديث التوقعات",
-            "خفض التوقعات",
-            "رفع التوقعات",
-            "تحذير أرباح",
-            "الأثر المالي المتوقع",
-
-            # English
             "guidance",
             "raises guidance",
             "cuts guidance",
@@ -442,15 +293,6 @@ EVENT_RULES = {
     "ownership": {
         "base_score": 66,
         "keywords": [
-            # Arabic
-            "تغير ملكية",
-            "ملكية كبار المساهمين",
-            "زيادة ملكية",
-            "خفض ملكية",
-            "تخارج",
-            "دخول مستثمر",
-
-            # English
             "ownership change",
             "major shareholder",
             "stake increase",
@@ -463,32 +305,9 @@ EVENT_RULES = {
 
 # ============================================================
 # Noise Rules
-#
-# إذا كان الخبر فقط من هذا النوع، يتم استبعاده.
 # ============================================================
 
 NOISE_KEYWORDS = [
-    # Arabic
-    "ارتفع السهم",
-    "انخفض السهم",
-    "صعد السهم",
-    "هبط السهم",
-    "الأكثر ارتفاعا",
-    "الأكثر انخفاضا",
-    "الأكثر تداولاً",
-    "مؤشر السوق",
-    "إغلاق السوق",
-    "افتتاح السوق",
-    "تاسي",
-    "تحليل فني",
-    "مقاومة",
-    "دعم السهم",
-    "هدف سعري",
-    "توصية محلل",
-    "توصية شراء",
-    "توصية بيع",
-
-    # English
     "stock rises",
     "stock falls",
     "shares rise",
@@ -507,18 +326,6 @@ NOISE_KEYWORDS = [
 # ============================================================
 
 HIGH_IMPACT_KEYWORDS = [
-    # Arabic
-    "مليار",
-    "مليارات",
-    "استحواذ",
-    "اندماج",
-    "زيادة رأس المال",
-    "تخفيض رأس المال",
-    "تحذير أرباح",
-    "إلغاء مشروع",
-    "إيقاف الإنتاج",
-
-    # English
     "billion",
     "acquisition",
     "merger",
@@ -530,15 +337,6 @@ HIGH_IMPACT_KEYWORDS = [
 
 
 MEDIUM_IMPACT_KEYWORDS = [
-    # Arabic
-    "مليون",
-    "عقد",
-    "ترسية",
-    "تمويل",
-    "توسعة",
-    "توزيعات",
-
-    # English
     "million",
     "contract",
     "award",
@@ -759,29 +557,6 @@ def contains_any(
     )
 
 
-def token_set(value):
-
-    value = normalized_lower(
-        value
-    )
-
-    tokens = re.findall(
-        r"[\w\u0600-\u06FF]+",
-        value,
-        flags=re.UNICODE
-    )
-
-    return {
-        token
-
-        for token in tokens
-
-        if len(
-            token
-        ) >= 3
-    }
-
-
 # ============================================================
 # Stocks
 # ============================================================
@@ -915,12 +690,6 @@ class YahooNewsAdapter(
             )
         )
 
-        company_name = normalize_text(
-            stock.get(
-                "company_name"
-            )
-        )
-
         queries = []
 
         if symbol:
@@ -940,13 +709,6 @@ class YahooNewsAdapter(
                     symbol_code
                 )
 
-        if company_name:
-
-            queries.append(
-                company_name
-            )
-
-        # إزالة التكرار مع الحفاظ على الترتيب
         return list(
             dict.fromkeys(
                 query
@@ -1131,12 +893,6 @@ def calculate_relevance_score(
 
         return 0.0
 
-    company_name = normalize_text(
-        stock.get(
-            "company_name"
-        )
-    )
-
     symbol = normalize_text(
         stock.get(
             "symbol"
@@ -1152,7 +908,6 @@ def calculate_relevance_score(
 
     score = 0.0
 
-    # الرمز داخل العنوان
     if (
         symbol
         and normalized_lower(
@@ -1161,7 +916,7 @@ def calculate_relevance_score(
         in title
     ):
 
-        score += 50.0
+        score += 70.0
 
     if (
         symbol_code
@@ -1169,55 +924,10 @@ def calculate_relevance_score(
         in title
     ):
 
-        score += 25.0
+        score += 45.0
 
-    # الاسم الكامل
-    if (
-        company_name
-        and normalized_lower(
-            company_name
-        )
-        in title
-    ):
-
-        score += 60.0
-
-    # أجزاء اسم الشركة
-    company_tokens = token_set(
-        company_name
-    )
-
-    title_tokens = token_set(
-        title
-    )
-
-    if company_tokens:
-
-        matched = (
-            company_tokens
-            & title_tokens
-        )
-
-        token_ratio = (
-            len(
-                matched
-            )
-            / max(
-                len(
-                    company_tokens
-                ),
-                1
-            )
-        )
-
-        score += (
-            token_ratio
-            * 45.0
-        )
-
-    # Yahoo query result gives a small prior relevance,
-    # but never enough alone to pass.
-    score += 10.0
+    # Yahoo query matching gives a limited prior.
+    score += 15.0
 
     return min(
         100.0,
@@ -1278,7 +988,6 @@ def classify_event(
 
         return None
 
-    # إذا انطبق أكثر من نوع، نأخذ الأعلى أهمية
     matched_events.sort(
         key=lambda item:
             item[
@@ -1308,8 +1017,6 @@ def is_noise_only(
 
         return False
 
-    # إذا وجد Event جوهري واضح، لا نحذفه فقط
-    # لأن العنوان يحتوي كلمة من كلمات السوق.
     if event_match:
 
         return False
@@ -1351,7 +1058,6 @@ def calculate_importance_score(
 
         score += 6.0
 
-    # relevance يؤثر قليلًا فقط
     score += (
         max(
             0.0,
@@ -1361,7 +1067,6 @@ def calculate_importance_score(
         * 0.12
     )
 
-    # أكثر من keyword لنفس الحدث يعطي ثقة أعلى
     matched_count = len(
         event_match[
             "matched_keywords"
@@ -1416,6 +1121,11 @@ def existing_external_ids(
     stock_id,
     source_name
 ):
+
+    # في TEST MODE لا نحتاج لمس company_news أصلًا.
+    if TEST_MODE:
+
+        return set()
 
     response = (
         supabase
@@ -1667,8 +1377,6 @@ def build_news_record(
                 2
             ),
 
-        # Sentiment intentionally empty.
-        # AI will fill this later.
         "sentiment_score":
             None,
 
@@ -2281,6 +1989,21 @@ def run_news_pipeline():
     )
 
     print(
+        "- Yahoo query uses symbol and symbol code only.",
+        flush=True
+    )
+
+    print(
+        "- Arabic company-name query is disabled in v1.0.1.",
+        flush=True
+    )
+
+    print(
+        "- TEST MODE does not read or write company_news.",
+        flush=True
+    )
+
+    print(
         "- الأخبار غير الجوهرية لا تُحفظ.",
         flush=True
     )
@@ -2305,22 +2028,6 @@ def run_news_pipeline():
         "كـ Adapter مستقل.",
         flush=True
     )
-
-    if TEST_MODE:
-
-        print(
-            "- TEST MODE فعال: "
-            "لا توجد أي كتابة على company_news.",
-            flush=True
-        )
-
-    else:
-
-        print(
-            "- LIVE MODE فعال: "
-            "تم السماح بحفظ الأخبار المقبولة.",
-            flush=True
-        )
 
     print(
         "=" * 100,
