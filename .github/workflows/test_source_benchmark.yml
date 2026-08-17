@@ -1,0 +1,44 @@
+name: Test Data Source Benchmark
+
+on:
+  workflow_dispatch:
+
+jobs:
+
+  test-data-source-benchmark:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ======================================================
+      # Setup
+      # ======================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+
+      # ======================================================
+      # Data Source Benchmark
+      #
+      # READ ONLY
+      # Yahoo vs StockAnalysis
+      # لا يكتب أو يعدل أي بيانات في Supabase
+      # ======================================================
+
+      - name: Run Data Source Benchmark
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: python data_source_benchmark.py
