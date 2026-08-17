@@ -5,38 +5,32 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from html import unescape
-from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 import requests
 
 
 # ============================================================
-# SAUDI NEWS ADAPTER v0.3
+# SAUDI NEWS ADAPTER v0.4
 #
 # READ ONLY / TEST ONLY
 #
-# القرار بعد v0.2:
-# - Tadawul: Official Arbiter فقط بسبب HTTP 403
-# - Argaam: الموقع متاح، لكن Homepage parsing غير موثوق
-# - Google News RSS: مصدر التجميع العملي الحالي
+# v0.4:
+# - يجمع الأخبار السعودية من Google News RSS
+# - يستخدم بحث عام + بحث موجّه لأرقام
+# - يؤكد هوية الشركة
+# - يحذف الأخبار القديمة والضوضاء العامة
+# - يزيل التكرار
+# - يطبق Material Event Filter داخل نفس الملف مؤقتًا
+# - يحسب Event Type + Relevance + Importance
+# - لا يكتب إلى Supabase
 #
-# v0.3:
-# 1) Google News RSS - General company search
-# 2) Google News RSS - Argaam-targeted search
-# 3) Lookback filter = 21 days
-# 4) إزالة الأخبار القديمة قبل عرضها
-# 5) إزالة صفحات البيانات/الملفات العامة غير الخبرية
-# 6) Company identity confirmation
-# 7) Cross-query deduplication
-# 8) لا كتابة في Supabase
-#
-# بعد نجاح v0.3:
-# نربط Candidate News مع news_data.py Material Event Filter.
+# الهدف:
+# اختبار الربط الكامل قبل تشغيل الحفظ الحقيقي.
 # ============================================================
 
 
-ENGINE_VERSION = "0.3"
+ENGINE_VERSION = "0.4"
 
 TIMEOUT = 25
 REQUEST_DELAY = 0.45
@@ -44,7 +38,10 @@ REQUEST_DELAY = 0.45
 NEWS_LOOKBACK_DAYS = 21
 
 MAX_ITEMS_PER_QUERY = 40
-MAX_PRINT_PER_COMPANY = 10
+MAX_PRINT_PER_COMPANY = 12
+
+MIN_RELEVANCE_SCORE = 45.0
+MIN_IMPORTANCE_SCORE = 60.0
 
 TADAWUL_URL = (
     "https://www.saudiexchange.sa/wps/portal/saudiexchange/"
@@ -53,10 +50,12 @@ TADAWUL_URL = (
 
 ARGAAM_HOME = "https://www.argaam.com/"
 
-GOOGLE_NEWS_RSS = (
-    "https://news.google.com/rss/search"
-)
+GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
 
+
+# ============================================================
+# Test Companies
+# ============================================================
 
 TEST_COMPANIES = [
     {
@@ -117,7 +116,7 @@ HEADERS = {
 
 
 # ============================================================
-# Noise / non-news title rules
+# Noise Rules
 # ============================================================
 
 NON_NEWS_TITLE_PATTERNS = [
@@ -133,6 +132,230 @@ NON_NEWS_TITLE_PATTERNS = [
     r"\bvaluation\b",
     r"\bhistorical data\b",
     r"\bcompany profile\b",
+]
+
+
+# ============================================================
+# Material Event Rules
+# ============================================================
+
+EVENT_RULES = {
+
+    "financial_results": {
+        "base_score": 72,
+        "keywords": [
+            "financial results",
+            "earnings",
+            "quarterly results",
+            "annual results",
+            "q1",
+            "q2",
+            "q3",
+            "q4",
+            "net profit",
+            "net income",
+            "revenue",
+            "profit rises",
+            "profit falls",
+            "earnings growth",
+            "earnings decline",
+            "loss",
+            "results",
+        ],
+    },
+
+    "contract_award": {
+        "base_score": 78,
+        "keywords": [
+            "contract award",
+            "awarded contract",
+            "wins contract",
+            "new contract",
+            "signed contract",
+            "agreement signed",
+            "purchase order",
+            "project award",
+        ],
+    },
+
+    "acquisition_merger": {
+        "base_score": 88,
+        "keywords": [
+            "acquisition",
+            "acquire",
+            "merger",
+            "takeover",
+            "buys stake",
+            "sells stake",
+            "acquires",
+        ],
+    },
+
+    "capital_action": {
+        "base_score": 82,
+        "keywords": [
+            "capital increase",
+            "capital reduction",
+            "rights issue",
+            "bonus shares",
+            "share split",
+            "reverse split",
+            "share issuance",
+        ],
+    },
+
+    "dividend": {
+        "base_score": 70,
+        "keywords": [
+            "dividend",
+            "cash dividend",
+            "dividend distribution",
+            "pays sar",
+            "dividend recommendation",
+        ],
+    },
+
+    "financing_debt": {
+        "base_score": 70,
+        "keywords": [
+            "financing",
+            "loan",
+            "credit facility",
+            "refinancing",
+            "sukuk",
+            "bond issuance",
+            "debt financing",
+        ],
+    },
+
+    "expansion": {
+        "base_score": 74,
+        "keywords": [
+            "expansion",
+            "new plant",
+            "new factory",
+            "production line",
+            "capacity expansion",
+            "commercial operation",
+            "start production",
+            "opens new",
+            "open new",
+            "new showroom",
+            "new store",
+            "new bookstore",
+            "branch",
+        ],
+    },
+
+    "management_change": {
+        "base_score": 64,
+        "keywords": [
+            "ceo resigns",
+            "ceo appointed",
+            "appoints ceo",
+            "board appointment",
+            "board resignation",
+            "management change",
+        ],
+    },
+
+    "legal_regulatory": {
+        "base_score": 80,
+        "keywords": [
+            "lawsuit",
+            "court ruling",
+            "fine",
+            "penalty",
+            "regulatory action",
+            "investigation",
+            "license suspension",
+            "license revoked",
+        ],
+    },
+
+    "project_status": {
+        "base_score": 76,
+        "keywords": [
+            "project cancelled",
+            "project delayed",
+            "project suspended",
+            "project started",
+            "project completed",
+            "project completion",
+        ],
+    },
+
+    "operational_event": {
+        "base_score": 74,
+        "keywords": [
+            "production halt",
+            "fire",
+            "shutdown",
+            "operational disruption",
+            "operations resume",
+            "production resumes",
+        ],
+    },
+
+    "guidance": {
+        "base_score": 77,
+        "keywords": [
+            "guidance",
+            "raises guidance",
+            "cuts guidance",
+            "profit warning",
+            "financial impact expected",
+            "what to expect",
+        ],
+    },
+
+    "ownership": {
+        "base_score": 66,
+        "keywords": [
+            "ownership change",
+            "major shareholder",
+            "stake increase",
+            "stake reduction",
+            "investor exits",
+        ],
+    },
+
+    "growth_strategy": {
+        "base_score": 68,
+        "keywords": [
+            "drives growth",
+            "growth strategy",
+            "career gains pending",
+            "investment",
+            "invests sar",
+            "growth as",
+        ],
+    },
+}
+
+
+HIGH_IMPACT_KEYWORDS = [
+    "billion",
+    "acquisition",
+    "merger",
+    "capital increase",
+    "capital reduction",
+    "profit warning",
+    "production halt",
+]
+
+MEDIUM_IMPACT_KEYWORDS = [
+    "million",
+    "contract",
+    "award",
+    "financing",
+    "expansion",
+    "dividend",
+    "showroom",
+    "store",
+    "branch",
+    "earnings",
+    "results",
 ]
 
 
@@ -230,9 +453,7 @@ def safe_request(
         return None
 
 
-def parse_rss_date(
-    value
-):
+def parse_rss_date(value):
 
     value = clean_text(
         value
@@ -301,6 +522,26 @@ def is_non_news_title(
 
         for pattern
         in NON_NEWS_TITLE_PATTERNS
+    )
+
+
+def contains_any(
+    text,
+    keywords
+):
+
+    lowered = normalized_lower(
+        text
+    )
+
+    return any(
+        normalized_lower(
+            keyword
+        )
+        in lowered
+
+        for keyword
+        in keywords
     )
 
 
@@ -384,7 +625,7 @@ def normalized_title_key(
 
 
 # ============================================================
-# Source diagnostics
+# Source Diagnostics
 # ============================================================
 
 def test_tadawul():
@@ -675,7 +916,6 @@ def fetch_company_candidates(
         argaam_items
     )
 
-    # Deduplicate by normalized title within the company.
     unique = []
 
     seen_titles = set()
@@ -710,6 +950,236 @@ def fetch_company_candidates(
 
 
 # ============================================================
+# Material Event Filter
+# ============================================================
+
+def classify_event(
+    title
+):
+
+    title_lower = normalized_lower(
+        title
+    )
+
+    matches = []
+
+    for event_type, rule in EVENT_RULES.items():
+
+        matched_keywords = [
+            keyword
+
+            for keyword in rule[
+                "keywords"
+            ]
+
+            if normalized_lower(
+                keyword
+            )
+            in title_lower
+        ]
+
+        if not matched_keywords:
+            continue
+
+        matches.append({
+            "event_type":
+                event_type,
+
+            "base_score":
+                float(
+                    rule[
+                        "base_score"
+                    ]
+                ),
+
+            "matched_keywords":
+                matched_keywords,
+        })
+
+    if not matches:
+        return None
+
+    matches.sort(
+        key=lambda item:
+            item[
+                "base_score"
+            ],
+        reverse=True
+    )
+
+    return matches[0]
+
+
+def relevance_score(
+    company,
+    item
+):
+
+    if company_match(
+        item[
+            "title"
+        ],
+        company
+    ):
+
+        return 92.0
+
+    return 0.0
+
+
+def importance_score(
+    title,
+    event_match,
+    relevance
+):
+
+    if not event_match:
+        return 0.0
+
+    score = float(
+        event_match[
+            "base_score"
+        ]
+    )
+
+    if contains_any(
+        title,
+        HIGH_IMPACT_KEYWORDS
+    ):
+
+        score += 12.0
+
+    elif contains_any(
+        title,
+        MEDIUM_IMPACT_KEYWORDS
+    ):
+
+        score += 6.0
+
+    score += (
+        max(
+            0.0,
+            relevance
+            - MIN_RELEVANCE_SCORE
+        )
+        * 0.12
+    )
+
+    keyword_count = len(
+        event_match[
+            "matched_keywords"
+        ]
+    )
+
+    if keyword_count >= 2:
+        score += 4.0
+
+    if keyword_count >= 3:
+        score += 3.0
+
+    return min(
+        100.0,
+        score
+    )
+
+
+def material_filter(
+    company,
+    item
+):
+
+    relevance = relevance_score(
+        company,
+        item
+    )
+
+    if relevance < MIN_RELEVANCE_SCORE:
+
+        return {
+            "accepted":
+                False,
+
+            "reason":
+                "LOW_RELEVANCE",
+
+            "relevance_score":
+                relevance,
+        }
+
+    event_match = classify_event(
+        item[
+            "title"
+        ]
+    )
+
+    if not event_match:
+
+        return {
+            "accepted":
+                False,
+
+            "reason":
+                "NO_MATERIAL_EVENT",
+
+            "relevance_score":
+                relevance,
+        }
+
+    importance = importance_score(
+        item[
+            "title"
+        ],
+        event_match,
+        relevance
+    )
+
+    if importance < MIN_IMPORTANCE_SCORE:
+
+        return {
+            "accepted":
+                False,
+
+            "reason":
+                "LOW_IMPORTANCE",
+
+            "relevance_score":
+                relevance,
+
+            "importance_score":
+                importance,
+
+            "event_type":
+                event_match[
+                    "event_type"
+                ],
+        }
+
+    return {
+        "accepted":
+            True,
+
+        "reason":
+            "ACCEPTED",
+
+        "event_type":
+            event_match[
+                "event_type"
+            ],
+
+        "relevance_score":
+            relevance,
+
+        "importance_score":
+            importance,
+
+        "matched_keywords":
+            event_match[
+                "matched_keywords"
+            ],
+    }
+
+
+# ============================================================
 # Run
 # ============================================================
 
@@ -728,6 +1198,18 @@ def run():
     print(
         f"📅 Lookback: "
         f"{NEWS_LOOKBACK_DAYS} days",
+        flush=True
+    )
+
+    print(
+        f"🎯 Min Relevance: "
+        f"{MIN_RELEVANCE_SCORE}",
+        flush=True
+    )
+
+    print(
+        f"⭐ Min Importance: "
+        f"{MIN_IMPORTANCE_SCORE}",
         flush=True
     )
 
@@ -773,87 +1255,176 @@ def run():
     )
 
     # ========================================================
-    # Candidate collection
+    # Candidate + Material Review
     # ========================================================
 
     print_header(
-        "🔎 COMPANY CANDIDATE REVIEW"
+        "🧠 MATERIAL EVENT REVIEW"
     )
 
-    all_items = []
+    total_candidates = 0
+    total_accepted = 0
+    rejection_counts = defaultdict(
+        int
+    )
+
+    accepted_by_company = defaultdict(
+        int
+    )
 
     for company in TEST_COMPANIES:
 
-        items = fetch_company_candidates(
+        candidates = fetch_company_candidates(
             company
         )
 
-        all_items.extend(
-            items
+        total_candidates += len(
+            candidates
+        )
+
+        accepted = []
+        rejected = []
+
+        for item in candidates:
+
+            decision = material_filter(
+                company,
+                item
+            )
+
+            if decision[
+                "accepted"
+            ]:
+
+                accepted.append({
+                    "item":
+                        item,
+
+                    "decision":
+                        decision,
+                })
+
+            else:
+
+                rejection_counts[
+                    decision[
+                        "reason"
+                    ]
+                ] += 1
+
+                rejected.append({
+                    "item":
+                        item,
+
+                    "decision":
+                        decision,
+                })
+
+        accepted.sort(
+            key=lambda entry:
+                entry[
+                    "decision"
+                ][
+                    "importance_score"
+                ],
+            reverse=True
+        )
+
+        total_accepted += len(
+            accepted
+        )
+
+        accepted_by_company[
+            company[
+                "symbol"
+            ]
+        ] = len(
+            accepted
         )
 
         print(
             f"\n🏢 {company['symbol']} | "
             f"{company['name_ar']} | "
-            f"Recent Candidates="
-            f"{len(items)}",
+            f"Candidates="
+            f"{len(candidates)} | "
+            f"Accepted="
+            f"{len(accepted)}",
             flush=True
         )
 
-        if not items:
+        if accepted:
 
             print(
-                "- No recent confirmed candidates.",
+                "\n✅ Accepted Material Events:",
                 flush=True
             )
 
-            continue
+            for index, entry in enumerate(
+                accepted[
+                    :MAX_PRINT_PER_COMPANY
+                ],
+                start=1
+            ):
 
-        for index, item in enumerate(
-            items[
-                :MAX_PRINT_PER_COMPANY
-            ],
-            start=1
-        ):
+                item = entry[
+                    "item"
+                ]
+
+                decision = entry[
+                    "decision"
+                ]
+
+                print(
+                    f"{index}. "
+                    f"[{decision['event_type']}] "
+                    f"Importance="
+                    f"{decision['importance_score']:.1f} | "
+                    f"Relevance="
+                    f"{decision['relevance_score']:.1f} | "
+                    f"{item['published_at'][:10]} | "
+                    f"{item['publisher'] or 'N/A'} | "
+                    f"{item['title']}",
+                    flush=True
+                )
+
+        if rejected:
 
             print(
-                f"{index}. "
-                f"[{item['query_type']}] "
-                f"{item['published_at'][:10]} | "
-                f"{item['publisher'] or 'N/A'} | "
-                f"{item['title']}",
+                "\n🧹 Rejected:",
                 flush=True
             )
+
+            local_counts = defaultdict(
+                int
+            )
+
+            for entry in rejected:
+
+                local_counts[
+                    entry[
+                        "decision"
+                    ][
+                        "reason"
+                    ]
+                ] += 1
+
+            for reason, count in sorted(
+                local_counts.items()
+            ):
+
+                print(
+                    f"- {reason}: "
+                    f"{count}",
+                    flush=True
+                )
 
     # ========================================================
     # Final Summary
     # ========================================================
 
     print_header(
-        "🏁 SAUDI NEWS ADAPTER v0.3 SUMMARY"
+        "🏁 SAUDI NEWS ADAPTER v0.4 SUMMARY"
     )
-
-    grouped = defaultdict(
-        int
-    )
-
-    query_types = defaultdict(
-        int
-    )
-
-    for item in all_items:
-
-        grouped[
-            item[
-                "symbol"
-            ]
-        ] += 1
-
-        query_types[
-            item[
-                "query_type"
-            ]
-        ] += 1
 
     print(
         f"🏢 Companies Tested: "
@@ -863,19 +1434,31 @@ def run():
 
     print(
         f"📰 Recent Unique Candidates: "
-        f"{len(all_items)}",
+        f"{total_candidates}",
         flush=True
     )
 
     print(
-        f"🌐 General RSS Candidates: "
-        f"{query_types['general']}",
+        f"✅ Accepted Material Events: "
+        f"{total_accepted}",
         flush=True
     )
 
+    if total_candidates > 0:
+
+        acceptance_rate = (
+            total_accepted
+            / total_candidates
+            * 100.0
+        )
+
+    else:
+
+        acceptance_rate = 0.0
+
     print(
-        f"🟢 Argaam-targeted RSS Candidates: "
-        f"{query_types['argaam_targeted']}",
+        f"📈 Material Acceptance Rate: "
+        f"{acceptance_rate:.2f}%",
         flush=True
     )
 
@@ -884,9 +1467,31 @@ def run():
         print(
             f"- {company['symbol']} | "
             f"{company['name_ar']} | "
-            f"{grouped[company['symbol']]} candidates",
+            f"{accepted_by_company[company['symbol']]} accepted",
             flush=True
         )
+
+    if rejection_counts:
+
+        print(
+            "\n📋 Rejection Summary:",
+            flush=True
+        )
+
+        for reason, count in sorted(
+            rejection_counts.items(),
+            key=lambda item:
+                (
+                    -item[1],
+                    item[0]
+                )
+        ):
+
+            print(
+                f"- {reason}: "
+                f"{count}",
+                flush=True
+            )
 
     print(
         "\n📌 IMPORTANT:",
@@ -894,29 +1499,29 @@ def run():
     )
 
     print(
-        "- الأخبار الأقدم من 21 يومًا تم حذفها قبل العرض.",
+        "- هذه أول نسخة تطبق Material Event Filter "
+        "على أخبار المصادر السعودية.",
         flush=True
     )
 
     print(
-        "- صفحات البيانات العامة مثل Revenue Breakdown "
-        "وFinancial Statements تم استبعادها.",
+        "- لا توجد أي كتابة في Supabase.",
         flush=True
     )
 
     print(
-        "- هذه ليست مرحلة Material Event النهائية بعد.",
+        "- إذا كانت Accepted Events منطقية، "
+        "ننتقل للـ21 شركة ثم الحفظ في company_news.",
         flush=True
     )
 
     print(
-        "- الخطوة التالية بعد مراجعة العناوين: "
-        "تمريرها إلى news_data.py للتصنيف والفلترة قبل الحفظ.",
+        "- Sentiment والـAI لم يدخلا بعد.",
         flush=True
     )
 
     print(
-        "- Tadawul يبقى Official Arbiter بسبب الحماية.",
+        "- Tadawul يبقى Official Arbiter بسبب HTTP 403.",
         flush=True
     )
 
