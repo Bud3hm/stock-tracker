@@ -11,7 +11,7 @@ import requests
 
 
 # ============================================================
-# SAUDI NEWS ADAPTER v0.5
+# SAUDI NEWS ADAPTER v0.6
 #
 # READ ONLY / TEST ONLY
 #
@@ -25,7 +25,7 @@ import requests
 # ============================================================
 
 
-ENGINE_VERSION = "0.5"
+ENGINE_VERSION = "0.6"
 
 TIMEOUT = 25
 
@@ -363,6 +363,23 @@ PRE_EVENT_REJECT_PATTERNS = [
     r"\bshould you buy\b",
     r"\bis .* a buy\b",
     r"\bstock looks\b",
+    r"\bprice target\b",
+    r"\bcuts? tp\b",
+    r"\braises? tp\b",
+    r"\bcomments? on .* results\b",
+    r"\bconsensus has updated\b",
+    r"\bconsensus updated\b",
+    r"\bbeat analyst forecasts\b",
+    r"\bbeat revenue estimates\b",
+    r"\bexceeded expectations\b",
+    r"\bconservative accounting\b",
+    r"\bsoft earnings\b",
+    r"\bvaluation\b",
+    r"\bshariah evaluation report\b",
+    r"\bsharia evaluation report\b",
+    r"\bearnings conference call\b",
+    r"\bconference call .* financial results\b",
+    r"\borganization of a conference call\b",
 ]
 
 # Explicit precedence prevents a generic financial keyword such as
@@ -395,22 +412,36 @@ EVENT_RULES = {
         "base_score": 72,
         "keywords": [
             "financial results",
-            "earnings",
+            "interim financial results",
+            "annual financial results",
             "quarterly results",
             "annual results",
-            "q1",
-            "q2",
-            "q3",
-            "q4",
+            "reports q1",
+            "reports q2",
+            "reports q3",
+            "reports q4",
+            "q1 profit",
+            "q2 profit",
+            "q3 profit",
+            "q4 profit",
             "net profit",
             "net income",
-            "revenue",
+            "revenue rises",
+            "revenue falls",
+            "revenue growth",
             "profit rises",
             "profit falls",
+            "profit jumps",
+            "profit drops",
             "earnings growth",
             "earnings decline",
-            "loss",
-            "results",
+            "posts record profit",
+            "posts record profits",
+            "financial performance",
+            "financial, operating performance",
+            "financial and operating performance",
+            "swings to profit",
+            "swings to loss",
         ],
     },
 
@@ -1362,6 +1393,194 @@ def fetch_company_candidates(
 
 
 # ============================================================
+# v0.6 Quality Hardening
+# ============================================================
+
+def phrase_match(text, phrase):
+    """Whole-token phrase match; prevents accidental substring matches."""
+    haystack = normalized_lower(text)
+    needle = normalized_lower(phrase)
+
+    if not haystack or not needle:
+        return False
+
+    pattern = (
+        r"(?<![\w\u0600-\u06FF])"
+        + re.escape(needle).replace(r"\ ", r"\s+")
+        + r"(?![\w\u0600-\u06FF])"
+    )
+
+    return re.search(pattern, haystack, flags=re.I) is not None
+
+
+def first_alias_position(title, company):
+    haystack = normalized_lower(title)
+    positions = []
+
+    for alias in company["aliases"]:
+        alias_lower = normalized_lower(alias)
+
+        if not alias_lower:
+            continue
+
+        match = re.search(
+            r"(?<![\w\u0600-\u06FF])"
+            + re.escape(alias_lower).replace(r"\ ", r"\s+")
+            + r"(?![\w\u0600-\u06FF])",
+            haystack,
+            flags=re.I,
+        )
+
+        if match:
+            positions.append(match.start())
+
+    return min(positions) if positions else None
+
+
+def is_secondary_party_event(company, title, event_type):
+    """
+    v0.6:
+    Reject cases where our company is only the bank/lender/counterparty,
+    while the material event belongs primarily to another listed company.
+    """
+    if event_type not in {"financing_debt"}:
+        return False
+
+    title_lower = normalized_lower(title)
+    alias_pos = first_alias_position(title, company)
+
+    if alias_pos is None:
+        return False
+
+    # If company is clearly the grammatical subject near the start,
+    # keep the event.
+    if alias_pos <= 28:
+        return False
+
+    # Typical false positive:
+    # "Avalon Pharma renews SAR 50M financing facilities with Alinma Bank"
+    before_company = title_lower[:alias_pos]
+
+    counterparty_markers = [
+        " with ",
+        " from ",
+        " provided by ",
+        " arranged by ",
+        " financed by ",
+        " facility with ",
+        " facilities with ",
+        " credit facility with ",
+    ]
+
+    return any(marker in before_company for marker in counterparty_markers)
+
+
+EVENT_CLUSTER_STOPWORDS = {
+    "the", "a", "an", "and", "or", "to", "of", "for", "in", "on",
+    "at", "by", "with", "from", "as", "its", "is", "are", "co",
+    "company", "saudi", "arabia", "announces", "announcement",
+    "report", "reports", "says", "said", "new",
+}
+
+
+def event_tokens(title, company):
+    normalized = normalized_title_key(title)
+
+    for alias in company["aliases"]:
+        alias_key = normalized_title_key(alias)
+        if alias_key:
+            normalized = normalized.replace(alias_key, " ")
+
+    tokens = {
+        token
+        for token in normalized.split()
+        if len(token) >= 3
+        and token not in EVENT_CLUSTER_STOPWORDS
+    }
+
+    return tokens
+
+
+def same_event_cluster(company, left, right):
+    if (
+        left["decision"]["event_type"]
+        != right["decision"]["event_type"]
+    ):
+        return False
+
+    left_date = left["item"]["published_at"]
+    right_date = right["item"]["published_at"]
+
+    try:
+        day_gap = abs((left_date.date() - right_date.date()).days)
+    except Exception:
+        day_gap = 99
+
+    if day_gap > 3:
+        return False
+
+    left_tokens = event_tokens(left["item"]["title"], company)
+    right_tokens = event_tokens(right["item"]["title"], company)
+
+    if not left_tokens or not right_tokens:
+        return False
+
+    intersection = len(left_tokens & right_tokens)
+    union = len(left_tokens | right_tokens)
+    jaccard = intersection / union if union else 0.0
+
+    # Require meaningful shared event vocabulary.
+    return (
+        intersection >= 3
+        and jaccard >= 0.38
+    )
+
+
+def cluster_accepted_events(company, accepted):
+    """
+    Keep one representative per real-world event.
+    Highest importance wins; ties prefer newer item.
+    """
+    ordered = sorted(
+        accepted,
+        key=lambda entry: (
+            entry["decision"]["importance_score"],
+            entry["item"]["published_at"],
+        ),
+        reverse=True,
+    )
+
+    unique = []
+    duplicates = []
+
+    for candidate in ordered:
+        duplicate_of = next(
+            (
+                existing
+                for existing in unique
+                if same_event_cluster(
+                    company,
+                    candidate,
+                    existing,
+                )
+            ),
+            None,
+        )
+
+        if duplicate_of is None:
+            unique.append(candidate)
+        else:
+            duplicates.append(candidate)
+
+    unique.sort(
+        key=lambda entry: entry["decision"]["importance_score"],
+        reverse=True,
+    )
+
+    return unique, duplicates
+
+
+# ============================================================
 # Material Event Filter
 # ============================================================
 
@@ -1384,10 +1603,10 @@ def classify_event(
                 "keywords"
             ]
 
-            if normalized_lower(
+            if phrase_match(
+                title,
                 keyword
             )
-            in title_lower
         ]
 
         if not matched_keywords:
@@ -1562,6 +1781,25 @@ def material_filter(
 
             "relevance_score":
                 relevance,
+        }
+
+    if is_secondary_party_event(
+        company,
+        item["title"],
+        event_match["event_type"],
+    ):
+        return {
+            "accepted":
+                False,
+
+            "reason":
+                "SECONDARY_PARTY_EVENT",
+
+            "relevance_score":
+                relevance,
+
+            "event_type":
+                event_match["event_type"],
         }
 
     importance = importance_score(
@@ -1785,6 +2023,16 @@ def run():
                     "decision":
                         decision,
                 })
+
+        accepted, clustered_duplicates = cluster_accepted_events(
+            company,
+            accepted,
+        )
+
+        if clustered_duplicates:
+            rejection_counts[
+                "CLUSTERED_DUPLICATE_EVENT"
+            ] += len(clustered_duplicates)
 
         accepted.sort(
             key=lambda entry:
@@ -2014,7 +2262,12 @@ def run():
     )
 
     print(
-        "- هذا هو اختبار الجودة الشامل على 21 شركة قبل أي حفظ.",
+        "- v0.6 Quality Hardening فعال: whole-phrase matching + commentary filter + secondary-party filter + event clustering.",
+        flush=True
+    )
+
+    print(
+        "- ما زلنا في READ ONLY / TEST ONLY ولا توجد كتابة في Supabase.",
         flush=True
     )
 
