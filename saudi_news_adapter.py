@@ -25,7 +25,7 @@ import requests
 # ============================================================
 
 
-ENGINE_VERSION = "0.8"
+ENGINE_VERSION = "0.9"
 
 TIMEOUT = 25
 
@@ -1632,6 +1632,24 @@ def recall_audit(company, rejected):
     return flagged
 
 
+SENSITIVE_CONFIRMATION_EVENTS = {"operational_event", "legal_regulatory"}
+
+def low_trust_sensitive_unconfirmed(company, candidate, accepted):
+    """Low-trust sensitive events require independent corroboration."""
+    decision = candidate["decision"]
+    if decision.get("event_type") not in SENSITIVE_CONFIRMATION_EVENTS:
+        return False
+    if decision.get("source_trust", 60) >= 60:
+        return False
+    for other in accepted:
+        if other is candidate:
+            continue
+        if other["decision"].get("source_trust", 60) < 60:
+            continue
+        if same_event_cluster(company, candidate, other):
+            return False
+    return True
+
 def cluster_accepted_events(company, accepted):
     """
     Keep one representative per real-world event.
@@ -2122,6 +2140,24 @@ def run():
 
         accepted = [source_quality_adjustment(entry) for entry in accepted]
 
+        # v0.9: sensitive claims from low-trust publishers need independent
+        # corroboration before they can remain accepted.
+        unconfirmed_low_trust = [
+            entry for entry in accepted
+            if low_trust_sensitive_unconfirmed(company, entry, accepted)
+        ]
+        if unconfirmed_low_trust:
+            blocked_ids = {id(entry) for entry in unconfirmed_low_trust}
+            accepted = [entry for entry in accepted if id(entry) not in blocked_ids]
+            rejection_counts["UNCONFIRMED_LOW_TRUST"] += len(unconfirmed_low_trust)
+            rejected.extend(
+                {
+                    "item": entry["item"],
+                    "decision": {**entry["decision"], "accepted": False, "reason": "UNCONFIRMED_LOW_TRUST"},
+                }
+                for entry in unconfirmed_low_trust
+            )
+
         accepted, clustered_duplicates = cluster_accepted_events(
             company,
             accepted,
@@ -2376,7 +2412,7 @@ def run():
     )
 
     print(
-        "- v0.8 Quality Audit فعال: source trust + conservative event dedup + recall audit + v0.7 hardening.",
+        "- v0.9 Quality Gate فعال: low-trust sensitive-event confirmation + source trust + dedup + recall audit.",
         flush=True
     )
 
