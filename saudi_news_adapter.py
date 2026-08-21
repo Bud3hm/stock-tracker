@@ -11,25 +11,25 @@ import requests
 
 
 # ============================================================
-# SAUDI NEWS ADAPTER v0.4.1
+# SAUDI NEWS ADAPTER v0.5
 #
 # READ ONLY / TEST ONLY
 #
-# v0.4.1:
-# - يحتفظ بكل منطق v0.4
-# - يضيف Retry + Exponential Backoff لـ Google News RSS
-# - يقلل ضغط الطلبات
-# - يميز SOURCE_UNAVAILABLE عن NO_NEWS
-# - لا يعتبر 503 = صفر أخبار
-# - لا يكتب إلى Supabase
+# v0.5:
+# - توسيع الاختبار من 3 شركات إلى جميع الشركات الـ21 المفعلة حاليًا
+# - يبقى READ ONLY / TEST ONLY بدون أي كتابة إلى Supabase
+# - يحافظ على Retry + Backoff ومعالجة SOURCE_UNAVAILABLE
+# - يحافظ على فلترة PREVIEW_OR_COMMENTARY وأولوية تصنيف الأحداث
+# - يضيف ملخص جودة شامل لكل الشركات قبل السماح بالحفظ
+# - الهدف: اكتشاف False Positives / ضعف التغطية قبل التفعيل
 # ============================================================
 
 
-ENGINE_VERSION = "0.4.2"
+ENGINE_VERSION = "0.5"
 
 TIMEOUT = 25
 
-REQUEST_DELAY = 1.25
+REQUEST_DELAY = 1.75
 RETRY_ATTEMPTS = 3
 RETRY_BASE_WAIT = 3
 
@@ -52,32 +52,112 @@ GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
 
 
 # ============================================================
-# Test Companies
+# Test Companies - 21 Active Companies
+#
+# هذه القائمة للاختبار فقط في v0.5.
+# بعد اعتماد الجودة النهائي سنجلب الشركات من stocks تلقائيًا.
 # ============================================================
 
 TEST_COMPANIES = [
     {
-        "symbol": "7203.SR",
-        "code": "7203",
-        "name_en": "Elm Company",
-        "name_ar": "علم",
+        "symbol": "2283.SR",
+        "code": "2283",
+        "name_en": "First Milling Company",
+        "name_ar": "المطاحن الأولى",
         "aliases": [
-            "elm company",
-            "elm",
-            "شركة علم",
-            "علم",
+            "first milling company",
+            "first mills",
+            "المطاحن الأولى",
         ],
     },
     {
-        "symbol": "4190.SR",
-        "code": "4190",
-        "name_en": "Jarir Marketing",
-        "name_ar": "جرير",
+        "symbol": "1831.SR",
+        "code": "1831",
+        "name_en": "Maharah Human Resources",
+        "name_ar": "مهارة",
         "aliases": [
-            "jarir marketing",
-            "jarir",
-            "مكتبة جرير",
-            "جرير",
+            "maharah human resources",
+            "maharah",
+            "مهارة للموارد البشرية",
+        ],
+    },
+    {
+        "symbol": "4002.SR",
+        "code": "4002",
+        "name_en": "Mouwasat Medical Services",
+        "name_ar": "المواساة",
+        "aliases": [
+            "mouwasat medical services",
+            "mouwasat",
+            "المواساة للخدمات الطبية",
+        ],
+    },
+    {
+        "symbol": "1150.SR",
+        "code": "1150",
+        "name_en": "Alinma Bank",
+        "name_ar": "مصرف الإنماء",
+        "aliases": [
+            "alinma bank",
+            "al inma bank",
+            "مصرف الإنماء",
+        ],
+    },
+    {
+        "symbol": "2222.SR",
+        "code": "2222",
+        "name_en": "Saudi Aramco",
+        "name_ar": "أرامكو السعودية",
+        "aliases": [
+            "saudi aramco",
+            "aramco",
+            "أرامكو السعودية",
+        ],
+    },
+    {
+        "symbol": "1211.SR",
+        "code": "1211",
+        "name_en": "Saudi Arabian Mining Company",
+        "name_ar": "معادن",
+        "aliases": [
+            "saudi arabian mining company",
+            "maaden",
+            "ma'aden",
+            "شركة التعدين العربية السعودية",
+        ],
+    },
+    {
+        "symbol": "1320.SR",
+        "code": "1320",
+        "name_en": "Saudi Steel Pipe Company",
+        "name_ar": "أنابيب السعودية",
+        "aliases": [
+            "saudi steel pipe company",
+            "saudi steel pipe",
+            "أنابيب السعودية",
+        ],
+    },
+    {
+        "symbol": "4030.SR",
+        "code": "4030",
+        "name_en": "Bahri",
+        "name_ar": "البحري",
+        "aliases": [
+            "national shipping company of saudi arabia",
+            "bahri",
+            "البحري",
+        ],
+    },
+    {
+        "symbol": "4011.SR",
+        "code": "4011",
+        "name_en": "Lazurde Company for Jewelry",
+        "name_ar": "لازوردي",
+        "aliases": [
+            "lazurde company for jewelry",
+            "lazurde",
+            "l'azurde",
+            "لازوردي",
         ],
     },
     {
@@ -89,11 +169,133 @@ TEST_COMPANIES = [
             "seera group",
             "seera",
             "مجموعة سيرا",
-            "سيرا",
+        ],
+    },
+    {
+        "symbol": "4210.SR",
+        "code": "4210",
+        "name_en": "Saudi Research and Media Group",
+        "name_ar": "الأبحاث والإعلام",
+        "aliases": [
+            "saudi research and media group",
+            "srmg",
+            "المجموعة السعودية للأبحاث والإعلام",
+            "الأبحاث والإعلام",
+        ],
+    },
+    {
+        "symbol": "4190.SR",
+        "code": "4190",
+        "name_en": "Jarir Marketing",
+        "name_ar": "جرير",
+        "aliases": [
+            "jarir marketing",
+            "jarir bookstore",
+            "jarir",
+            "مكتبة جرير",
+        ],
+    },
+    {
+        "symbol": "4163.SR",
+        "code": "4163",
+        "name_en": "Al-Dawaa Medical Services",
+        "name_ar": "الدواء",
+        "aliases": [
+            "al-dawaa medical services",
+            "al dawaa medical services",
+            "al-dawaa",
+            "الدواء للخدمات الطبية",
+        ],
+    },
+    {
+        "symbol": "2282.SR",
+        "code": "2282",
+        "name_en": "Naqi Water Company",
+        "name_ar": "نقي",
+        "aliases": [
+            "naqi water company",
+            "naqi water",
+            "نقي للمياه",
+        ],
+    },
+    {
+        "symbol": "4015.SR",
+        "code": "4015",
+        "name_en": "Jamjoom Pharmaceuticals Factory Company",
+        "name_ar": "جمجوم فارما",
+        "aliases": [
+            "jamjoom pharmaceuticals factory company",
+            "jamjoom pharma",
+            "jamjoom pharmaceuticals",
+            "جمجوم فارما",
+        ],
+    },
+    {
+        "symbol": "1111.SR",
+        "code": "1111",
+        "name_en": "Saudi Tadawul Group",
+        "name_ar": "مجموعة تداول السعودية",
+        "aliases": [
+            "saudi tadawul group",
+            "saudi tadawul group holding",
+            "مجموعة تداول السعودية",
+        ],
+    },
+    {
+        "symbol": "8010.SR",
+        "code": "8010",
+        "name_en": "The Company for Cooperative Insurance",
+        "name_ar": "التعاونية",
+        "aliases": [
+            "the company for cooperative insurance",
+            "tawuniya",
+            "التعاونية للتأمين",
+        ],
+    },
+    {
+        "symbol": "7203.SR",
+        "code": "7203",
+        "name_en": "Elm Company",
+        "name_ar": "علم",
+        "aliases": [
+            "elm company",
+            "شركة علم",
+        ],
+    },
+    {
+        "symbol": "7010.SR",
+        "code": "7010",
+        "name_en": "Saudi Telecom Company",
+        "name_ar": "STC",
+        "aliases": [
+            "saudi telecom company",
+            "stc group",
+            "stc",
+            "الاتصالات السعودية",
+        ],
+    },
+    {
+        "symbol": "2082.SR",
+        "code": "2082",
+        "name_en": "ACWA Power",
+        "name_ar": "أكوا باور",
+        "aliases": [
+            "acwa power",
+            "أكوا باور",
+        ],
+    },
+    {
+        "symbol": "4250.SR",
+        "code": "4250",
+        "name_en": "Jabal Omar Development Company",
+        "name_ar": "جبل عمر",
+        "aliases": [
+            "jabal omar development company",
+            "jabal omar",
+            "جبل عمر للتطوير",
         ],
     },
 ]
-
 
 HEADERS = {
     "User-Agent": (
@@ -1687,12 +1889,40 @@ def run():
     # ========================================================
 
     print_header(
-        "🏁 SAUDI NEWS ADAPTER v0.4.1 SUMMARY"
+        f"🏁 SAUDI NEWS ADAPTER v{ENGINE_VERSION} SUMMARY"
     )
 
     print(
         f"🏢 Companies Tested: "
         f"{len(TEST_COMPANIES)}",
+        flush=True
+    )
+
+    companies_with_accepted = sum(
+        1
+        for company in TEST_COMPANIES
+        if accepted_by_company[
+            company[
+                "symbol"
+            ]
+        ] > 0
+    )
+
+    companies_without_accepted = (
+        len(TEST_COMPANIES)
+        - companies_with_accepted
+        - source_unavailable_companies
+    )
+
+    print(
+        f"✅ Companies With Accepted Events: "
+        f"{companies_with_accepted}",
+        flush=True
+    )
+
+    print(
+        f"⚪ Companies With No Accepted Events: "
+        f"{companies_without_accepted}",
         flush=True
     )
 
@@ -1784,8 +2014,7 @@ def run():
     )
 
     print(
-        "- إذا عاد Google إلى HTTP 200 "
-        "سنراجع Accepted Events قبل التوسعة للـ21 شركة.",
+        "- هذا هو اختبار الجودة الشامل على 21 شركة قبل أي حفظ.",
         flush=True
     )
 
