@@ -25,7 +25,7 @@ import requests
 # ============================================================
 
 
-ENGINE_VERSION = "0.9"
+ENGINE_VERSION = "0.9.1"
 
 TIMEOUT = 25
 
@@ -1550,105 +1550,31 @@ def same_event_cluster(company, left, right):
     union = len(left_tokens | right_tokens)
     jaccard = intersection / union if union else 0.0
 
-    # General semantic duplicate rule.
-    if intersection >= 3 and jaccard >= 0.38:
-        return True
+    # v0.9.1: same-day expansion/opening reports from different publishers
+    # are often the same corporate event even when one headline includes
+    # location/investment details and the other is generic.
+    event_type = left["decision"]["event_type"]
+    if event_type == "expansion" and day_gap == 0:
+        left_title = normalized_lower(left["item"]["title"])
+        right_title = normalized_lower(right["item"]["title"])
 
-    # v0.8: syndicated expansion stories often use different generic wording.
-    # On the same day, require at least two non-generic shared details so that
-    # different Jarir openings are not collapsed into one event.
-    if left["decision"]["event_type"] == "expansion" and day_gap == 0:
-        ls = event_signature(left["item"]["title"], company)
-        rs = event_signature(right["item"]["title"], company)
-        return len(ls & rs) >= 2
-
-    return False
-
-
-SOURCE_TRUST = {
-    "Reuters": 100,
-    "ارقام": 92,
-    "Argaam": 92,
-    "Saudi Exchange": 100,
-    "Tadawul": 100,
-    "Zawya": 78,
-    "MarketScreener": 72,
-    "marketscreener.com": 72,
-    "The Maritime Standard": 72,
-    "Milling Middle East & Africa": 68,
-    "EnterpriseAM": 65,
-    "simplywall.st": 48,
-    "Simply Wall St": 48,
-    "The Times of India": 42,
-}
-
-
-def source_trust_score(item):
-    publisher = clean_text(item.get("publisher", ""))
-    for name, score in SOURCE_TRUST.items():
-        if normalized_lower(name) in normalized_lower(publisher):
-            return score
-    return 60
-
-
-def event_signature(title, company):
-    """Conservative signature used only for deduplication, never acceptance."""
-    tokens = event_tokens(title, company)
-    generic = {
-        "opens", "open", "opened", "showroom", "store", "branch",
-        "invests", "investment", "marketing", "development",
-        "financial", "results", "profit", "profits", "earnings",
-    }
-    return {t for t in tokens if t not in generic}
-
-
-def source_quality_adjustment(entry):
-    """Attach trust metadata without allowing trust alone to create an event."""
-    trust = source_trust_score(entry["item"])
-    entry["decision"]["source_trust"] = trust
-    # Only modestly penalize low-trust sources. We do not reject automatically:
-    # corroboration/dedup can still preserve a real event.
-    if trust < 50:
-        entry["decision"]["importance_score"] = max(
-            0.0,
-            entry["decision"]["importance_score"] - 6.0,
+        opening_terms = (
+            "open", "opens", "opened", "opening",
+            "store", "showroom", "branch",
         )
-    return entry
 
+        left_opening = any(phrase_match(left_title, term) for term in opening_terms)
+        right_opening = any(phrase_match(right_title, term) for term in opening_terms)
 
-def recall_audit(company, rejected):
-    """Diagnostic only: flag likely material titles rejected by strict rules."""
-    hints = (
-        "financial results", "interim financial results", "net profit",
-        "cash dividend", "capital increase", "acquisition", "contract",
-        "award", "signs agreement", "opens new", "new showroom",
-        "fire", "shutdown", "production halt", "merger",
+        if left_opening and right_opening:
+            return True
+
+    # General conservative semantic duplicate rule.
+    return (
+        intersection >= 3
+        and jaccard >= 0.38
     )
-    flagged = []
-    for entry in rejected:
-        title = entry["item"]["title"]
-        if any(phrase_match(title, h) for h in hints):
-            flagged.append(entry)
-    return flagged
 
-
-SENSITIVE_CONFIRMATION_EVENTS = {"operational_event", "legal_regulatory"}
-
-def low_trust_sensitive_unconfirmed(company, candidate, accepted):
-    """Low-trust sensitive events require independent corroboration."""
-    decision = candidate["decision"]
-    if decision.get("event_type") not in SENSITIVE_CONFIRMATION_EVENTS:
-        return False
-    if decision.get("source_trust", 60) >= 60:
-        return False
-    for other in accepted:
-        if other is candidate:
-            continue
-        if other["decision"].get("source_trust", 60) < 60:
-            continue
-        if same_event_cluster(company, candidate, other):
-            return False
-    return True
 
 def cluster_accepted_events(company, accepted):
     """
@@ -2412,7 +2338,7 @@ def run():
     )
 
     print(
-        "- v0.9 Quality Gate فعال: low-trust sensitive-event confirmation + source trust + dedup + recall audit.",
+        "- v0.9.1 Quality Gate فعال: same-day expansion dedup + low-trust confirmation + source trust + recall audit.",
         flush=True
     )
 
