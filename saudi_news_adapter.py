@@ -25,7 +25,7 @@ import requests
 # ============================================================
 
 
-ENGINE_VERSION = "0.7"
+ENGINE_VERSION = "0.8"
 
 TIMEOUT = 25
 
@@ -1550,11 +1550,86 @@ def same_event_cluster(company, left, right):
     union = len(left_tokens | right_tokens)
     jaccard = intersection / union if union else 0.0
 
-    # Require meaningful shared event vocabulary.
-    return (
-        intersection >= 3
-        and jaccard >= 0.38
+    # General semantic duplicate rule.
+    if intersection >= 3 and jaccard >= 0.38:
+        return True
+
+    # v0.8: syndicated expansion stories often use different generic wording.
+    # On the same day, require at least two non-generic shared details so that
+    # different Jarir openings are not collapsed into one event.
+    if left["decision"]["event_type"] == "expansion" and day_gap == 0:
+        ls = event_signature(left["item"]["title"], company)
+        rs = event_signature(right["item"]["title"], company)
+        return len(ls & rs) >= 2
+
+    return False
+
+
+SOURCE_TRUST = {
+    "Reuters": 100,
+    "ارقام": 92,
+    "Argaam": 92,
+    "Saudi Exchange": 100,
+    "Tadawul": 100,
+    "Zawya": 78,
+    "MarketScreener": 72,
+    "marketscreener.com": 72,
+    "The Maritime Standard": 72,
+    "Milling Middle East & Africa": 68,
+    "EnterpriseAM": 65,
+    "simplywall.st": 48,
+    "Simply Wall St": 48,
+    "The Times of India": 42,
+}
+
+
+def source_trust_score(item):
+    publisher = clean_text(item.get("publisher", ""))
+    for name, score in SOURCE_TRUST.items():
+        if normalized_lower(name) in normalized_lower(publisher):
+            return score
+    return 60
+
+
+def event_signature(title, company):
+    """Conservative signature used only for deduplication, never acceptance."""
+    tokens = event_tokens(title, company)
+    generic = {
+        "opens", "open", "opened", "showroom", "store", "branch",
+        "invests", "investment", "marketing", "development",
+        "financial", "results", "profit", "profits", "earnings",
+    }
+    return {t for t in tokens if t not in generic}
+
+
+def source_quality_adjustment(entry):
+    """Attach trust metadata without allowing trust alone to create an event."""
+    trust = source_trust_score(entry["item"])
+    entry["decision"]["source_trust"] = trust
+    # Only modestly penalize low-trust sources. We do not reject automatically:
+    # corroboration/dedup can still preserve a real event.
+    if trust < 50:
+        entry["decision"]["importance_score"] = max(
+            0.0,
+            entry["decision"]["importance_score"] - 6.0,
+        )
+    return entry
+
+
+def recall_audit(company, rejected):
+    """Diagnostic only: flag likely material titles rejected by strict rules."""
+    hints = (
+        "financial results", "interim financial results", "net profit",
+        "cash dividend", "capital increase", "acquisition", "contract",
+        "award", "signs agreement", "opens new", "new showroom",
+        "fire", "shutdown", "production halt", "merger",
     )
+    flagged = []
+    for entry in rejected:
+        title = entry["item"]["title"]
+        if any(phrase_match(title, h) for h in hints):
+            flagged.append(entry)
+    return flagged
 
 
 def cluster_accepted_events(company, accepted):
@@ -2045,10 +2120,14 @@ def run():
                         decision,
                 })
 
+        accepted = [source_quality_adjustment(entry) for entry in accepted]
+
         accepted, clustered_duplicates = cluster_accepted_events(
             company,
             accepted,
         )
+
+        recall_flags = recall_audit(company, rejected)
 
         if clustered_duplicates:
             rejection_counts[
@@ -2116,9 +2195,23 @@ def run():
                     f"{decision['importance_score']:.1f} | "
                     f"Relevance="
                     f"{decision['relevance_score']:.1f} | "
+                    f"Trust="
+                    f"{decision.get('source_trust', 60)} | "
                     f"{item['published_at'][:10]} | "
                     f"{item['publisher'] or 'N/A'} | "
                     f"{item['title']}",
+                    flush=True
+                )
+
+        if recall_flags:
+            print(
+                f"\n🔎 Recall Audit Flags: {len(recall_flags)}",
+                flush=True
+            )
+            for entry in recall_flags[:3]:
+                print(
+                    f"- [{entry['decision']['reason']}] "
+                    f"{entry['item']['title']}",
                     flush=True
                 )
 
@@ -2283,7 +2376,7 @@ def run():
     )
 
     print(
-        "- v0.7 Quality Balance فعال: analyst-commentary rejection + stronger actual-earnings recall + v0.6 hardening.",
+        "- v0.8 Quality Audit فعال: source trust + conservative event dedup + recall audit + v0.7 hardening.",
         flush=True
     )
 
