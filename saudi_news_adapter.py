@@ -25,7 +25,7 @@ import requests
 # ============================================================
 
 
-ENGINE_VERSION = "0.6"
+ENGINE_VERSION = "0.7"
 
 TIMEOUT = 25
 
@@ -363,6 +363,17 @@ PRE_EVENT_REJECT_PATTERNS = [
     r"\bshould you buy\b",
     r"\bis .* a buy\b",
     r"\bstock looks\b",
+    r"\breaffirms? rating\b",
+    r"\bmaintains? rating\b",
+    r"\bupgrades?\b",
+    r"\bdowngrades?\b",
+    r"\bbelow estimate\b",
+    r"\babove estimate\b",
+    r"\bbelow expectations?\b",
+    r"\babove expectations?\b",
+    r"\banalyst(?:s)? (?:say|says|comment|comments)\b",
+    r"\bcapital says\b",
+    r"\bsecurities (?:says|comments)\b",
     r"\bprice target\b",
     r"\bcuts? tp\b",
     r"\braises? tp\b",
@@ -415,6 +426,16 @@ EVENT_RULES = {
             "interim financial results",
             "annual financial results",
             "quarterly results",
+            "reports earnings",
+            "report earnings",
+            "reports q1 earnings",
+            "reports q2 earnings",
+            "reports q3 earnings",
+            "reports q4 earnings",
+            "q1 earnings",
+            "q2 earnings",
+            "q3 earnings",
+            "q4 earnings",
             "annual results",
             "reports q1",
             "reports q2",
@@ -2262,7 +2283,7 @@ def run():
     )
 
     print(
-        "- v0.6 Quality Hardening فعال: whole-phrase matching + commentary filter + secondary-party filter + event clustering.",
+        "- v0.7 Quality Balance فعال: analyst-commentary rejection + stronger actual-earnings recall + v0.6 hardening.",
         flush=True
     )
 
